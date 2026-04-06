@@ -183,14 +183,14 @@ object TimeUtil {
 
     @JvmStatic
     fun getCalendarByTimeMillis(timeMillis: Long?): Calendar {
-        return Calendar.getInstance().apply {
+        return MyUtils.getInstance().apply {
             timeMillis?.let { this.timeInMillis = it }
         }
     }
 
     @JvmStatic
     fun getToday(): Calendar {
-        return Calendar.getInstance().apply {
+        return MyUtils.getInstance().apply {
             set(Calendar.HOUR_OF_DAY, 0)
             set(Calendar.MINUTE, 0)
             set(Calendar.SECOND, 0)
@@ -225,7 +225,7 @@ object TimeUtil {
     }
 
     @JvmStatic
-    fun getNow(): Calendar = Calendar.getInstance()
+    fun getNow(): Calendar = MyUtils.getInstance()
 
     // ==================== 时间格式化 ====================
 
@@ -260,7 +260,7 @@ object TimeUtil {
      */
     @JvmStatic
     fun getDateStr(plusDay: Int): String {
-        val c = Calendar.getInstance()
+        val c = MyUtils.getInstance()
         if (plusDay != 0) {
             c.add(Calendar.DATE, plusDay)
         }
@@ -281,7 +281,7 @@ object TimeUtil {
      */
     @JvmStatic
     fun getDateStr2(plusDay: Int): String {
-        val c = Calendar.getInstance()
+        val c = MyUtils.getInstance()
         if (plusDay != 0) {
             c.add(Calendar.DATE, plusDay)
         }
@@ -363,7 +363,7 @@ object TimeUtil {
     @JvmStatic
     @SuppressLint("SimpleDateFormat")
     fun getFormatTime(offset: Int, format: String): String {
-        val calendar = Calendar.getInstance()
+        val calendar = MyUtils.getInstance()
         calendar.add(Calendar.DAY_OF_YEAR, offset)
         val sdf = SimpleDateFormat(format)
         return sdf.format(calendar.time)
@@ -378,7 +378,7 @@ object TimeUtil {
      */
     @JvmStatic
     fun getWeekNumber(dateTime: Date): Int {
-        val calendar = Calendar.getInstance()
+        val calendar = MyUtils.getInstance()
         calendar.time = dateTime
         calendar.firstDayOfWeek = Calendar.MONDAY
         return calendar.get(Calendar.WEEK_OF_YEAR)

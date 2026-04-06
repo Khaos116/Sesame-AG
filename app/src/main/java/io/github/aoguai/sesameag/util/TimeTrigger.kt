@@ -575,14 +575,14 @@ object TimeTriggerEvaluator {
     }
 
     private fun getSecondOfDay(timeMillis: Long): Int {
-        val calendar = Calendar.getInstance().apply { timeInMillis = timeMillis }
+        val calendar = MyUtils.getInstance().apply { timeInMillis = timeMillis }
         return calendar.get(Calendar.HOUR_OF_DAY) * 3600 +
             calendar.get(Calendar.MINUTE) * 60 +
             calendar.get(Calendar.SECOND)
     }
 
     private fun toTodayTimeMillis(now: Long, secondOfDay: Int): Long {
-        val calendar = Calendar.getInstance().apply {
+        val calendar = MyUtils.getInstance().apply {
             timeInMillis = now
             set(Calendar.HOUR_OF_DAY, 0)
             set(Calendar.MINUTE, 0)

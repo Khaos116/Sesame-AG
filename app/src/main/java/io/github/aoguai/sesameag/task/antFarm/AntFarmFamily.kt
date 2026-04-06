@@ -10,6 +10,7 @@ import io.github.aoguai.sesameag.task.antFarm.AntFarm.AnimalInteractStatus
 import io.github.aoguai.sesameag.task.antSports.AntSportsRpcCall
 import io.github.aoguai.sesameag.util.GlobalThreadPools
 import io.github.aoguai.sesameag.util.Log
+import io.github.aoguai.sesameag.util.MyUtils
 import io.github.aoguai.sesameag.util.RandomUtil
 import io.github.aoguai.sesameag.util.ResChecker
 import io.github.aoguai.sesameag.util.maps.UserMap
@@ -480,17 +481,17 @@ data object AntFarmFamily {
                 }
             }
             var periodName = ""
-            val currentTime = Calendar.getInstance()
+            val currentTime = MyUtils.getInstance()
             for (i in 0..<periodItemList.length()) {
                 val periodItem = periodItemList.getJSONObject(i)
                 val startHour = periodItem.optInt("startHour")
                 val startMinute = periodItem.optInt("startMinute")
                 val endHour = periodItem.optInt("endHour")
                 val endMinute = periodItem.optInt("endMinute")
-                val startTime = Calendar.getInstance()
+                val startTime = MyUtils.getInstance()
                 startTime.set(Calendar.HOUR_OF_DAY, startHour)
                 startTime.set(Calendar.MINUTE, startMinute)
-                val endTime = Calendar.getInstance()
+                val endTime = MyUtils.getInstance()
                 endTime.set(Calendar.HOUR_OF_DAY, endHour)
                 endTime.set(Calendar.MINUTE, endMinute)
                 if (currentTime.after(startTime) && currentTime.before(endTime)) {
@@ -743,14 +744,14 @@ data object AntFarmFamily {
     fun deliverMsgSend(familyUserIds: MutableList<String>) {
         try {
             // 1. 时间窗口控制：仅允许在「早安时间段」内自动发送（06:00 ~ 10:00）
-            val now = Calendar.getInstance()
-            val startTime = Calendar.getInstance().apply {
+            val now = MyUtils.getInstance()
+            val startTime = MyUtils.getInstance().apply {
                 set(Calendar.HOUR_OF_DAY, 6)
                 set(Calendar.MINUTE, 0)
                 set(Calendar.SECOND, 0)
                 set(Calendar.MILLISECOND, 0)
             }
-            val endTime = Calendar.getInstance().apply {
+            val endTime = MyUtils.getInstance().apply {
                 set(Calendar.HOUR_OF_DAY, 10)
                 set(Calendar.MINUTE, 0)
                 set(Calendar.SECOND, 0)

@@ -6,6 +6,7 @@ import io.github.aoguai.sesameag.task.antForest.AntForest
 import io.github.aoguai.sesameag.util.Files
 import io.github.aoguai.sesameag.util.JsonUtil
 import io.github.aoguai.sesameag.util.Log
+import io.github.aoguai.sesameag.util.MyUtils
 import io.github.aoguai.sesameag.util.StringUtil
 import io.github.aoguai.sesameag.util.TimeUtil
 import io.github.aoguai.sesameag.util.maps.UserMap
@@ -109,7 +110,7 @@ class Status {
         @JvmStatic
         val currentDayTimestamp: Long
             get() {
-                val calendar = Calendar.getInstance()
+                val calendar = MyUtils.getInstance()
                 calendar.set(Calendar.HOUR_OF_DAY, 0)
                 calendar.set(Calendar.MINUTE, 0)
                 calendar.set(Calendar.SECOND, 0)
@@ -631,7 +632,7 @@ class Status {
 
         @Synchronized
         @JvmStatic
-        fun save(nowCalendar: Calendar = Calendar.getInstance()) {
+        fun save(nowCalendar: Calendar = MyUtils.getInstance()) {
             val currentUid = UserMap.currentUid
             if (currentUid.isNullOrEmpty()) {
                 Log.record(TAG, "用户为空，状态保存失败")

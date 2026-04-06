@@ -12,6 +12,7 @@ import io.github.aoguai.sesameag.task.ModelTask
 import io.github.aoguai.sesameag.task.TaskCommon
 import io.github.aoguai.sesameag.util.GlobalThreadPools.sleepCompat
 import io.github.aoguai.sesameag.util.Log
+import io.github.aoguai.sesameag.util.MyUtils
 import io.github.aoguai.sesameag.util.ResChecker
 import org.json.JSONObject
 import java.util.Calendar
@@ -57,7 +58,7 @@ class EcoProtection : ModelTask() {
         }
 
         if (ancientTreeOnlyWeek?.value == true) {
-            val dayOfWeek = Calendar.getInstance().get(Calendar.DAY_OF_WEEK)
+            val dayOfWeek = MyUtils.getInstance().get(Calendar.DAY_OF_WEEK)
             return dayOfWeek == Calendar.MONDAY ||
                 dayOfWeek == Calendar.WEDNESDAY ||
                 dayOfWeek == Calendar.FRIDAY

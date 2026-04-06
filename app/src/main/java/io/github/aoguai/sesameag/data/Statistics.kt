@@ -5,6 +5,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import io.github.aoguai.sesameag.util.Files
 import io.github.aoguai.sesameag.util.JsonUtil
 import io.github.aoguai.sesameag.util.Log
+import io.github.aoguai.sesameag.util.MyUtils
 import java.io.File
 import java.util.Calendar
 
@@ -214,7 +215,7 @@ object Statistics {
      * 验证并初始化统计数据
      */
     private fun validateAndInitialize() {
-        val now = Calendar.getInstance()
+        val now = MyUtils.getInstance()
         if (year.time == 0) year = TimeStatistics(now.get(Calendar.YEAR))
         if (month.time == 0) month = TimeStatistics(now.get(Calendar.MONTH) + 1)
         if (day.time == 0) day = TimeStatistics(now.get(Calendar.DAY_OF_MONTH))
@@ -226,7 +227,7 @@ object Statistics {
      */
     private fun resetToDefault() {
         try {
-            val now = Calendar.getInstance()
+            val now = MyUtils.getInstance()
             year = TimeStatistics(now.get(Calendar.YEAR))
             month = TimeStatistics(now.get(Calendar.MONTH) + 1)
             day = TimeStatistics(now.get(Calendar.DAY_OF_MONTH))
@@ -263,7 +264,7 @@ object Statistics {
     @JvmStatic
     @Synchronized
     fun save(userId: String?) {
-        save(userId, Calendar.getInstance())
+        save(userId, MyUtils.getInstance())
     }
 
     /**

@@ -1,6 +1,7 @@
 package io.github.aoguai.sesameag.model.modelFieldExt
 
 import com.fasterxml.jackson.annotation.JsonIgnore
+import io.github.aoguai.sesameag.util.MyUtils
 import io.github.aoguai.sesameag.util.TimeTriggerEvaluator
 import io.github.aoguai.sesameag.util.TimeTriggerParseOptions
 import io.github.aoguai.sesameag.util.TimeTriggerParser
@@ -172,7 +173,7 @@ class TimePointModelField(
             return null
         }
 
-        return Calendar.getInstance().apply {
+        return MyUtils.getInstance().apply {
             timeInMillis = referenceTime
             set(Calendar.HOUR_OF_DAY, hour)
             set(Calendar.MINUTE, minute)
@@ -357,7 +358,7 @@ class HourOfDayModelField(
     fun isBeforeCutoff(now: Long = System.currentTimeMillis()): Boolean {
         val token = getHourToken() ?: return false
         if (token == "2400") {
-            val calendar = Calendar.getInstance().apply { timeInMillis = now }
+            val calendar = MyUtils.getInstance().apply { timeInMillis = now }
             val secondOfDay = calendar.get(Calendar.HOUR_OF_DAY) * 3600 +
                 calendar.get(Calendar.MINUTE) * 60 +
                 calendar.get(Calendar.SECOND)

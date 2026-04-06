@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.core.type.TypeReference
 import io.github.aoguai.sesameag.util.DataStore
 import io.github.aoguai.sesameag.util.Log
+import io.github.aoguai.sesameag.util.MyUtils
 import io.github.aoguai.sesameag.util.maps.UserMap
 import java.util.Calendar
 
@@ -32,7 +33,7 @@ object RebornEnergyWeeklyPersistence {
     }
 
     fun getWeekStartTimestamp(now: Long = System.currentTimeMillis()): Long {
-        val cal = Calendar.getInstance().apply { timeInMillis = now }
+        val cal = MyUtils.getInstance().apply { timeInMillis = now }
         cal.set(Calendar.HOUR_OF_DAY, 0)
         cal.set(Calendar.MINUTE, 0)
         cal.set(Calendar.SECOND, 0)

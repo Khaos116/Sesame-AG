@@ -48,6 +48,7 @@ import io.github.aoguai.sesameag.util.Average
 import io.github.aoguai.sesameag.util.FriendGuard
 import io.github.aoguai.sesameag.util.GlobalThreadPools
 import io.github.aoguai.sesameag.util.Log
+import io.github.aoguai.sesameag.util.MyUtils
 import io.github.aoguai.sesameag.util.Notify.updateRunningLastExec
 import io.github.aoguai.sesameag.util.Notify.updateRunningStatus
 import io.github.aoguai.sesameag.util.RandomUtil
@@ -754,7 +755,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         // -----------------------------
         // 3️⃣ 只收能量时间段判断
         // -----------------------------
-        val now = Calendar.getInstance()
+        val now = MyUtils.getInstance()
         val hour = now.get(Calendar.HOUR_OF_DAY)
         val minute = now.get(Calendar.MINUTE)
         val isEnergyTime = TaskCommon.IS_ENERGY_TIME || hour == 7 && minute < 30
@@ -783,7 +784,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                         // 每次循环更新状态
                         TaskCommon.update()
                         // 如果不在能量时间段，退出循环
-                        val now = Calendar.getInstance()
+                        val now = MyUtils.getInstance()
                         val hour = now.get(Calendar.HOUR_OF_DAY)
                         val minute = now.get(Calendar.MINUTE)
                         if (!(TaskCommon.IS_ENERGY_TIME || hour == 7 && minute < 30)) {

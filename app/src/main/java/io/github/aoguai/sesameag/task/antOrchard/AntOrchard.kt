@@ -17,6 +17,7 @@ import io.github.aoguai.sesameag.util.CoroutineUtils
 import io.github.aoguai.sesameag.util.FriendGuard
 import io.github.aoguai.sesameag.util.GameTask
 import io.github.aoguai.sesameag.util.Log
+import io.github.aoguai.sesameag.util.MyUtils
 import io.github.aoguai.sesameag.util.RandomUtil
 import io.github.aoguai.sesameag.util.ResChecker
 import io.github.aoguai.sesameag.util.TaskBlacklist
@@ -438,7 +439,7 @@ class AntOrchard : ModelTask() {
     // ... 其余方法保持不变 ...
     private fun receiveMoneyTreeReward() {
         try {
-            val cal = Calendar.getInstance()
+            val cal = MyUtils.getInstance()
             val hour = cal.get(Calendar.HOUR_OF_DAY)
             // 每天7点后尝试领取
             if (hour >= 7 && !Status.hasFlagToday(STATUS_MONEY_TREE_COLLECTED)) {

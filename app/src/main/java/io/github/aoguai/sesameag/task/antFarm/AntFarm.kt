@@ -41,6 +41,7 @@ import io.github.aoguai.sesameag.util.FriendGuard
 import io.github.aoguai.sesameag.util.LogChannel
 import io.github.aoguai.sesameag.util.JsonUtil
 import io.github.aoguai.sesameag.util.Log
+import io.github.aoguai.sesameag.util.MyUtils
 import io.github.aoguai.sesameag.util.RandomUtil
 import io.github.aoguai.sesameag.util.ResChecker
 import io.github.aoguai.sesameag.util.TaskBlacklist
@@ -1121,10 +1122,10 @@ class AntFarm : ModelTask() {
             }
 
             val animalSleepTimeCalendar = animalSleepTime?.let {
-                Calendar.getInstance().apply { timeInMillis = it }
+              MyUtils.getInstance().apply { timeInMillis = it }
             }
             val animalWakeUpTimeCalendar = animalWakeUpTime?.let {
-                Calendar.getInstance().apply { timeInMillis = it }
+              MyUtils.getInstance().apply { timeInMillis = it }
             }
             val afterSleepTime = animalSleepTimeCalendar?.let { now > it } ?: false
             val afterWakeUpTime = animalWakeUpTimeCalendar?.let { now > it } ?: false
@@ -5090,17 +5091,17 @@ class AntFarm : ModelTask() {
                 }
             }
             var periodName = ""
-            val currentTime = Calendar.getInstance()
+            val currentTime = MyUtils.getInstance()
             for (i in 0..<periodItemList.length()) {
                 val periodItem = periodItemList.getJSONObject(i)
                 val startHour = periodItem.optInt("startHour")
                 val startMinute = periodItem.optInt("startMinute")
                 val endHour = periodItem.optInt("endHour")
                 val endMinute = periodItem.optInt("endMinute")
-                val startTime = Calendar.getInstance()
+                val startTime = MyUtils.getInstance()
                 startTime.set(Calendar.HOUR_OF_DAY, startHour)
                 startTime.set(Calendar.MINUTE, startMinute)
-                val endTime = Calendar.getInstance()
+                val endTime = MyUtils.getInstance()
                 endTime.set(Calendar.HOUR_OF_DAY, endHour)
                 endTime.set(Calendar.MINUTE, endMinute)
                 if (currentTime.after(startTime) && currentTime.before(endTime)) {

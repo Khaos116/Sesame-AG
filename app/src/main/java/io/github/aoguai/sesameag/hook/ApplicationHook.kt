@@ -67,6 +67,7 @@ import io.github.aoguai.sesameag.util.Log.error
 import io.github.aoguai.sesameag.util.Log.printStackTrace
 import io.github.aoguai.sesameag.util.Log.record
 import io.github.aoguai.sesameag.util.ModuleStatus
+import io.github.aoguai.sesameag.util.MyUtils
 import io.github.aoguai.sesameag.util.Notify
 import io.github.aoguai.sesameag.util.Notify.stopRunning
 import io.github.aoguai.sesameag.util.Notify.updateRunningStatus
@@ -502,7 +503,7 @@ class ApplicationHook {
                 ensureScheduler()
 
                 ensureMainTask()
-                dayCalendar = Calendar.getInstance()
+                dayCalendar = MyUtils.getInstance()
                 val initReason = pendingInitReason ?: "service_onCreate"
                 if (!init || pendingInit) {
                     if (initHandler(initReason)) {
@@ -878,7 +879,7 @@ class ApplicationHook {
         private var appVisibilityCallbacksRegistered = false
 
         init {
-            dayCalendar = Calendar.getInstance()
+            dayCalendar = MyUtils.getInstance()
             ApplicationHookUtils.resetToMidnight(dayCalendar!!)
         }
 
@@ -1221,7 +1222,7 @@ class ApplicationHook {
         }
 
         fun updateDay() {
-            val now = Calendar.getInstance()
+            val now = MyUtils.getInstance()
             if (dayCalendar == null || dayCalendar!!.get(Calendar.DAY_OF_MONTH) != now.get(Calendar.DAY_OF_MONTH)) {
                 dayCalendar = now.clone() as Calendar
                 ApplicationHookUtils.resetToMidnight(dayCalendar!!)
@@ -1283,7 +1284,7 @@ class ApplicationHook {
             }
 
             // 1. 每日0点
-            val calendar = Calendar.getInstance()
+            val calendar = MyUtils.getInstance()
             calendar.add(Calendar.DAY_OF_MONTH, 1)
             ApplicationHookUtils.resetToMidnight(calendar)
             val delayToMidnight = calendar.getTimeInMillis() - System.currentTimeMillis()
@@ -1304,7 +1305,7 @@ class ApplicationHook {
             val delay = nextWakeAt - now
             if (delay <= 0) return
 
-            val targetCalendar = Calendar.getInstance().apply { timeInMillis = nextWakeAt }
+            val targetCalendar = MyUtils.getInstance().apply { timeInMillis = nextWakeAt }
             val secondOfDay = targetCalendar.get(Calendar.HOUR_OF_DAY) * 3600 +
                 targetCalendar.get(Calendar.MINUTE) * 60 +
                 targetCalendar.get(Calendar.SECOND)
