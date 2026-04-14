@@ -3,8 +3,6 @@ package io.github.aoguai.sesameag.entity
 import io.github.aoguai.sesameag.util.Files
 import io.github.aoguai.sesameag.util.JsonUtil
 import io.github.aoguai.sesameag.util.Log
-import io.github.aoguai.sesameag.util.MyUtils
-import io.github.aoguai.sesameag.util.StringUtil
 import io.github.aoguai.sesameag.util.TimeUtil
 import io.github.aoguai.sesameag.util.maps.UserMap
 import org.json.JSONException
@@ -174,10 +172,10 @@ class FriendWatch(
         fun needUpdateAll(last: Long): Boolean {
             if (last == 0L) return true
 
-            val cLast = MyUtils.getInstance().apply {
+            val cLast = Calendar.getInstance().apply {
                 timeInMillis = last
             }
-            val cNow = MyUtils.getInstance()
+            val cNow = Calendar.getInstance()
 
             // 如果是同一天，不需要更新
             if (cLast.get(Calendar.DAY_OF_YEAR) == cNow.get(Calendar.DAY_OF_YEAR)) {

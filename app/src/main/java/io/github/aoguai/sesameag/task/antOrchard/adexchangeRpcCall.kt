@@ -32,7 +32,9 @@ object XLightRpcCall {
         session: String,
         spaceCode: String,
         referToken: String? = null,
+        searchInfo: JSONObject? = null,
         playingPageInfo: String? = null,
+        positionExtMap: JSONObject? = null,
         pageNo: Int = PAGE_NO,
         networkType: String = NETWORK_TYPE
     ): String {
@@ -40,13 +42,13 @@ object XLightRpcCall {
 
             // positionRequest
             val positionRequest = JSONObject().apply {
-                put("extMap", JSONObject())
+                put("extMap", positionExtMap ?: JSONObject())
                 put("referInfo", JSONObject().apply {
                     if (!referToken.isNullOrBlank()) {
                         put("referToken", referToken)
                     }
                 })
-                put("searchInfo", JSONObject())
+                put("searchInfo", searchInfo ?: JSONObject())
                 put("spaceCode", spaceCode)
             }
 

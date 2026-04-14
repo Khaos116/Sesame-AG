@@ -306,6 +306,22 @@ object AntMemberRpcCall {
     }
 
     @JvmStatic
+    fun querySingleAdTaskProcessDetail(taskConfigId: String, adBizId: String): String {
+        val args = JSONObject().apply {
+            put("adBizId", adBizId)
+            put("adTaskFlag", true)
+            put("alipayGrowthFlag", false)
+            put("configId", taskConfigId)
+            put("sourcePassMap", buildMemberSourcePassMap())
+            put("taskProcessId", "")
+        }
+        return RequestManager.requestString(
+            "com.alipay.amic.memtask.h5.MemTaskListQueryFacade.querySingleTaskProcessDetail",
+            JSONArray().put(args).toString()
+        )
+    }
+
+    @JvmStatic
     fun awardMemberTaskProcess(awardRelatedOutBizNo: String, taskProcessId: String): String {
         val args = JSONObject().apply {
             put("awardRelatedOutBizNo", awardRelatedOutBizNo)

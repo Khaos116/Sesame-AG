@@ -109,8 +109,6 @@ private val orchardDefaultBlacklist = setOf(
     "分享给好友",
     "合种/帮帮种多人施肥",
     "帮帮种组队",
-    "逛好物最高得3000肥",
-    "看精选商品得肥料",
     "去天猫攒福气兑红包"
 )
 

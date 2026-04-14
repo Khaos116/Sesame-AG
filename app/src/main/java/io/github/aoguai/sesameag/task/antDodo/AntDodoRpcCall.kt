@@ -2,6 +2,7 @@ package io.github.aoguai.sesameag.task.antDodo
 
 import io.github.aoguai.sesameag.hook.RequestManager
 import io.github.aoguai.sesameag.util.RandomUtil
+import org.json.JSONObject
 
 /**
  * 神奇物种RPC调用
@@ -105,10 +106,16 @@ object AntDodoRpcCall {
      * @param propType 道具类型
      */
     @JvmStatic
-    fun consumeProp(propId: String, propType: String): String {
+    fun consumeProp(propId: String, propType: String, animalId: String? = null): String {
+        val args = JSONObject()
+        args.put("propId", propId)
+        args.put("propType", propType)
+        if (!animalId.isNullOrBlank()) {
+            args.put("extendInfo", JSONObject().put("animalId", animalId))
+        }
         return RequestManager.requestString(
             "alipay.antdodo.rpc.h5.consumeProp",
-            "[{\"propId\":\"$propId\",\"propType\":\"$propType\"}]"
+            "[$args]"
         )
     }
 

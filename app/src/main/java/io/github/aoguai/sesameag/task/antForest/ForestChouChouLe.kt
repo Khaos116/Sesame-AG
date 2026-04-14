@@ -1,6 +1,7 @@
 package io.github.aoguai.sesameag.task.antForest
 
 import io.github.aoguai.sesameag.data.Status
+import io.github.aoguai.sesameag.data.StatusFlags
 import io.github.aoguai.sesameag.task.TaskStatus
 import io.github.aoguai.sesameag.util.GlobalThreadPools.sleepCompat
 import io.github.aoguai.sesameag.util.Log
@@ -60,8 +61,8 @@ class ForestChouChouLe {
         // 动态获取抽奖场景配置
         private fun getScenes(): List<Scene> {
             val defaultScenes = listOf(
-                Scene("2025112701", SCENE_NORMAL, "森林寻宝", "forest::chouChouLe::normal::completed"),
-                Scene("20251024", SCENE_ACTIVITY, "森林寻宝IP", "forest::chouChouLe::activity::completed")
+                Scene("2025112701", SCENE_NORMAL, "森林寻宝", StatusFlags.FLAG_ANTFOREST_CHOUCHOULE_NORMAL_COMPLETED),
+                Scene("20251024", SCENE_ACTIVITY, "森林寻宝IP", StatusFlags.FLAG_ANTFOREST_CHOUCHOULE_ACTIVITY_COMPLETED)
             )
 
             return runCatching {
@@ -81,9 +82,11 @@ class ForestChouChouLe {
                         val name = sceneGroup.optString("name", "未知活动")
 
                         val flag = when (sceneCode) {
-                            SCENE_NORMAL -> "forest::chouChouLe::normal::completed"
-                            SCENE_ACTIVITY -> "forest::chouChouLe::activity::completed"
-                            else -> "forest::chouChouLe::${sceneCode.lowercase(Locale.getDefault())}::completed"
+                            SCENE_NORMAL -> StatusFlags.FLAG_ANTFOREST_CHOUCHOULE_NORMAL_COMPLETED
+                            SCENE_ACTIVITY -> StatusFlags.FLAG_ANTFOREST_CHOUCHOULE_ACTIVITY_COMPLETED
+                            else -> StatusFlags.FLAG_ANTFOREST_CHOUCHOULE_COMPLETED_PREFIX +
+                                sceneCode.lowercase(Locale.getDefault()) +
+                                StatusFlags.FLAG_ANTFOREST_CHOUCHOULE_COMPLETED_SUFFIX
                         }
                         scenes.add(Scene(activityId, sceneCode, name, flag))
                     }
@@ -97,6 +100,7 @@ class ForestChouChouLe {
     }
 
     private val taskTryCount = ConcurrentHashMap<String, AtomicInteger>()
+    private val rewardHandledTaskKeys = ConcurrentHashMap.newKeySet<String>()
 
     fun chouChouLe() {
         runCatching {
@@ -120,6 +124,7 @@ class ForestChouChouLe {
             return@runCatching
         }
 
+        rewardHandledTaskKeys.clear()
         Log.forest("👉 开始处理: ${s.name}")
 
         // 1. 检查活动有效期
@@ -238,7 +243,10 @@ class ForestChouChouLe {
             if (isBlockedTask(taskType, taskName)) continue
 
             total++
-            if (taskStatus == TaskStatus.RECEIVED.name) {
+            if (
+                taskStatus == TaskStatus.RECEIVED.name ||
+                rewardHandledTaskKeys.contains(buildRewardHandledTaskKey(baseInfo.optString("sceneCode"), taskType))
+            ) {
                 completed++
             } else {
                 allDone = false
@@ -329,15 +337,21 @@ class ForestChouChouLe {
         sleepCompat(100L)
         val res = AntForestRpcCall.receiveTaskAwardopengreen(SOURCE, code, type).toJson()
         return if (res != null && res.isTaskAwardAlreadyFinished()) {
+            rewardHandledTaskKeys.add(buildRewardHandledTaskKey(code, type))
             Log.forest("${s.name} 奖励已领取: $name")
             false
         } else if (res != null && res.check()) {
+            rewardHandledTaskKeys.add(buildRewardHandledTaskKey(code, type))
             Log.forest("${s.name} 🧾 $name 奖励领取成功")
             true
         } else {
             Log.error(TAG, "${s.name} 奖励领取失败: $name")
             false
         }
+    }
+
+    private fun buildRewardHandledTaskKey(sceneCode: String, taskType: String): String {
+        return "$sceneCode#$taskType"
     }
 }
 

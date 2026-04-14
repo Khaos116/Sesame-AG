@@ -80,27 +80,33 @@ enum class GameTask(
     }
 
     /**
-     * 外部调用：执行上报任务
+     * 外部调用：执行上报任务 (改为协程版本)
+     * @return Boolean 是否达到完成任务所需的最小成功次数
      */
-    suspend fun report(eggCount: Int) {
+    suspend fun report(eggCount: Int): Boolean {
+        val requiredSuccesses = eggCount * requestsPerEgg
         val totalNeeded = (eggCount * requestsPerEgg) + 1 //正常不需要加1，多1次确保网络请求不会错误
 
         cachedToken = login()
         if (cachedToken.isNullOrEmpty()) {
             logTask("⚠️ 无法获取有效的 Token，放弃上报任务")
-            return
+            return false
         }
 
+        var successCount = 0
         //Log.record(title, "🚀 开始执行任务：目标 $eggCount 个蛋，需请求 $totalNeeded 次")
         for (i in 1..totalNeeded) {
             // 执行单次上报
-            if (!executeSingleReport(i, totalNeeded)) {
-                // 具体的错误原因已在 executeSingleReport 中详细输出
+            if (executeSingleReport(i, totalNeeded)) {
+                successCount++
+            } else {
+                // 如果第一次就失败，或者中途由于 Token 失效等原因失败
                 break
             }
             if (i < totalNeeded) delay((1000..3000).random().toLong())
         }
         //Log.record(title, "🏁 任务流程运行结束")
+        return successCount >= requiredSuccesses
     }
 
     private fun executeSingleReport(current: Int, total: Int): Boolean {

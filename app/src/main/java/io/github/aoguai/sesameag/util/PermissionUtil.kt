@@ -12,7 +12,7 @@ import android.os.Build
 import android.os.Environment
 import android.os.PowerManager
 import android.provider.Settings
-import androidx.core.app.ActivityCompat
+import androidx.activity.result.ActivityResultLauncher
 import androidx.core.content.ContextCompat
 import io.github.aoguai.sesameag.BuildConfig
 import io.github.aoguai.sesameag.hook.ApplicationHook
@@ -24,9 +24,6 @@ import io.github.aoguai.sesameag.hook.ApplicationHook
 object PermissionUtil {
     // 修复 TAG 获取错误
     private val TAG: String = PermissionUtil::class.java.simpleName
-
-    private const val REQUEST_EXTERNAL_STORAGE = 1
-    private const val REQUEST_NOTIFICATION = 2
 
     // 基础存储权限 (Android 10及以下)
     private val PERMISSIONS_STORAGE = arrayOf(
@@ -55,7 +52,10 @@ object PermissionUtil {
      *
      * 仅允许从模块前台 Activity 发起；自动调度链路只能读取权限状态。
      */
-    fun checkOrRequestFilePermissions(activity: Activity): Boolean {
+    fun checkOrRequestFilePermissions(
+        activity: Activity,
+        permissionLauncher: ActivityResultLauncher<Array<String>>
+    ): Boolean {
         if (checkFilePermissions(activity)) return true
         if (!ensureModulePermissionRequestHost(activity, "file")) return false
 
@@ -67,8 +67,7 @@ object PermissionUtil {
                 }
                 startActivitySafely(activity, intent, Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
             } else {
-                // Android 10-: 请求读写权限
-                ActivityCompat.requestPermissions(activity, PERMISSIONS_STORAGE, REQUEST_EXTERNAL_STORAGE)
+                permissionLauncher.launch(PERMISSIONS_STORAGE)
             }
         } catch (e: Exception) {
             Log.printStackTrace(TAG, "请求文件权限失败", e)
@@ -172,13 +171,16 @@ object PermissionUtil {
      *
      * 仅允许从模块前台 Activity 发起；自动调度链路只能读取权限状态。
      */
-    fun checkOrRequestNotificationPermission(activity: Activity): Boolean {
+    fun checkOrRequestNotificationPermission(
+        activity: Activity,
+        permissionLauncher: ActivityResultLauncher<Array<String>>
+    ): Boolean {
         if (checkNotificationPermission(activity)) return true
         if (!ensureModulePermissionRequestHost(activity, "notification")) return false
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             try {
-                ActivityCompat.requestPermissions(activity, arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFICATION)
+                permissionLauncher.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS))
             } catch (e: Exception) {
                 Log.printStackTrace(TAG, "请求通知权限失败", e)
             }

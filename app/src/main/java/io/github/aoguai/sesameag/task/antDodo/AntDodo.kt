@@ -2,6 +2,7 @@ package io.github.aoguai.sesameag.task.antDodo
 
 import com.fasterxml.jackson.core.type.TypeReference
 import org.json.JSONException
+import org.json.JSONArray
 import org.json.JSONObject
 import io.github.aoguai.sesameag.entity.AlipayUser
 import io.github.aoguai.sesameag.model.BaseModel
@@ -332,36 +333,57 @@ class AntDodo : ModelTask() {
                 }
                 val jo = JSONObject(response)
                 if (ResChecker.checkRes(TAG, jo)) {
-                    val propList = jo.getJSONObject("data").optJSONArray("propList") ?: return
+                    val propList = jo.getJSONObject("data").optJSONArray("propList")
+                    if (propList == null || propList.length() == 0) {
+                        Log.forest(TAG, "神奇物种道具跳过：未找到可使用的道具")
+                        return
+                    }
                     for (i in 0 until propList.length()) {
                         val prop = propList.getJSONObject(i)
-                        val propType = prop.getString("propType")
-                        val usePropType = isUsePropType(propType)
-                        if (!usePropType) {
+                        val propType = prop.optString("propType")
+                        val propName = prop.optJSONObject("propConfig")?.optString("propName")
+                            ?.takeIf { it.isNotBlank() } ?: propType
+                        if (!isUsePropType(propType)) {
+                            Log.forest(TAG, "神奇物种道具跳过[$propName]：配置未开启")
                             continue
                         }
-                        val propIdList = prop.getJSONArray("propIdList")
+                        val propIdList = prop.optJSONArray("propIdList")
+                        if (propIdList == null || propIdList.length() == 0) {
+                            Log.runtime(TAG, "神奇物种道具[$propName]缺少propIdList")
+                            continue
+                        }
                         val propId = propIdList.getString(0)
-                        val propName = prop.getJSONObject("propConfig").getString("propName")
-                        val holdsNum = prop.optInt("holdsNum", 0)
-                        val consumeResponse = AntDodoRpcCall.consumeProp(propId, propType)
+                        val holdsNum = prop.optInt("holdsNum", propIdList.length())
+                        val consumeTargetResult = resolvePropConsumeTarget(propType)
+                        val consumeTarget = consumeTargetResult?.target
+                        if (isUniversalCardProp(propType)) {
+                            if (consumeTargetResult == null || !consumeTargetResult.querySucceeded) {
+                                Log.forest(TAG, "神奇物种道具跳过[$propName]：目标卡查询失败")
+                                continue
+                            }
+                            if (consumeTarget == null) {
+                                Log.forest(TAG, "神奇物种道具跳过[$propName]：未找到可兑换的目标卡片")
+                                continue
+                            }
+                        }
+                        val consumeResponse = AntDodoRpcCall.consumeProp(propId, propType, consumeTarget?.animalId)
                         if (consumeResponse.isNullOrEmpty()) {
                             Log.runtime(TAG, "consumeProp返回空")
                             continue
                         }
                         val joConsume = JSONObject(consumeResponse)
                         if (!ResChecker.checkRes(TAG, joConsume)) {
-                            Log.forest(joConsume.getString("resultDesc"))
+                            Log.forest(TAG, "神奇物种道具使用失败[$propName]：${joConsume.optString("resultDesc", "未知错误")}")
                             Log.runtime(joConsume.toString())
                             continue
                         }
-                        if ("COLLECT_TIMES_7_DAYS" == propType) {
-                            val useResult = joConsume.getJSONObject("data").getJSONObject("useResult")
-                            val animal = useResult.getJSONObject("animal")
-                            val ecosystem = animal.getString("ecosystem")
-                            val name = animal.getString("name")
-                            Log.forest("使用道具🎭[$propName]#$ecosystem-$name")
-                            if (giftTargetUserId != null) {
+                        val useResult = joConsume.optJSONObject("data")?.optJSONObject("useResult")
+                        val animal = useResult?.optJSONObject("animal")
+                        if (animal != null) {
+                            val ecosystem = animal.optString("ecosystem")
+                            val name = animal.optString("name")
+                            Log.forest("使用道具🎭[$propName]#${formatAnimalDisplayName(ecosystem, name)}")
+                            if (giftTargetUserId != null && isUniversalCardProp(propType)) {
                                 val fantasticStarQuantity = animal.optInt("fantasticStarQuantity", 0)
                                 if (fantasticStarQuantity == 3) {
                                     sendCard(animal, giftTargetUserId)
@@ -370,6 +392,7 @@ class AntDodo : ModelTask() {
                         } else {
                             Log.forest("使用道具🎭[$propName]")
                         }
+                        logPropRefreshState(propType, propName, consumeTarget, animal)
                         GlobalThreadPools.sleepCompat(300)
                         if (holdsNum > 1) {
                             continue@th
@@ -386,13 +409,272 @@ class AntDodo : ModelTask() {
 
     private fun isUsePropType(propType: String): Boolean {
         var usePropType = useProp?.value ?: false
-        usePropType = when (propType) {
-            "COLLECT_TIMES_7_DAYS" -> usePropType || (usePropCollectTimes7Days?.value ?: false)
-            "COLLECT_HISTORY_ANIMAL_7_DAYS" -> usePropType || (usePropCollectHistoryAnimal7Days?.value ?: false)
-            "COLLECT_TO_FRIEND_TIMES_7_DAYS" -> usePropType || (usePropCollectToFriendTimes7Days?.value ?: false)
-            else -> usePropType
+        usePropType = when (resolvePropKind(propType)) {
+            DodoPropKind.UNIVERSAL_CARD -> usePropType || (usePropCollectTimes7Days?.value ?: false)
+            DodoPropKind.HISTORY_CARD -> usePropType || (usePropCollectHistoryAnimal7Days?.value ?: false)
+            DodoPropKind.FRIEND_CARD -> usePropType || (usePropCollectToFriendTimes7Days?.value ?: false)
+            DodoPropKind.OTHER -> usePropType
         }
         return usePropType
+    }
+
+    private fun isUniversalCardProp(propType: String): Boolean {
+        return resolvePropKind(propType) == DodoPropKind.UNIVERSAL_CARD
+    }
+
+    private fun resolvePropKind(propType: String): DodoPropKind {
+        return when (propType) {
+            "COLLECT_TIMES_7_DAYS",
+            "UNIVERSAL_CARD_7_DAYS" -> DodoPropKind.UNIVERSAL_CARD
+            "COLLECT_HISTORY_ANIMAL_7_DAYS" -> DodoPropKind.HISTORY_CARD
+            "COLLECT_TO_FRIEND_TIMES_7_DAYS" -> DodoPropKind.FRIEND_CARD
+            else -> DodoPropKind.OTHER
+        }
+    }
+
+    private fun resolvePropConsumeTarget(propType: String): PropTargetQueryResult? {
+        return when (resolvePropKind(propType)) {
+            DodoPropKind.UNIVERSAL_CARD -> resolveUniversalCardTarget()
+            else -> null
+        }
+    }
+
+    private fun resolveUniversalCardTarget(): PropTargetQueryResult {
+        val currentBookTarget = queryCurrentBookUniversalCardTarget()
+        if (!currentBookTarget.querySucceeded) {
+            return currentBookTarget
+        }
+        currentBookTarget.target?.let { return PropTargetQueryResult(it, true) }
+        return queryHistoricalBookUniversalCardTarget()
+    }
+
+    private fun queryCurrentBookUniversalCardTarget(): PropTargetQueryResult {
+        return try {
+            val response = AntDodoRpcCall.homePage()
+            if (response.isNullOrEmpty()) {
+                Log.runtime(TAG, "万能卡目标查询homePage返回空")
+                return PropTargetQueryResult(null, false)
+            }
+            val jo = JSONObject(response)
+            if (!ResChecker.checkRes(TAG, jo)) {
+                Log.runtime(TAG, "万能卡目标查询homePage失败：${jo.optString("resultDesc")}")
+                return PropTargetQueryResult(null, false)
+            }
+            val data = jo.getJSONObject("data")
+            val animalBook = data.optJSONObject("animalBook")
+            if (animalBook?.optBoolean("stopAnimalCirculation") == true) {
+                return PropTargetQueryResult(null, true)
+            }
+            val currentBookId = animalBook?.optString("bookId").orEmpty()
+            PropTargetQueryResult(
+                findMissingAnimalTarget(data.optJSONArray("curCollection"), currentBookId),
+                true
+            )
+        } catch (t: Throwable) {
+            Log.printStackTrace(TAG, "queryCurrentBookUniversalCardTarget err:", t)
+            PropTargetQueryResult(null, false)
+        }
+    }
+
+    private fun queryHistoricalBookUniversalCardTarget(): PropTargetQueryResult {
+        return try {
+            var hasMore: Boolean
+            var pageStart = 0
+            var queryFailed = false
+            do {
+                val response = AntDodoRpcCall.queryBookList(9, pageStart)
+                if (response.isNullOrEmpty()) {
+                    Log.runtime(TAG, "万能卡目标查询queryBookList返回空")
+                    return PropTargetQueryResult(null, false)
+                }
+                val jo = JSONObject(response)
+                if (!ResChecker.checkRes(TAG, jo)) {
+                    Log.runtime(TAG, "万能卡目标查询queryBookList失败：${jo.optString("resultDesc")}")
+                    return PropTargetQueryResult(null, false)
+                }
+                val data = jo.getJSONObject("data")
+                hasMore = data.optBoolean("hasMore")
+                pageStart += 9
+                val bookForUserList = data.optJSONArray("bookForUserList") ?: break
+                for (i in 0 until bookForUserList.length()) {
+                    val bookForUser = bookForUserList.optJSONObject(i) ?: continue
+                    val animalBookResult = bookForUser.optJSONObject("animalBookResult")
+                    if (animalBookResult?.optBoolean("stopAnimalCirculation") == true) {
+                        continue
+                    }
+                    val bookId = animalBookResult?.optString("bookId").orEmpty()
+                    if (bookId.isBlank()) {
+                        continue
+                    }
+                    val targetResult = queryBookUniversalCardTarget(bookId)
+                    if (!targetResult.querySucceeded) {
+                        queryFailed = true
+                        continue
+                    }
+                    targetResult.target?.let { return PropTargetQueryResult(it, true) }
+                }
+            } while (hasMore && !Thread.currentThread().isInterrupted)
+            if (queryFailed) {
+                PropTargetQueryResult(null, false)
+            } else {
+                PropTargetQueryResult(null, true)
+            }
+        } catch (t: Throwable) {
+            Log.printStackTrace(TAG, "queryHistoricalBookUniversalCardTarget err:", t)
+            PropTargetQueryResult(null, false)
+        }
+    }
+
+    private fun queryBookUniversalCardTarget(bookId: String): PropTargetQueryResult {
+        val response = AntDodoRpcCall.queryBookInfo(bookId)
+        if (response.isNullOrEmpty()) {
+            Log.runtime(TAG, "万能卡目标查询queryBookInfo返回空，bookId=$bookId")
+            return PropTargetQueryResult(null, false)
+        }
+        val jo = JSONObject(response)
+        if (!ResChecker.checkRes(TAG, jo)) {
+            Log.runtime(TAG, "万能卡目标查询queryBookInfo失败，bookId=$bookId：${jo.optString("resultDesc")}")
+            return PropTargetQueryResult(null, false)
+        }
+        val data = jo.getJSONObject("data")
+        if (data.optJSONObject("animalBookResult")?.optBoolean("stopAnimalCirculation") == true) {
+            return PropTargetQueryResult(null, true)
+        }
+        return PropTargetQueryResult(
+            findMissingAnimalTarget(data.optJSONArray("animalForUserList"), bookId),
+            true
+        )
+    }
+
+    private fun findMissingAnimalTarget(collection: JSONArray?, fallbackBookId: String): PropConsumeTarget? {
+        if (collection == null) {
+            return null
+        }
+        for (i in 0 until collection.length()) {
+            val item = collection.optJSONObject(i) ?: continue
+            val collectDetail = item.optJSONObject("collectDetail")
+            if (isCollectedAnimal(collectDetail)) {
+                continue
+            }
+            val animal = item.optJSONObject("animal") ?: continue
+            val animalId = animal.optString("animalId")
+            val bookId = animal.optString("bookId").ifBlank { fallbackBookId }
+            if (animalId.isBlank() || bookId.isBlank()) {
+                continue
+            }
+            return PropConsumeTarget(
+                bookId = bookId,
+                animalId = animalId,
+                ecosystem = animal.optString("ecosystem"),
+                name = animal.optString("name")
+            )
+        }
+        return null
+    }
+
+    private fun isCollectedAnimal(collectDetail: JSONObject?): Boolean {
+        if (collectDetail == null) {
+            return false
+        }
+        return collectDetail.optBoolean("collect") ||
+            collectDetail.optBoolean("hasCollected") ||
+            collectDetail.optInt("count", 0) > 0
+    }
+
+    private fun logPropRefreshState(
+        propType: String,
+        propName: String,
+        consumeTarget: PropConsumeTarget?,
+        usedAnimal: JSONObject?
+    ) {
+        val refreshParts = mutableListOf<String>()
+        queryPropHoldNum(propType)?.let {
+            refreshParts.add("剩余${it}张")
+        }
+        val verifyBookId = usedAnimal?.optString("bookId").orEmpty().ifBlank { consumeTarget?.bookId.orEmpty() }
+        val verifyAnimalId = usedAnimal?.optString("animalId").orEmpty().ifBlank { consumeTarget?.animalId.orEmpty() }
+        if (verifyBookId.isNotBlank() && verifyAnimalId.isNotBlank()) {
+            when (queryAnimalCollectedState(verifyBookId, verifyAnimalId)) {
+                true -> refreshParts.add("目标卡已入库")
+                false -> refreshParts.add("目标卡状态未确认")
+                null -> Log.runtime(TAG, "神奇物种道具刷新[$propName]：目标卡查询失败")
+            }
+        }
+        if (refreshParts.isNotEmpty()) {
+            Log.forest(TAG, "神奇物种道具刷新[$propName]：${refreshParts.joinToString("，")}")
+        }
+    }
+
+    private fun queryPropHoldNum(propType: String): Int? {
+        return try {
+            val response = AntDodoRpcCall.propList()
+            if (response.isNullOrEmpty()) {
+                Log.runtime(TAG, "道具刷新propList返回空")
+                return null
+            }
+            val jo = JSONObject(response)
+            if (!ResChecker.checkRes(TAG, jo)) {
+                Log.runtime(TAG, "道具刷新propList失败：${jo.optString("resultDesc")}")
+                return null
+            }
+            val propList = jo.getJSONObject("data").optJSONArray("propList") ?: return 0
+            var holdsNum = 0
+            val targetKind = resolvePropKind(propType)
+            for (i in 0 until propList.length()) {
+                val prop = propList.optJSONObject(i) ?: continue
+                val currentPropType = prop.optString("propType")
+                when (targetKind) {
+                    DodoPropKind.OTHER -> if (currentPropType != propType) {
+                        continue
+                    }
+                    else -> if (resolvePropKind(currentPropType) != targetKind) {
+                        continue
+                    }
+                }
+                val propIdList = prop.optJSONArray("propIdList")
+                holdsNum += prop.optInt("holdsNum", propIdList?.length() ?: 0)
+            }
+            holdsNum
+        } catch (t: Throwable) {
+            Log.printStackTrace(TAG, "queryPropHoldNum err:", t)
+            null
+        }
+    }
+
+    private fun queryAnimalCollectedState(bookId: String, animalId: String): Boolean? {
+        return try {
+            val response = AntDodoRpcCall.queryBookInfo(bookId)
+            if (response.isNullOrEmpty()) {
+                Log.runtime(TAG, "目标卡刷新queryBookInfo返回空，bookId=$bookId")
+                return null
+            }
+            val jo = JSONObject(response)
+            if (!ResChecker.checkRes(TAG, jo)) {
+                Log.runtime(TAG, "目标卡刷新queryBookInfo失败，bookId=$bookId：${jo.optString("resultDesc")}")
+                return null
+            }
+            val animalForUserList = jo.getJSONObject("data").optJSONArray("animalForUserList") ?: return null
+            for (i in 0 until animalForUserList.length()) {
+                val item = animalForUserList.optJSONObject(i) ?: continue
+                val currentAnimalId = item.optJSONObject("animal")?.optString("animalId").orEmpty()
+                if (currentAnimalId == animalId) {
+                    return isCollectedAnimal(item.optJSONObject("collectDetail"))
+                }
+            }
+            false
+        } catch (t: Throwable) {
+            Log.printStackTrace(TAG, "queryAnimalCollectedState err:", t)
+            null
+        }
+    }
+
+    private fun formatAnimalDisplayName(ecosystem: String, name: String): String {
+        return when {
+            ecosystem.isBlank() && name.isBlank() -> "未知物种"
+            ecosystem.isBlank() -> name
+            name.isBlank() -> ecosystem
+            else -> "$ecosystem-$name"
+        }
     }
 
     private fun resolveSendFriendCardTarget(): String? {
@@ -548,12 +830,18 @@ class AntDodo : ModelTask() {
                         val userName = UserMap.getMaskName(useId)
                         Log.forest("神奇物种🦕帮好友[$userName]抽卡[$ecosystem]#$name")
                         count--
-                    } else {
-                        Log.runtime(TAG, jo.getString("resultDesc"))
+                    } else if (!ResChecker.isSilentFailure(jo)) {
+                        val message = jo.optString("resultDesc").ifBlank {
+                            jo.optString("desc", "帮好友抽卡失败")
+                        }
+                        Log.runtime(TAG, message)
                     }
                 }
-            } else {
-                Log.runtime(TAG, jo.getString("resultDesc"))
+            } else if (!ResChecker.isSilentFailure(jo)) {
+                val message = jo.optString("resultDesc").ifBlank {
+                    jo.optString("desc", "查询神奇物种好友列表失败")
+                }
+                Log.runtime(TAG, message)
             }
         } catch (t: Throwable) {
             Log.runtime(TAG, "AntDodo CollectHelpFriend err:")
@@ -615,6 +903,25 @@ class AntDodo : ModelTask() {
             val nickNames = arrayOf("选中帮抽卡", "选中不帮抽卡")
         }
     }
+
+    private enum class DodoPropKind {
+        UNIVERSAL_CARD,
+        HISTORY_CARD,
+        FRIEND_CARD,
+        OTHER
+    }
+
+    private data class PropConsumeTarget(
+        val bookId: String,
+        val animalId: String,
+        val ecosystem: String,
+        val name: String
+    )
+
+    private data class PropTargetQueryResult(
+        val target: PropConsumeTarget?,
+        val querySucceeded: Boolean
+    )
 
     companion object {
         private val TAG = AntDodo::class.java.simpleName

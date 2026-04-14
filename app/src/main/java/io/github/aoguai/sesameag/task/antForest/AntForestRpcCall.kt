@@ -20,6 +20,7 @@ object AntForestRpcCall {
     private const val ENERGY_RAIN_SOURCE = "forest"
     private const val ENERGY_RAIN_VERSION = "20230501"
     const val OPEN_GREEN_RIGHTS_SOURCE = "chInfo_ch_appid-60000002"
+    internal const val BACK_FROM_ENERGY_RAIN_SOURCE = "backFromEnergyRain"
     private var VERSION = "20250818"
     private var HOME_PAGE_VERSION = "20250818"
     private var TASK_LIST_VERSION = "20250821"
@@ -245,12 +246,13 @@ object AntForestRpcCall {
 
     @JvmStatic
     @Throws(JSONException::class)
-    fun queryHomePage(): String {
+    fun queryHomePage(source: String? = null): String {
+        val actualSource = source ?: DEFAULT_SOURCE
         val requestObject = JSONObject().apply {
             put("activityParam", JSONObject())
             put("configVersionMap", JSONObject().put("wateringBubbleConfig", "0"))
             put("skipWhackMole", false)
-            put("source", DEFAULT_SOURCE)
+            put("source", actualSource)
             put("version", HOME_PAGE_VERSION)
         }
         return RequestManager.requestString(
@@ -280,9 +282,10 @@ object AntForestRpcCall {
     }
 
     @JvmStatic
-    fun queryFriendHomePage(userId: String, fromAct: String?): String {
+    fun queryFriendHomePage(userId: String, fromAct: String?, source: String? = null): String {
         return try {
             val actualFromAct = fromAct ?: "TAKE_LOOK_FRIEND"
+            val actualSource = source ?: DEFAULT_SOURCE
             val arg = JSONObject().apply {
                 put("activityParam", JSONObject())
                 put("canRobFlags", "T,F,F,F,F")
@@ -290,7 +293,7 @@ object AntForestRpcCall {
                 put("currentEnergy", 0)
                 put("currentVitalityAmount", 0)
                 put("skipWhackMole", false)
-                put("source", DEFAULT_SOURCE)
+                put("source", actualSource)
                 put("userId", userId)
                 put("fromAct", actualFromAct)
                 put("version", HOME_PAGE_VERSION)
@@ -306,13 +309,14 @@ object AntForestRpcCall {
      * 找能量方法 - 查找可收取能量的好友（带跳过用户列表）
      */
     @JvmStatic
-    fun takeLook(skipUsers: JSONObject): String {
+    fun takeLook(skipUsers: JSONObject, source: String? = null): String {
         return try {
+            val actualSource = source ?: DEFAULT_SOURCE
             val requestData = JSONObject().apply {
                 put("contactsStatus", "N")
                 put("exposedUserId", "")
                 put("skipUsers", skipUsers)
-                put("source", "chInfo_ch_appcenter__chsub_9patch")
+                put("source", actualSource)
                 put("takeLookEnd", false)
                 put("takeLookStart", true)
                 put("version", VERSION)
@@ -325,12 +329,18 @@ object AntForestRpcCall {
     }
 
     @JvmStatic
-    fun energyRpcEntity(bizType: String, userId: String, bubbleId: Long): RpcEntity? {
+    fun energyRpcEntity(
+        bizType: String,
+        userId: String,
+        bubbleId: Long,
+        source: String? = null
+    ): RpcEntity? {
         return try {
+            val actualSource = source ?: DEFAULT_SOURCE
             val args = JSONObject().apply {
                 put("bizType", bizType)
                 put("bubbleIds", JSONArray().put(bubbleId))
-                put("source", "chInfo_ch_appcenter__chsub_9patch")
+                put("source", actualSource)
                 put("userId", userId)
                 put("version", VERSION)
             }
@@ -342,19 +352,25 @@ object AntForestRpcCall {
     }
 
     @JvmStatic
-    fun collectEnergy(bizType: String, userId: String, bubbleId: Long): String {
-        val r = energyRpcEntity(bizType, userId, bubbleId) ?: return ""
+    fun collectEnergy(bizType: String, userId: String, bubbleId: Long, source: String? = null): String {
+        val r = energyRpcEntity(bizType, userId, bubbleId, source) ?: return ""
         return RequestManager.requestString(r)
     }
 
     @JvmStatic
     @Throws(JSONException::class)
-    fun batchEnergyRpcEntity(bizType: String, userId: String, bubbleIds: List<Long>): RpcEntity {
+    fun batchEnergyRpcEntity(
+        bizType: String,
+        userId: String,
+        bubbleIds: List<Long>,
+        source: String? = null
+    ): RpcEntity {
+        val actualSource = source ?: DEFAULT_SOURCE
         val arg = JSONObject().apply {
             put("bizType", bizType)
             put("bubbleIds", JSONArray(bubbleIds))
             put("fromAct", "BATCH_ROB_ENERGY")
-            put("source", "chInfo_ch_appcenter__chsub_9patch")
+            put("source", actualSource)
             put("userId", userId)
             put("version", VERSION)
         }
@@ -491,8 +507,31 @@ object AntForestRpcCall {
 
     @JvmStatic
     @Throws(JSONException::class)
-    fun queryTakeLookEndTaskList(): String {
-        return queryTaskList("take_look_end_task_list")
+    fun queryTakeLookEndTaskList(source: String = DEFAULT_SOURCE): String {
+        val extend = if (source == BACK_FROM_ENERGY_RAIN_SOURCE) {
+            createTaskListExtend(JSONObject().apply {
+                put("appMode", "normal")
+                put("nativeVersion", io.github.aoguai.sesameag.hook.ApplicationHook.alipayVersion.versionString)
+            })
+        } else {
+            createTaskListExtend()
+        }
+        return queryTaskList("take_look_end_task_list", source, extend, TASK_LIST_VERSION)
+    }
+
+    @JvmStatic
+    fun takeLookEnd(source: String = BACK_FROM_ENERGY_RAIN_SOURCE): String {
+        return try {
+            val requestData = JSONObject().apply {
+                put("contactsStatus", "N")
+                put("source", source)
+                put("version", TASK_LIST_VERSION)
+            }
+            RequestManager.requestString("alipay.antforest.forest.h5.takeLookEnd", JSONArray().put(requestData).toString())
+        } catch (e: JSONException) {
+            Log.printStackTrace("AntForestRpcCall", "takeLookEnd构建请求参数失败", e)
+            ""
+        }
     }
 
     @JvmStatic
@@ -980,10 +1019,14 @@ object AntForestRpcCall {
     }
 
     @JvmStatic
-    fun collectRobExpandEnergy(propId: String, propType: String): String {
+    fun collectRobExpandEnergy(
+        propId: String,
+        propType: String,
+        source: String = DEFAULT_SOURCE
+    ): String {
         return RequestManager.requestString(
             "alipay.antforest.forest.h5.collectRobExpandEnergy",
-            "[{\"propId\":\"$propId\",\"propType\":\"$propType\",\"source\":\"chInfo_ch_appcenter__chsub_9patch\"}]"
+            "[{\"propId\":\"$propId\",\"propType\":\"$propType\",\"source\":\"$source\"}]"
         )
     }
 
@@ -1180,6 +1223,19 @@ object AntForestRpcCall {
             "alipay.antforest.forest.h5.collectBombCardEnergy",
             JSONArray().put(jo).toString()
         )
+    }
+
+    /** 模拟点击进入游戏 */
+    @JvmStatic
+    fun clickGame(appId: String): String {
+        return RequestManager.requestString("com.alipay.charitygamecenter.clickGame",
+            "[{" +
+                    "  \"appId\": \"$appId\"," +
+                    "  \"bizType\": \"ANTFOREST\"," +
+                    "  \"requestType\": \"RPC\"," +
+                    "  \"sceneCode\": \"ANTFOREST\"," +
+                    "  \"source\": \"ANTFOREST\"" +
+                    "}]")
     }
 }
 

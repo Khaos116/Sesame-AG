@@ -33,12 +33,12 @@ object FarmGame {
             return
         }
 
-        val isAccelEnabled = antFarm.useAccelerateTool!!.value
-        val isAccelLimitReached = Status.hasFlagToday(StatusFlags.FLAG_FARM_ACCELERATE_LIMIT) || !Status.canUseAccelerateTool()
+        val isAccelEnabled = antFarm.useAccelerateTool!!.value == true
         val isInsideTimeRange = antFarm.farmGameTrigger?.getTriggerSpec()?.let {
             TimeTriggerEvaluator.evaluateNow(it).allowNow
         } == true
-        val ignoreAcceLimitMode = !isAccelEnabled!! || antFarm.ignoreAcceLimit!!.value == true
+        val ignoreAcceLimitMode = !isAccelEnabled || antFarm.ignoreAcceLimit!!.value == true
+        val isAccelLimitReached = isAccelEnabled && antFarm.hasReachedAccelerateToolLimit()
 
         when {
             ignoreAcceLimitMode -> {
@@ -96,8 +96,10 @@ object FarmGame {
             }
             // 加速卡还没用完，等待加速卡用完
             antFarm.accelerateToolCount > 0 -> {
-                Log.farm("加速卡有${antFarm.accelerateToolCount}张，已使用${Status.INSTANCE.useAccelerateToolCount}张，" +
-                        "尚未达到今日使用上限，等待加速完成后再改分")
+                Log.farm(
+                    "加速卡有${antFarm.accelerateToolCount}张，${antFarm.getAccelerateToolUsageSummary()}，" +
+                        "尚未达到今日设定/系统上限，等待加速完成后再改分"
+                )
             }
         }
     }

@@ -36,6 +36,11 @@ object AntSportsRpcCall {
     private const val CH_INFO = "ch_appcenter__chsub_9patch"
 
     /**
+     * @brief 运动首页渠道信息
+     */
+    private const val HOME_CH_INFO = "ch_shouquan_shouye"
+
+    /**
      * @brief 时区信息 - 亚洲/上海
      */
     private const val TIME_ZONE = "Asia\\/Shanghai"
@@ -129,6 +134,20 @@ object AntSportsRpcCall {
     }
 
     /**
+     * @brief 完成运动首页气泡任务
+     *
+     * @param taskId 首页气泡任务ID
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应抓包：运动首页 recBubbleList 中的 task.taskId
+     */
+    fun completeHomeBubbleTask(taskId: String): String {
+        val args1 = """[{"apiVersion":"energy","chInfo":"$HOME_CH_INFO","clientOS":"android","features":$FEATURES,"taskAction":"JUMP","taskId":"$taskId"}]"""
+        return RequestManager.requestString("com.alipay.sportshealth.biz.rpc.SportsHealthCoinTaskRpc.completeTask", args1)
+    }
+
+    /**
      * @brief 查询运动主页信息
      * 
      * @details 获取运动首页的数据，包括个人信息、排行榜等。
@@ -218,8 +237,7 @@ object AntSportsRpcCall {
      * @remark 对应API：com.alipay.sportshealth.biz.rpc.sportsHealthHomeRpc.queryEnergyBubbleModule
      */
     fun queryEnergyBubbleModule(): String {
-        val features = """["DAILY_STEPS_RANK_V2","STEP_BATTLE","CLUB_HOME_CARD","NEW_HOME_PAGE_STATIC","CLOUD_SDK_AUTH","STAY_ON_COMPLETE","EXTRA_TREASURE_BOX","NEW_HOME_PAGE_STATIC","SUPPORT_AI","SUPPORT_TAB3","SUPPORT_FLYRABBIT","SUPPORT_NEW_MATCH","EXTERNAL_ADVERTISEMENT_TASK","PROP","PROPV2","ASIAN_GAMES"]"""
-        val args1 = """[{"apiVersion":"energy","bubbleId":"","canAddHome":false,"chInfo":"ch_appid-20001003__chsub_pageid-com.alipay.android.phone.businesscommon.globalsearch.ui.MainSearchActivity","clientAuthStatus":"not_support","clientOS":"android","distributionChannel":"","features":$features,"outBizNo":""}]"""
+        val args1 = """[{"apiVersion":"energy","bubbleId":"","canAddHome":false,"chInfo":"$HOME_CH_INFO","clientAuthStatus":"not_support","clientOS":"android","distributionChannel":"","features":$FEATURES,"outBizNo":""}]"""
         return RequestManager.requestString("com.alipay.sportshealth.biz.rpc.sportsHealthHomeRpc.queryEnergyBubbleModule", args1)
     }
 
@@ -233,8 +251,7 @@ object AntSportsRpcCall {
      * @remark 对应API：com.alipay.neverland.biz.rpc.pickBubbleTaskEnergy
      */
     fun pickBubbleTaskEnergy(): String {
-        val features = """["DAILY_STEPS_RANK_V2","STEP_BATTLE","CLUB_HOME_CARD","NEW_HOME_PAGE_STATIC","CLOUD_SDK_AUTH","STAY_ON_COMPLETE","EXTRA_TREASURE_BOX","NEW_HOME_PAGE_STATIC","SUPPORT_AI","SUPPORT_TAB3","SUPPORT_FLYRABBIT","SUPPORT_NEW_MATCH","EXTERNAL_ADVERTISEMENT_TASK","PROP","PROPV2","ASIAN_GAMES"]"""
-        val args1 = """[{"apiVersion":"energy","chInfo":"ch_appid-20001003__chsub_pageid-com.alipay.android.phone.businesscommon.globalsearch.ui.MainSearchActivity","clientOS":"android","features":$features,"medEnergyBallInfoRecordIds":[],"pickAllEnergyBall":true,"source":"SPORT"}]"""
+        val args1 = """[{"apiVersion":"energy","chInfo":"$HOME_CH_INFO","clientOS":"android","features":$FEATURES,"medEnergyBallInfoRecordIds":[],"pickAllEnergyBall":true,"source":"SPORT"}]"""
         return RequestManager.requestString("com.alipay.neverland.biz.rpc.pickBubbleTaskEnergy", args1)
     }
 

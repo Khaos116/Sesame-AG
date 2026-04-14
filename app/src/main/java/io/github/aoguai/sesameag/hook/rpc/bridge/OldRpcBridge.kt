@@ -9,7 +9,6 @@ import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.Notify
 import io.github.aoguai.sesameag.util.RandomUtil
 import io.github.aoguai.sesameag.util.CoroutineUtils
-import io.github.aoguai.sesameag.util.StringUtil
 import io.github.aoguai.sesameag.util.TimeUtil
 import org.json.JSONException
 import org.json.JSONObject

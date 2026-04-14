@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.compose.runtime.derivedStateOf
@@ -54,6 +55,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private val viewModel: MainViewModel by viewModels()
+    private val runtimePermissionsLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+            onRuntimePermissionRequestFinished()
+        }
     private var pendingPermissionRequest: ModulePermissionRequest? = null
     private val requestedPermissionsThisVisibility = linkedSetOf<ModulePermissionRequest>()
 
@@ -120,20 +125,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    @Deprecated(
-        message = "Overrides deprecated framework callback; retained for the current permission flow."
-    )
-    @Suppress("DEPRECATION")
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<String>,
-        grantResults: IntArray
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        pendingPermissionRequest = null
-        ensureModulePermissions(requestIfNeeded = true)
-    }
-
     /**
      * 定义 UI 事件
      */
@@ -179,7 +170,7 @@ class MainActivity : ComponentActivity() {
         openLogFile(Files.getLogFile(channel))
     }
 
-    // --- 辅助方法 (替代 BaseActivity) ---
+    // --- 辅助方法 ---
 
     private fun setupShizuku() {
         Shizuku.addRequestPermissionResultListener(shizukuListener)
@@ -236,11 +227,16 @@ class MainActivity : ComponentActivity() {
         startActivity(intent)
     }
 
+    private fun onRuntimePermissionRequestFinished() {
+        pendingPermissionRequest = null
+        ensureModulePermissions(requestIfNeeded = true)
+    }
+
     private fun ensureModulePermissions(requestIfNeeded: Boolean) {
         hasPermissions = PermissionUtil.checkFilePermissions(this)
         if (!hasPermissions) {
             if (requestIfNeeded && shouldRequest(ModulePermissionRequest.FILE)) {
-                PermissionUtil.checkOrRequestFilePermissions(this)
+                PermissionUtil.checkOrRequestFilePermissions(this, runtimePermissionsLauncher)
                 return
             }
         } else {
@@ -268,7 +264,7 @@ class MainActivity : ComponentActivity() {
 
         if (!PermissionUtil.checkNotificationPermission(this)) {
             if (requestIfNeeded && shouldRequest(ModulePermissionRequest.NOTIFICATION)) {
-                PermissionUtil.checkOrRequestNotificationPermission(this)
+                PermissionUtil.checkOrRequestNotificationPermission(this, runtimePermissionsLauncher)
                 return
             }
         } else {
