@@ -1,135 +1,88 @@
 package io.github.aoguai.sesameag.task.AnswerAI
 
-import io.github.aoguai.sesameag.util.JsonUtil.getValueByPath
-import org.json.JSONObject
-import java.io.IOException
-import java.util.concurrent.TimeUnit
+import io.github.aoguai.sesameag.util.JsonUtil
 import io.github.aoguai.sesameag.util.Log
+import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import okhttp3.Response
+import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * GeminiAI帮助类，用于与Gemini接口交互以获取AI回答
  * 支持单条文本问题及带有候选答案列表的问题请求
  */
 class GeminiAI(token: String?) : AnswerAIInterface {
-    
-    private val token: String = if (!token.isNullOrEmpty()) token else ""
-    private var modelNameInternal: String = "gemini-1.5-flash"
-    
-    override fun getModelName(): String = modelNameInternal
-    override fun setModelName(modelName: String) {
-        this.modelNameInternal = modelName
+  private val mGeminiBaseUrl = "https://api.genai.gd.edu.kg/google"
+  private val TAG = GeminiAI::class.java.simpleName
+  private val token: String = if (!token.isNullOrEmpty()) token else ""
+  private val modelNameInternal: String = "gemini-2.5-flash"
+  private val mOkHttpClient = OkHttpClient()
+
+  override fun getModelName(): String = modelNameInternal
+  override fun setModelName(modelName: String) {
+    //固定gemini-2.5-flash不做修改
+  }
+
+  override fun getAnswerStr(text: String, model: String): String {
+    setModelName(model)
+    return getAnswerStr(text)
+  }
+
+  override fun getAnswerStr(text: String): String {
+    var response: Response? = null
+    try {
+      val jsonReq = JSONObject()
+      // 针对选择题优化的 Prompt
+      val fullPrompt = "直接给出答案文字，严禁解释，不要标点符号。题目：$text"
+
+      val contents = JSONArray()
+      contents.put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", fullPrompt))))
+      jsonReq.put("contents", contents)
+
+      // 必须开启 google_search，否则无法回答最新的常识题（如蚂蚁庄园）
+      jsonReq.put("tools", JSONArray().put(JSONObject().put("google_search", JSONObject())))
+
+      val body = jsonReq.toString().toRequestBody("application/json".toMediaType())
+
+      val finalUrl = "$mGeminiBaseUrl/v1beta/models/$modelNameInternal:generateContent?key=$token"
+
+      val request = Request.Builder().url(finalUrl).post(body).build()
+      response = mOkHttpClient.newCall(request).execute()
+
+      response.body.let { responseBody ->
+        val jsonStr = responseBody.string()
+        // 调试建议：Log.i("Gemini Raw: $jsonStr")
+        val resObj = JSONObject(jsonStr)
+        val answer = JsonUtil.getValueByPath(resObj, "candidates.[0].content.parts.[0].text")
+        return answer.trim { it <= ' ' }.replace("[。，.！!？? \"'“”]".toRegex(), "")
+      }
+    } catch (e: Exception) {
+      Log.printStackTrace(TAG, e)
+      Log.farm("Gemini答题出错: ${e.message}")
+      Log.error("Gemini答题出错: ${e.message}")
+      Log.common("Gemini答题出错: ${e.message}")
+      Log.runtime("Gemini答题出错: ${e.message}")
+    } finally {
+      response?.close()
     }
+    return ""
+  }
 
-    private fun removeControlCharacters(text: String): String {
-        return text.replace(Regex("\\p{Cntrl}&&[^\n\t]"), "")
+  override fun getAnswer(title: String, answerList: List<String>): Int {
+    val answerStr = StringBuilder()
+    for (answer in answerList) {
+      answerStr.append("[").append(answer).append("]")
     }
-
-    private fun buildRequestBody(text: String): String {
-        val cleanText = removeControlCharacters(text)
-        return "{" +
-                "\"contents\":[{" +
-                "\"parts\":[{" +
-                "\"text\":\"${PREFIX}${cleanText}\"" +
-                "}]" +
-                "}]" +
-                "}"
-    }
-
-    private fun buildRequestUrl(): String {
-        return "$BASE_URL/v1beta/models/$modelNameInternal:generateContent?key=$token"
-    }
-
-    override fun getAnswerStr(text: String, model: String): String {
-        setModelName(model)
-        return getAnswerStr(text)
-    }
-
-    override fun getAnswerStr(text: String): String {
-        var result = ""
-        try {
-            val client = OkHttpClient.Builder()
-                .connectTimeout(TIME_OUT_SECONDS.toLong(), TimeUnit.SECONDS)
-                .writeTimeout(TIME_OUT_SECONDS.toLong(), TimeUnit.SECONDS)
-                .readTimeout(TIME_OUT_SECONDS.toLong(), TimeUnit.SECONDS)
-                .build()
-
-            val content = buildRequestBody(text)
-            val mediaType = CONTENT_TYPE.toMediaType()
-            val body = content.toRequestBody(mediaType)
-            val url = buildRequestUrl()
-            val request = Request.Builder()
-                .url(url)
-                .method("POST", body)
-                .addHeader("Content-Type", CONTENT_TYPE)
-                .build()
-
-            client.newCall(request).execute().use { response ->
-                val responseBody = response.body ?: return result
-                val json = responseBody.string()
-                if (!response.isSuccessful) {
-                    Log.common("Gemini请求失败")
-                    Log.runtime(TAG, "Gemini接口异常：$json")
-                    return result
-                }
-                val jsonObject = JSONObject(json)
-                result = getValueByPath(jsonObject, JSON_PATH)
-            }
-        } catch (e: IOException) {
-            Log.printStackTrace(TAG, e)
-        } catch (e: org.json.JSONException) {
-            Log.printStackTrace(TAG, e)
+    val answerResult = getAnswerStr("$title\n$answerStr")
+    if (answerResult.isNotBlank()) {
+      for (i in answerList.indices) {
+        if (answerResult.contains(answerList[i])) {
+          return i
         }
-        return result
+      }
     }
-
-    override fun getAnswer(title: String, answerList: List<String>): Int {
-        try {
-            val answerStr = StringBuilder()
-            for (i in answerList.indices) {
-                answerStr.append(i + 1).append(".[")
-                    .append(answerList[i]).append("]\n")
-            }
-
-            val question = "问题：$title\n\n" +
-                    "答案列表：\n\n$answerStr\n\n" +
-                    "请只返回答案列表中的序号"
-
-            val answerResult = getAnswerStr(question)
-
-            if (answerResult.isNotEmpty()) {
-                try {
-                    val index = answerResult.trim().toInt() - 1
-                    if (index in answerList.indices) {
-                        return index
-                    }
-                } catch (e: NumberFormatException) {
-                    Log.common("AI🧠回答，非序号格式：$answerResult")
-                }
-
-                for (i in answerList.indices) {
-                    if (answerResult.contains(answerList[i])) {
-                        return i
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            Log.printStackTrace(TAG, e)
-        }
-        return -1
-    }
-
-    companion object {
-        private val TAG = GeminiAI::class.java.simpleName
-        private const val BASE_URL = "https://api.genai.gd.edu.kg/google"
-        private const val CONTENT_TYPE = "application/json"
-        private const val JSON_PATH = "candidates.[0].content.parts.[0].text"
-        private const val PREFIX = "只回答答案 "
-        private const val TIME_OUT_SECONDS = 180
-    }
+    return -1
+  }
 }
 

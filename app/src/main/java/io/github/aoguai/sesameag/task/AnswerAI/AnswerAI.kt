@@ -40,8 +40,8 @@ class AnswerAI : Model() {
         "Gemini | 获取令牌",
         "https://aistudio.google.com/app/apikey"
     ).withDesc("打开 Gemini 官方密钥页面获取 API Key，仅在下方 AI 类型选择 Gemini 时使用。")
-    private val GeminiToken = StringModelField("GeminiAIToken", "gemini-1.5-flash | 设置令牌", "").withDesc(
-        "填写 Gemini API Key；用于调用 gemini-1.5-flash 模型进行答题。"
+    private val GeminiToken = StringModelField("GeminiAIToken", "gemini-2.5-flash | 设置令牌", "").withDesc(
+        "填写 Gemini API Key；用于调用 gemini-2.5-flash 模型进行答题。"
     )
     private val getDeepSeekToken = TextModelField.UrlTextModelField(
         "getDeepSeekToken",
