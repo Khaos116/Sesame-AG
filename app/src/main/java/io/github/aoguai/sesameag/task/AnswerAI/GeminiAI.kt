@@ -55,7 +55,12 @@ class GeminiAI(token: String?) : AnswerAIInterface {
         // 调试建议：Log.i("Gemini Raw: $jsonStr")
         val resObj = JSONObject(jsonStr)
         val answer = JsonUtil.getValueByPath(resObj, "candidates.[0].content.parts.[0].text")
-        return answer.trim { it <= ' ' }.replace("[。，.！!？? \"'“”]".toRegex(), "")
+        return answer.trim { it <= ' ' }.replace("[。，.！!？? \"'“”]".toRegex(), "").also { a ->
+          Log.farm("Gemini回答: $a")
+          Log.summary("Gemini回答: $a")
+          Log.common("Gemini回答: $a")
+          Log.runtime("Gemini回答: $a")
+        }
       }
     } catch (e: Exception) {
       Log.printStackTrace(TAG, e)
