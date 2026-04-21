@@ -1,6 +1,5 @@
 package io.github.aoguai.sesameag.task.antDodo
 
-import com.fasterxml.jackson.core.type.TypeReference
 import org.json.JSONException
 import org.json.JSONArray
 import org.json.JSONObject
@@ -15,12 +14,12 @@ import io.github.aoguai.sesameag.model.modelFieldExt.SelectModelField
 import io.github.aoguai.sesameag.task.ModelTask
 import io.github.aoguai.sesameag.task.TaskCommon
 import io.github.aoguai.sesameag.task.TaskStatus
-import io.github.aoguai.sesameag.util.GlobalThreadPools
-import io.github.aoguai.sesameag.util.DataStore
 import io.github.aoguai.sesameag.util.FriendGuard
+import io.github.aoguai.sesameag.util.GlobalThreadPools
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.maps.UserMap
 import io.github.aoguai.sesameag.util.ResChecker
+import io.github.aoguai.sesameag.util.TaskBlacklist
 import io.github.aoguai.sesameag.util.TimeUtil
 
 class AntDodo : ModelTask() {
@@ -241,12 +240,6 @@ class AntDodo : ModelTask() {
     private fun receiveTaskAward() {
         try {
             val presetBad = LinkedHashSet(listOf("HELP_FRIEND_COLLECT"))
-            val typeRef = object : TypeReference<MutableSet<String>>() {}
-            val badTaskSet = DataStore.getOrCreate("badDodoTaskList", typeRef)
-            if (badTaskSet.isEmpty()) {
-                badTaskSet.addAll(presetBad)
-                DataStore.put("badDodoTaskList", badTaskSet)
-            }
             while (!Thread.currentThread().isInterrupted) {
                 var doubleCheck = false
                 val response = AntDodoRpcCall.taskList()
@@ -256,18 +249,17 @@ class AntDodo : ModelTask() {
                 }
                 val jsonResponse = JSONObject(response)
                 if (!ResChecker.checkRes(TAG, jsonResponse)) {
-                    Log.forest(TAG, "查询任务列表失败：${jsonResponse.getString("resultDesc")}")
-                    Log.runtime(response)
+                    Log.forest(TAG, "查询任务列表失败：${jsonResponse.optString("resultDesc")}")
                     break
                 }
-                val taskGroupInfoList = jsonResponse.getJSONObject("data").optJSONArray("taskGroupInfoList") ?: return
+                val taskGroupInfoList = jsonResponse.optJSONObject("data")?.optJSONArray("taskGroupInfoList") ?: break
                 for (i in 0 until taskGroupInfoList.length()) {
                     val antDodoTask = taskGroupInfoList.getJSONObject(i)
                     val taskInfoList = antDodoTask.getJSONArray("taskInfoList")
                     for (j in 0 until taskInfoList.length()) {
                         val taskInfo = taskInfoList.getJSONObject(j)
                         val taskBaseInfo = taskInfo.getJSONObject("taskBaseInfo")
-                        val bizInfo = JSONObject(taskBaseInfo.getString("bizInfo"))
+                        val bizInfo = JSONObject(taskBaseInfo.optString("bizInfo", "{}"))
                         val taskType = taskBaseInfo.getString("taskType")
                         val taskTitle = bizInfo.optString("taskTitle", taskType)
                         val awardCount = bizInfo.optString("awardCount", "1")
@@ -281,29 +273,50 @@ class AntDodo : ModelTask() {
                                     continue
                                 }
                                 val joAward = JSONObject(awardResponse)
-                                if (joAward.optBoolean("success")) {
+                                if (joAward.optBoolean("success") || joAward.optString("code") == "100000000") {
                                     doubleCheck = true
                                     Log.forest("任务奖励🎖️[$taskTitle]#${awardCount}个")
                                 } else {
-                                    Log.forest(TAG, "领取失败，$response")
+                                    Log.forest(TAG, "领取失败[$taskTitle]：${joAward.optString("resultDesc", joAward.toString())}")
                                 }
-                                Log.runtime(joAward.toString())
                             }
                             TaskStatus.TODO.name == taskStatus -> {
-                                if (!badTaskSet.contains(taskType)) {
-                                    val finishResponse = AntDodoRpcCall.finishTask(sceneCode, taskType)
-                                    if (finishResponse.isNullOrEmpty()) {
-                                        Log.runtime(TAG, "finishTask返回空")
-                                        continue
-                                    }
-                                    val joFinishTask = JSONObject(finishResponse)
-                                    if (joFinishTask.optBoolean("success")) {
-                                        Log.forest("物种任务🧾️[$taskTitle]")
-                                        doubleCheck = true
-                                    } else {
-                                        Log.forest(TAG, "完成任务失败，$taskTitle")
-                                        badTaskSet.add(taskType)
-                                        DataStore.put("badDodoTaskList", badTaskSet)
+                                if (presetBad.contains(taskType)) {
+                                    TaskBlacklist.addToBlacklist(TASK_BLACKLIST_MODULE, taskType, taskTitle)
+                                    continue
+                                }
+                                if (TaskBlacklist.isTaskInBlacklist(TASK_BLACKLIST_MODULE, taskType) ||
+                                    TaskBlacklist.isTaskInBlacklist(TASK_BLACKLIST_MODULE, taskTitle)
+                                ) {
+                                    continue
+                                }
+
+                                val finishResponse = finishTodoTask(taskBaseInfo, bizInfo, sceneCode, taskType)
+                                if (finishResponse.isNullOrEmpty()) {
+                                    Log.runtime(TAG, "finishTask返回空")
+                                    continue
+                                }
+                                val joFinishTask = JSONObject(finishResponse)
+                                if (joFinishTask.optBoolean("success") || joFinishTask.optString("code") == "100000000") {
+                                    Log.forest("物种任务🧾️[$taskTitle]")
+                                    doubleCheck = true
+                                } else {
+                                    val errorCode = joFinishTask.optString("code")
+                                        .ifBlank { joFinishTask.optString("resultCode") }
+                                    val resultDesc = joFinishTask.optString("desc")
+                                        .ifBlank { joFinishTask.optString("resultDesc") }
+                                    Log.forest(
+                                        TAG,
+                                        "完成任务失败[$taskTitle] code=${errorCode.ifBlank { "UNKNOWN" }} msg=$resultDesc"
+                                    )
+                                    val blacklistReason = errorCode.ifBlank { resultDesc }
+                                    if (blacklistReason.isNotBlank()) {
+                                        TaskBlacklist.autoAddToBlacklist(
+                                            TASK_BLACKLIST_MODULE,
+                                            taskType,
+                                            taskTitle,
+                                            blacklistReason
+                                        )
                                     }
                                 }
                             }
@@ -320,6 +333,33 @@ class AntDodo : ModelTask() {
             Log.runtime(TAG, "AntDodo ReceiveTaskAward 错误:")
             Log.printStackTrace(TAG, t)
         }
+    }
+
+    private fun finishTodoTask(
+        taskBaseInfo: JSONObject,
+        bizInfo: JSONObject,
+        sceneCode: String,
+        taskType: String
+    ): String {
+        if (taskType.startsWith("GAME_") || taskType.contains("WZDAOLIU")) {
+            extractDodoGameAppId(taskBaseInfo, bizInfo)?.let { appId ->
+                AntDodoRpcCall.clickGame(appId)
+            }
+        }
+        return AntDodoRpcCall.finishTask(sceneCode, taskType)
+    }
+
+    private fun extractDodoGameAppId(taskBaseInfo: JSONObject, bizInfo: JSONObject): String? {
+        val taskJumpUrl = bizInfo.optString("taskJumpUrl")
+        val appIdFromUrl = Regex("appId=(\\d+)").find(taskJumpUrl)?.groupValues?.getOrNull(1)
+        if (!appIdFromUrl.isNullOrBlank()) {
+            return appIdFromUrl
+        }
+        return JSONObject(taskBaseInfo.optString("prodPlayParam", "{}"))
+            .optJSONObject("taskCategorization")
+            ?.optJSONObject("categorizationParamModel")
+            ?.optString("game_id")
+            ?.takeIf { it.isNotBlank() }
     }
 
     private fun propList() {
@@ -925,6 +965,7 @@ class AntDodo : ModelTask() {
 
     companion object {
         private val TAG = AntDodo::class.java.simpleName
+        private const val TASK_BLACKLIST_MODULE = "神奇物种"
     }
 }
 

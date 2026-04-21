@@ -173,6 +173,9 @@ object StatusFlags {
     /** 运动首页气泡任务：按 taskId 维度的当日冷却前缀 */
     const val FLAG_ANTSPORTS_HOME_BUBBLE_COOLDOWN_PREFIX = "AntSports::homeBubbleCooldown::"
 
+    /** 走路挑战赛：服务端当日不可用，停止重复报名 */
+    const val FLAG_ANTSPORTS_WALK_CHALLENGE_UNAVAILABLE_TODAY = "AntSports::walkChallengeUnavailableToday"
+
     // ============================================================
     // 合种 / 海洋
     // ============================================================
@@ -228,6 +231,9 @@ object StatusFlags {
 
     /** 今日饲料任务是否已完成 */
     const val FLAG_FARM_TASK_FINISHED = "antFarm::farmTaskFinished"
+
+    /** 今日多阶段任务是否已完成 */
+    const val FLAG_FARM_MULTI_STAGE_TASK_FINISHED = "AntFarm::multiStageTaskFinished"
 
     /** 庄园：加速卡每日次数上限标记 */
     const val FLAG_FARM_ACCELERATE_LIMIT = "antFarm::accelerateLimit"
