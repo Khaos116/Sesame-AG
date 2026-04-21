@@ -6,6 +6,7 @@ import io.github.aoguai.sesameag.task.antForest.AntForest
 import io.github.aoguai.sesameag.util.Files
 import io.github.aoguai.sesameag.util.JsonUtil
 import io.github.aoguai.sesameag.util.Log
+import io.github.aoguai.sesameag.util.MyUtils
 import io.github.aoguai.sesameag.util.TimeUtil
 import io.github.aoguai.sesameag.util.maps.UserMap
 import org.json.JSONObject
@@ -165,7 +166,7 @@ class Status {
         @JvmStatic
         val currentDayTimestamp: Long
             get() {
-                val calendar = Calendar.getInstance()
+                val calendar = MyUtils.getInstance()
                 calendar.set(Calendar.HOUR_OF_DAY, 0)
                 calendar.set(Calendar.MINUTE, 0)
                 calendar.set(Calendar.SECOND, 0)
@@ -695,7 +696,7 @@ class Status {
             if (INSTANCE.currentUid == null) INSTANCE.currentUid = currentUid
 
             // 无论是否命中缓存，日期检查逻辑保持不变
-            if (updateDay(Calendar.getInstance())) {
+            if (updateDay(MyUtils.getInstance())) {
                 if (showLog) Log.record(TAG, "发现日期更新，重置 status.json 状态")
                 // 如果过期重置了，重新确保新日期的身份和时间有效
                 INSTANCE.currentUid = currentUid
@@ -759,7 +760,7 @@ class Status {
 
         @Synchronized
         @JvmStatic
-        fun save(nowCalendar: Calendar = Calendar.getInstance()) {
+        fun save(nowCalendar: Calendar = MyUtils.getInstance()) {
             val targetUid = UserMap.currentUid
             if (targetUid.isNullOrEmpty()) {
                 Log.record(TAG, "用户为空，状态保存失败")
