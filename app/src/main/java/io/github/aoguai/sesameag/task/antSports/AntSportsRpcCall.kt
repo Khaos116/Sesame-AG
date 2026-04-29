@@ -5,6 +5,7 @@ import org.json.JSONException
 import org.json.JSONObject
 import io.github.aoguai.sesameag.hook.ApplicationHook
 import io.github.aoguai.sesameag.hook.RequestManager
+import io.github.aoguai.sesameag.util.RpcCache
 import java.util.UUID
 
 /**
@@ -73,6 +74,19 @@ object AntSportsRpcCall {
      */
     private const val FEATURES = """["DAILY_STEPS_RANK_V2","STEP_BATTLE","CLUB_HOME_CARD","NEW_HOME_PAGE_STATIC","CLOUD_SDK_AUTH","STAY_ON_COMPLETE","EXTRA_TREASURE_BOX","NEW_HOME_PAGE_STATIC","SUPPORT_AI","SUPPORT_TAB3","SUPPORT_FLYRABBIT","SUPPORT_NEW_MATCH","EXTERNAL_ADVERTISEMENT_TASK","PROP","PROPV2","ASIAN_GAMES"]"""
 
+    private const val QUERY_COIN_TASK_PANEL_RPC =
+        "com.alipay.sportshealth.biz.rpc.SportsHealthCoinTaskRpc.queryCoinTaskPanel"
+    private const val QUERY_ENERGY_BUBBLE_MODULE_RPC =
+        "com.alipay.sportshealth.biz.rpc.sportsHealthHomeRpc.queryEnergyBubbleModule"
+    private const val NEVERLAND_QUERY_TASK_CENTER_RPC =
+        "com.alipay.neverland.biz.rpc.queryTaskCenter"
+    private const val NEVERLAND_QUERY_TASK_INFO_RPC =
+        "com.alipay.neverland.biz.rpc.queryTaskInfo"
+    private const val NEVERLAND_QUERY_BUBBLE_TASK_RPC =
+        "com.alipay.neverland.biz.rpc.queryBubbleTask"
+    internal const val QUERY_WALK_STEP_RPC =
+        "alipay.antsports.steps.query"
+
     //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // 运动任务面板接口
     //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -87,8 +101,9 @@ object AntSportsRpcCall {
      * @remark 对应API：com.alipay.sportshealth.biz.rpc.SportsHealthCoinTaskRpc.queryCoinTaskPanel
      */
     fun queryCoinTaskPanel(): String {
+        RpcCache.invalidate(QUERY_COIN_TASK_PANEL_RPC)
         val args1 = """[{"apiVersion":"energy","canAddHome":false,"chInfo":"medical_health","clientAuthStatus":"not_support","clientOS":"android","features":$FEATURES,"topTaskId":""}]"""
-        return RequestManager.requestString("com.alipay.sportshealth.biz.rpc.SportsHealthCoinTaskRpc.queryCoinTaskPanel", args1)
+        return RequestManager.requestString(QUERY_COIN_TASK_PANEL_RPC, args1)
     }
 
     /**
@@ -151,6 +166,30 @@ object AntSportsRpcCall {
             })
         }
         return RequestManager.requestString("com.alipay.sportshealth.biz.rpc.SportsHealthCoinTaskRpc.completeTask", args.toString())
+    }
+
+    /**
+     * @brief 完成运动任务面板中的广告浏览任务
+     *
+     * @param bizId queryCoinTaskPanel.taskList[].bizExtMap.bizId
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应抓包：com.alipay.adtask.biz.mobilegw.service.task.finish
+     */
+    fun finishAdTask(bizId: String): String {
+        val params = JSONObject().apply {
+            put("bizId", bizId)
+        }
+        return finishAdTask(params)
+    }
+
+    fun finishAdTask(params: JSONObject): String {
+        val args = JSONArray().put(params)
+        return RequestManager.requestString(
+            "com.alipay.adtask.biz.mobilegw.service.task.finish",
+            args.toString()
+        )
     }
 
     private fun buildSportsTaskBizNo(): String {
@@ -247,7 +286,7 @@ object AntSportsRpcCall {
      * @remark 对应API：com.alipay.neverland.biz.rpc.pickBubbleTaskEnergy
      */
     fun pickBubbleTaskEnergy(medEnergyBallInfoRecordId: String, pickAllEnergyBall: Boolean): String {
-        val args1 = """[{"apiVersion":"energy","chInfo":"medical_health","medEnergyBallInfoRecordIds":["$medEnergyBallInfoRecordId"],"pickAllEnergyBall":$pickAllEnergyBall,"source":"SPORT"}]"""
+        val args1 = """[{"apiVersion":"energy","chInfo":"medical_health","clientOS":"android","features":$FEATURES,"medEnergyBallInfoRecordIds":["$medEnergyBallInfoRecordId"],"pickAllEnergyBall":$pickAllEnergyBall,"source":"SPORT"}]"""
         return RequestManager.requestString("com.alipay.neverland.biz.rpc.pickBubbleTaskEnergy", args1)
     }
 
@@ -262,7 +301,8 @@ object AntSportsRpcCall {
      */
     fun queryEnergyBubbleModule(): String {
         val args1 = """[{"apiVersion":"energy","bubbleId":"","canAddHome":false,"chInfo":"$HOME_CH_INFO","clientAuthStatus":"not_support","clientOS":"android","distributionChannel":"","features":$FEATURES,"outBizNo":""}]"""
-        return RequestManager.requestString("com.alipay.sportshealth.biz.rpc.sportsHealthHomeRpc.queryEnergyBubbleModule", args1)
+        RpcCache.invalidate(QUERY_ENERGY_BUBBLE_MODULE_RPC)
+        return RequestManager.requestString(QUERY_ENERGY_BUBBLE_MODULE_RPC, args1)
     }
 
     /**
@@ -497,7 +537,7 @@ object AntSportsRpcCall {
      */
     fun queryWalkStep(): String {
         return RequestManager.requestString(
-            "alipay.antsports.steps.query",
+            QUERY_WALK_STEP_RPC,
             """[{"appId":"healthstep","bizId":"donation","chInfo":"h5_donation_healthstep","timeZone":"$TIME_ZONE"}]"""
         )
     }
@@ -599,7 +639,7 @@ object AntSportsRpcCall {
 
     fun queryUser(): String {
         // 补齐 mainPage 和 timeZone，直接一行搞定
-        val data = """[{"apiVersion":"energy","chInfo":"medical_health","clientOS":"android","features":$FEATURES,"mainPage":true,"timeZone":"$TIME_ZONE"}]"""
+        val data = """[{"apiVersion":"energy","chInfo":"ch_othertinyapp","clientOS":"android","features":$FEATURES,"mainPage":true,"timeZone":"$TIME_ZONE"}]"""
 
         return RequestManager.requestString("com.alipay.sportsplay.biz.rpc.walk.queryUser", data)
     }
@@ -616,7 +656,7 @@ object AntSportsRpcCall {
     fun queryThemeList(): String {
         return RequestManager.requestString(
             "com.alipay.sportsplay.biz.rpc.walk.theme.queryThemeList",
-            """[{"apiVersion":"energy","chInfo":"medical_health","clientOS":"android","features":$FEATURES}]"""
+            """[{"apiVersion":"energy","chInfo":"ch_othertinyapp","clientOS":"android","features":$FEATURES}]"""
         )
     }
 
@@ -632,7 +672,7 @@ object AntSportsRpcCall {
     fun queryWorldMap(themeId: String): String {
         return RequestManager.requestString(
             "com.alipay.sportsplay.biz.rpc.walk.queryWorldMap",
-            """[{"apiVersion":"energy","chInfo":"medical_health","clientOS":"android","features":$FEATURES,"themeId":"$themeId"}]"""
+            """[{"apiVersion":"energy","chInfo":"ch_othertinyapp","clientOS":"android","features":$FEATURES,"themeId":"$themeId"}]"""
         )
     }
 
@@ -653,6 +693,32 @@ object AntSportsRpcCall {
     }
 
     /**
+     * @brief 查询城市见闻领取汇总
+     *
+     * @remark 对应抓包：com.alipay.sportsplay.biz.rpc.walk.queryCityKnowledgeSummary
+     */
+    fun queryCityKnowledgeSummary(): String {
+        return RequestManager.requestString(
+            "com.alipay.sportsplay.biz.rpc.walk.queryCityKnowledgeSummary",
+            """[{"apiVersion":"energy","source":"ch_othertinyapp"}]"""
+        )
+    }
+
+    /**
+     * @brief 查询服务端推荐的下一批路线
+     *
+     * @param pathId 当前路线 ID
+     *
+     * @remark 对应抓包：com.alipay.sportsplay.biz.rpc.walk.queryRecommendPathList
+     */
+    fun queryRecommendPathList(pathId: String): String {
+        return RequestManager.requestString(
+            "com.alipay.sportsplay.biz.rpc.walk.queryRecommendPathList",
+            """[{"apiVersion":"energy","pathId":"$pathId","source":"ch_othertinyapp"}]"""
+        )
+    }
+
+    /**
      * @brief 查询路线详情 - 新版
      * 
      * @param date 日期字符串，格式如 "yyyy-MM-dd"
@@ -665,7 +731,7 @@ object AntSportsRpcCall {
     fun queryPath(date: String, pathId: String): String {
         return RequestManager.requestString(
             "com.alipay.sportsplay.biz.rpc.walk.queryPath",
-            """[{"apiVersion":"energy","chInfo":"medical_health","clientOS":"android","date":"$date","enableNewVersion":true,"features":$FEATURES,"pathId":"$pathId","timeZone":"$TIME_ZONE"}]"""
+            """[{"apiVersion":"energy","chInfo":"ch_othertinyapp","clientOS":"android","date":"$date","enableNewVersion":true,"features":$FEATURES,"pathId":"$pathId","timeZone":"$TIME_ZONE"}]"""
         )
     }
 
@@ -712,6 +778,82 @@ object AntSportsRpcCall {
         return RequestManager.requestString(
             "com.alipay.sportsplay.biz.rpc.walk.receiveEvent",
             """[{"eventBillNo":"$eventBillNo"}]"""
+        )
+    }
+
+    /**
+     * @brief 查询路线复活任务完成状态
+     */
+    fun queryReviveTaskFinishStatus(): String {
+        return RequestManager.requestString(
+            "com.alipay.sportsplay.biz.rpc.walk.steprevive.queryTaskFinishStatus",
+            "[{}]"
+        )
+    }
+
+    /**
+     * @brief 查询可复活步数明细
+     */
+    fun queryUserReviveStepT2(): String {
+        return RequestManager.requestString(
+            "com.alipay.sportsplay.biz.rpc.walk.steprevive.queryUserReviveStepT2",
+            """[{"timeZone":"$TIME_ZONE"}]"""
+        )
+    }
+
+    /**
+     * @brief 查询路线复活任务列表
+     */
+    fun queryReviveTaskList(): String {
+        return RequestManager.requestString(
+            "com.alipay.sportsplay.biz.rpc.walk.steprevive.queryTaskList",
+            "[{}]"
+        )
+    }
+
+    /**
+     * @brief 触发路线复活任务
+     */
+    fun triggerReviveTask(taskId: String, taskBizId: String? = null): String {
+        val obj = JSONObject().apply {
+            put("taskId", taskId)
+            if (!taskBizId.isNullOrBlank()) {
+                put("taskBizId", taskBizId)
+            }
+        }
+        return RequestManager.requestString(
+            "com.alipay.sportsplay.biz.rpc.walk.steprevive.triggerTask",
+            JSONArray().put(obj).toString()
+        )
+    }
+
+    /**
+     * @brief 完成路线复活任务
+     */
+    fun completeReviveTask(taskId: String): String {
+        return RequestManager.requestString(
+            "com.alipay.sportsplay.biz.rpc.walk.steprevive.completeTask",
+            """[{"taskId":"$taskId"}]"""
+        )
+    }
+
+    /**
+     * @brief 复活当前路线可复活步数
+     */
+    fun reviveSteps(): String {
+        return RequestManager.requestString(
+            "com.alipay.sportsplay.biz.rpc.walk.steprevive.reviveSteps",
+            """[{"chInfo":"ch_othertinyapp","clientOS":"android","features":$FEATURES,"timeZone":"$TIME_ZONE"}]"""
+        )
+    }
+
+    /**
+     * @brief 按指定日期复活步数
+     */
+    fun reviveSteps(stepDate: String): String {
+        return RequestManager.requestString(
+            "com.alipay.sportsplay.biz.rpc.walk.steprevive.reviveSteps",
+            """[{"stepDate":"$stepDate","timeZone":"$TIME_ZONE"}]"""
         )
     }
 
@@ -1045,6 +1187,20 @@ object AntSportsRpcCall {
         return RequestManager.requestString("alipay.antsports.club.trade.buyMember", requestData)
     }
 
+    /**
+     * @brief 解锁下一个抢好友房间
+     *
+     * @param price 抓包中请求 price 使用当前能量余额，服务端自行计算实际解锁价格
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应抓包：alipay.antsports.club.trade.unlockNextRoom
+     */
+    fun unlockNextRoom(price: Int): String {
+        val args = """[{"apiVersion":"energy","chInfo":"healthstep","price":$price}]"""
+        return RequestManager.requestString("alipay.antsports.club.trade.unlockNextRoom", args)
+    }
+
     //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // 健康岛（Neverland）内部类
     //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1099,8 +1255,9 @@ object AntSportsRpcCall {
          * @remark 对应API：com.alipay.neverland.biz.rpc.queryBubbleTask
          */
         fun queryBubbleTask(): String {
+            RpcCache.invalidate(NEVERLAND_QUERY_BUBBLE_TASK_RPC)
             return RequestManager.requestString(
-                "com.alipay.neverland.biz.rpc.queryBubbleTask",
+                NEVERLAND_QUERY_BUBBLE_TASK_RPC,
                 """[{"source":"jkdsportcard","sportsAuthed":true}]"""
             )
         }
@@ -1139,8 +1296,9 @@ object AntSportsRpcCall {
          * @remark 对应API：com.alipay.neverland.biz.rpc.queryTaskCenter
          */
         fun queryTaskCenter(): String {
+            RpcCache.invalidate(NEVERLAND_QUERY_TASK_CENTER_RPC)
             return RequestManager.requestString(
-                "com.alipay.neverland.biz.rpc.queryTaskCenter",
+                NEVERLAND_QUERY_TASK_CENTER_RPC,
                 """[{"apDid":"6b30jO17Z6Wbr2ggRytFxB09hZdhixfSekjytgi9Ytc=","cityCode":"","deviceLevel":"high","newGame":0,"source":"jkdsportcard"}]"""
             )
         }
@@ -1156,8 +1314,9 @@ object AntSportsRpcCall {
          * @remark 对应API：com.alipay.neverland.biz.rpc.queryTaskInfo
          */
         fun queryTaskInfo(source: String, type: String): String {
+            RpcCache.invalidate(NEVERLAND_QUERY_TASK_INFO_RPC)
             return RequestManager.requestString(
-                "com.alipay.neverland.biz.rpc.queryTaskInfo",
+                NEVERLAND_QUERY_TASK_INFO_RPC,
                 """[{"source":"$source","type":"$type"}]"""
             )
         }
@@ -1177,7 +1336,7 @@ object AntSportsRpcCall {
         fun energyReceive(encryptValue: String, energyNum: Int, type: String, lightTaskId: String?): String {
             val obj = JSONObject().apply {
                 put("encryptValue", encryptValue)
-                put("energyNum", energyNum)
+                put("energyNum", energyNum.toString())
                 put("source", "jkdsportcard")
                 put("type", type)
                 if (!lightTaskId.isNullOrEmpty()) {
@@ -1286,10 +1445,10 @@ object AntSportsRpcCall {
          * 
          * @remark 对应API：com.alipay.neverland.biz.rpc.queryMapInfoNew
          */
-        fun queryMapInfoNew(mapId: String): String {
+        fun queryMapInfoNew(mapId: String, branchId: String = "MASTER"): String {
             return RequestManager.requestString(
                 "com.alipay.neverland.biz.rpc.queryMapInfoNew",
-                """[{"mapId":"$mapId","source":"jkdsportcard"}]"""
+                """[{"branchId":"$branchId","mapId":"$mapId","source":"jkdsportcard"}]"""
             )
         }
 
@@ -1323,6 +1482,13 @@ object AntSportsRpcCall {
                 "com.alipay.neverland.biz.rpc.build",
                 """[{"branchId":"$branchId","mapId":"$mapId","multiNum":$multiNum,"source":"jkdsportcard"}]"""
             )
+        }
+
+        /**
+         * @brief 建造建筑（新版参数顺序，兼容旧 build(branchId, mapId, multiNum)）
+         */
+        fun build(mapId: String, multiNum: Int, branchId: String = "MASTER"): String {
+            return build(branchId, mapId, multiNum)
         }
 
         /**
