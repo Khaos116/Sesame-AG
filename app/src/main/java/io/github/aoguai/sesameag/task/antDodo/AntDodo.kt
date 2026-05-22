@@ -37,6 +37,15 @@ class AntDodo : ModelTask() {
     private val handledTaskFinishes = LinkedHashSet<String>()
     private val handledTaskAwards = LinkedHashSet<String>()
 
+    private enum class DodoTaskFailureType {
+        TERMINAL_DONE,
+        BUSINESS_LIMIT,
+        UNSUPPORTED_NO_CLOSURE,
+        NON_RETRYABLE_INVALID,
+        RETRYABLE_RPC,
+        UNKNOWN_NEEDS_REVIEW
+    }
+
     override fun getName(): String = "神奇物种"
 
     override fun getGroup(): ModelGroup = ModelGroup.DODO
@@ -288,10 +297,15 @@ class AntDodo : ModelTask() {
                                     doubleCheck = true
                                     Log.dodo("任务奖励🎖️[$taskTitle]#${awardCount}个")
                                 } else {
-                                    Log.dodo("领取失败[$taskTitle]：${joAward.optString("resultDesc", joAward.toString())}")
-                                    if (isTaskTerminalFailure(joAward)) {
-                                        handledTaskAwards.add(taskKey)
-                                    }
+                                    handleDodoTaskFailure(
+                                        phase = "receiveTaskAward",
+                                        sceneCode = sceneCode,
+                                        taskType = taskType,
+                                        taskTitle = taskTitle,
+                                        taskKey = taskKey,
+                                        response = joAward,
+                                        markHandled = { handledTaskAwards.add(taskKey) }
+                                    )
                                 }
                             }
                             TaskStatus.TODO.name == taskStatus -> {
@@ -319,24 +333,15 @@ class AntDodo : ModelTask() {
                                     Log.dodo("物种任务🧾️[$taskTitle]")
                                     doubleCheck = true
                                 } else {
-                                    val errorCode = joFinishTask.optString("code")
-                                        .ifBlank { joFinishTask.optString("resultCode") }
-                                    val resultDesc = joFinishTask.optString("desc")
-                                        .ifBlank { joFinishTask.optString("resultDesc") }
-                                    Log.dodo("完成任务失败[$taskTitle] code=${errorCode.ifBlank { "UNKNOWN" }} msg=$resultDesc"
+                                    handleDodoTaskFailure(
+                                        phase = "finishTask",
+                                        sceneCode = sceneCode,
+                                        taskType = taskType,
+                                        taskTitle = taskTitle,
+                                        taskKey = taskKey,
+                                        response = joFinishTask,
+                                        markHandled = { handledTaskFinishes.add(taskKey) }
                                     )
-                                    if (isTaskTerminalFailure(joFinishTask)) {
-                                        handledTaskFinishes.add(taskKey)
-                                    }
-                                    val blacklistReason = errorCode.ifBlank { resultDesc }
-                                    if (blacklistReason.isNotBlank()) {
-                                        TaskBlacklist.autoAddToBlacklist(
-                                            TASK_BLACKLIST_MODULE,
-                                            taskType,
-                                            taskTitle,
-                                            blacklistReason
-                                        )
-                                    }
                                 }
                             }
                         }
@@ -364,17 +369,108 @@ class AntDodo : ModelTask() {
             response.optString("resultCode").equals("SUCCESS", ignoreCase = true)
     }
 
-    private fun isTaskTerminalFailure(response: JSONObject): Boolean {
+    private fun handleDodoTaskFailure(
+        phase: String,
+        sceneCode: String,
+        taskType: String,
+        taskTitle: String,
+        taskKey: String,
+        response: JSONObject,
+        markHandled: () -> Unit
+    ) {
+        val code = extractDodoTaskFailureCode(response)
+        val message = extractDodoTaskFailureMessage(response)
+        val detail = "module=$TASK_BLACKLIST_MODULE taskId=$taskType taskType=$taskType " +
+            "taskName=$taskTitle sceneCode=$sceneCode action=$phase rpc=AntDodoRpcCall.$phase " +
+            "code=${code.ifBlank { "UNKNOWN" }} msg=$message raw=$response"
+        when (classifyDodoTaskFailure(response)) {
+            DodoTaskFailureType.TERMINAL_DONE -> {
+                markHandled()
+                Log.dodo("物种任务[$taskTitle] classification=TERMINAL_DONE decision=MARK_HANDLED $detail")
+            }
+            DodoTaskFailureType.BUSINESS_LIMIT -> {
+                markHandled()
+                Log.dodo("物种任务[$taskTitle] classification=BUSINESS_LIMIT decision=STOP_TODAY_OR_CURRENT_CHAIN $detail")
+            }
+            DodoTaskFailureType.UNSUPPORTED_NO_CLOSURE -> {
+                blacklistClassifiedDodoTask(taskType, taskTitle, code)
+                markHandled()
+                Log.error(TAG, "物种任务[$taskTitle] classification=UNSUPPORTED_NO_CLOSURE decision=BLACKLIST reason=未抓到稳定完成RPC $detail")
+            }
+            DodoTaskFailureType.NON_RETRYABLE_INVALID -> {
+                blacklistClassifiedDodoTask(taskType, taskTitle, code)
+                markHandled()
+                Log.error(TAG, "物种任务[$taskTitle] classification=NON_RETRYABLE_INVALID decision=BLACKLIST $detail")
+            }
+            DodoTaskFailureType.RETRYABLE_RPC -> {
+                Log.error(TAG, "物种任务[$taskTitle] classification=RETRYABLE_RPC decision=RETRY_LATER $detail")
+            }
+            DodoTaskFailureType.UNKNOWN_NEEDS_REVIEW -> {
+                Log.error(TAG, "物种任务[$taskTitle] classification=UNKNOWN_NEEDS_REVIEW decision=LOG_ONLY taskKey=$taskKey $detail")
+            }
+        }
+    }
+
+    private fun blacklistClassifiedDodoTask(taskType: String, taskTitle: String, code: String) {
+        if (code.isNotBlank()) {
+            TaskBlacklist.autoAddToBlacklist(TASK_BLACKLIST_MODULE, taskType, taskTitle, code)
+        }
+        TaskBlacklist.addToBlacklist(TASK_BLACKLIST_MODULE, taskType, taskTitle)
+    }
+
+    private fun classifyDodoTaskFailure(response: JSONObject): DodoTaskFailureType {
+        val code = extractDodoTaskFailureCode(response)
+        val desc = extractDodoTaskFailureMessage(response)
+        return when {
+            code in setOf("400000030", "400000012") ||
+                containsAny(desc, "已领取", "已经领取", "重复领取", "重复领奖", "重复完成", "已完成", "任务已完结", "任务已结束") ->
+                DodoTaskFailureType.TERMINAL_DONE
+
+            containsAny(desc, "权益获取次数超过上限", "上限", "不可领取", "资格不足", "风控", "风险") ||
+                code == "CAMP_TRIGGER_ERROR" ||
+                code.contains("LIMIT", ignoreCase = true) ->
+                DodoTaskFailureType.BUSINESS_LIMIT
+
+            code == "400000040" ||
+                containsAny(desc, "不支持rpc调用", "不支持RPC完成") ->
+                DodoTaskFailureType.UNSUPPORTED_NO_CLOSURE
+
+            code in setOf("20020012", "TASK_ID_INVALID", "ILLEGAL_ARGUMENT", "PROMISE_TEMPLATE_NOT_EXIST") ||
+                containsAny(desc, "参数错误", "任务ID非法", "模板不存在") ->
+                DodoTaskFailureType.NON_RETRYABLE_INVALID
+
+            code in setOf("3000", "REMOTE_INVOKE_EXCEPTION", "OP_REPEAT_CHECK") ||
+                containsAny(desc, "系统出错", "系统繁忙", "稍后", "繁忙", "频繁", "重试") ||
+                isDodoFailureMarkedRetryable(response) ->
+                DodoTaskFailureType.RETRYABLE_RPC
+
+            else -> DodoTaskFailureType.UNKNOWN_NEEDS_REVIEW
+        }
+    }
+
+    private fun extractDodoTaskFailureCode(response: JSONObject): String {
         val code = response.optString("code")
             .ifBlank { response.optString("errorCode") }
             .ifBlank { response.optString("resultCode") }
-        val desc = response.optString("desc")
+        return code
+    }
+
+    private fun extractDodoTaskFailureMessage(response: JSONObject): String {
+        return response.optString("desc")
             .ifBlank { response.optString("errorMsg") }
             .ifBlank { response.optString("resultDesc") }
-        return code == "400000030" ||
-            code == "400000012" ||
-            desc.contains("任务已完结") ||
-            desc.contains("权益获取次数超过上限")
+            .ifBlank { response.optString("memo") }
+            .ifBlank { response.toString() }
+    }
+
+    private fun isDodoFailureMarkedRetryable(response: JSONObject): Boolean {
+        return listOf("retryable", "retriable", "canRetry").any { key ->
+            response.has(key) && response.optBoolean(key, false)
+        }
+    }
+
+    private fun containsAny(text: String, vararg keywords: String): Boolean {
+        return keywords.any { keyword -> text.contains(keyword, ignoreCase = true) }
     }
 
     private fun finishTodoTask(

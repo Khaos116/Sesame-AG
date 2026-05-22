@@ -27,14 +27,6 @@ private val sesameCreditDefaultBlacklist = setOf(
     "去订阅芝麻小组件",       // 参数错误：promiseActivityExtCheck
     "坚持攒保障",            // 参数错误：promiseActivityExtCheck（与"坚持攒保障金"类似，防止匹配遗漏）
     "逛逛淘金币",            // 参数错误：promiseActivityExtCheck
-    "去花呗翻卡",            // 操作太频繁：OP_REPEAT_CHECK
-    "逛网商福利",            // 操作太频繁：OP_REPEAT_CHECK
-    "领视频红包",            // 操作太频繁：OP_REPEAT_CHECK
-    "领点餐优惠",            // 操作太频繁：OP_REPEAT_CHECK
-    "去抛竿钓鱼",            // 操作太频繁：OP_REPEAT_CHECK
-    "逛商家积分兑好物",       // 操作太频繁：OP_REPEAT_CHECK
-    "坚持浏览乐游记",         // 操作太频繁：OP_REPEAT_CHECK
-    "去体验先用后付",         // 操作太频繁：OP_REPEAT_CHECK
     "0.01元/日起",           // 参数错误：promiseActivityExtCheck / ILLEGAL_ARGUMENT
     "0.1元起租会员攒粒",      // 参数错误：ILLEGAL_ARGUMENT
     "完成旧衣回收得现金",      // 参数错误：ILLEGAL_ARGUMENT
@@ -42,13 +34,6 @@ private val sesameCreditDefaultBlacklist = setOf(
     "完成任务坚持逛裹酱领福利", // 参数错误：ILLEGAL_ARGUMENT
     "完成任务去玩一局斗地主",   // 参数错误：ILLEGAL_ARGUMENT
     "完成任务添加桌面小组件",   // 参数错误：ILLEGAL_ARGUMENT
-    "坚持刷视频赚福利",       // 存在进行中的生活记录：PROMISE_HAS_PROCESSING_TEMPLATE
-    "去领目标应用积分",       // 存在进行中的生活记录：PROMISE_HAS_PROCESSING_TEMPLATE
-    "去参与花呗活动",         // 存在进行中的生活记录：PROMISE_HAS_PROCESSING_TEMPLATE
-    "逛网商领福利金",         // 存在进行中的生活记录：PROMISE_HAS_PROCESSING_TEMPLATE
-    "去浏览租赁大促会场",      // 存在进行中的生活记录：PROMISE_HAS_PROCESSING_TEMPLATE
-    "逛一逛免费领点餐优惠",    // 存在进行中的生活记录：PROMISE_HAS_PROCESSING_TEMPLATE
-    "618去淘金币赢20亿",      // 存在进行中的生活记录：PROMISE_HAS_PROCESSING_TEMPLATE
     "领取任务将芝麻信用添加到首页", // 服务端模板不存在：PROMISE_TEMPLATE_NOT_EXIST
     "领取任务去开通信用额度"    // 服务端模板不存在：PROMISE_TEMPLATE_NOT_EXIST
 )
@@ -96,6 +81,7 @@ private val orchardDefaultBlacklist = setOf(
     "ORCHARD_NORMAL_QUTOUTIAOXCX",      // 逛趣头条小程序
     "ORCHARD_NORMAL_XIANXIAZHIFU100",   // 到店支付1笔得100肥
     "ANTFARM_ORCHARD_P2P_SHARER",       // 分享给好友
+    "ANTFARM_ORCHARD_NORMAL_GONGGEFANGWEN", // 从支付宝首页访问农场：400000040，不支持rpc调用
     "ORCHARD_TEAM_SPREAD_PERSON",       // 合种/帮帮种多人施肥
     "ORCHARD_HELP_TEAM_MEMBER_COUNT",   // 帮帮种组队
     "NTFARM_ORCHARD_NORMAL_FQHB_NEW1",  // 去天猫攒福气兑红包

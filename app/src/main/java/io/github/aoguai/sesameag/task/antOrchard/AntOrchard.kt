@@ -40,6 +40,38 @@ class AntOrchard : ModelTask() {
         private val SUPPORTED_TAOBAO_LIMIT_BALLOON_IDS = setOf("TAOBAO_LIMIT", "TAOBAO")
         private val SUPPORTED_TAOBAO_VISIT_SOURCES = setOf("task_visit", "visittask")
         private val TAOBAO_VISIT_LEGACY_TITLES = setOf("逛助农好货得肥料", "逛农货得肥料")
+        private val ORCHARD_BUSINESS_LIMIT_CODES = setOf(
+            "CAMP_TRIGGER_ERROR",
+            "PROMISE_TODAY_FINISH_TIMES_LIMIT"
+        )
+        private val ORCHARD_UNSUPPORTED_RPC_CODES = setOf(
+            "400000040"
+        )
+        private val ORCHARD_NON_RETRYABLE_INVALID_CODES = setOf(
+            "20020012",
+            "TASK_ID_INVALID",
+            "ILLEGAL_ARGUMENT"
+        )
+        private val ORCHARD_RETRYABLE_RPC_CODES = setOf(
+            "3000",
+            "REMOTE_INVOKE_EXCEPTION",
+            "OP_REPEAT_CHECK"
+        )
+    }
+
+    private enum class OrchardDirectVisitTaskResult {
+        COMPLETED,
+        HANDLED_FAILURE,
+        UNSUPPORTED
+    }
+
+    private enum class OrchardRpcFailureType {
+        BUSINESS_LIMIT,
+        TERMINAL_DONE,
+        UNSUPPORTED_NO_CLOSURE,
+        NON_RETRYABLE_INVALID,
+        RETRYABLE_RPC,
+        UNKNOWN_NEEDS_REVIEW
     }
 
     internal var userId: String? = UserMap.currentUid
@@ -1190,19 +1222,15 @@ class AntOrchard : ModelTask() {
                         } else if (isSupportedTaobaoVisitTask(task)) {
                             executeTaobaoVisitTask(task, title)
                         } else {
-                            if (!executeDirectVisitTask(sceneCode, taskId, groupId, title)) {
-                                logUnsupportedVisitTask(task, title)
+                            when (executeDirectVisitTask(sceneCode, taskId, groupId, title)) {
+                                OrchardDirectVisitTaskResult.UNSUPPORTED -> logUnsupportedVisitTask(task, title)
+                                OrchardDirectVisitTaskResult.COMPLETED,
+                                OrchardDirectVisitTaskResult.HANDLED_FAILURE -> Unit
                             }
                         }
                     }
                     "TRIGGER", "ADD_HOME", "PUSH_SUBSCRIBE" -> {
-                        val finishResponse = JSONObject(AntOrchardRpcCall.finishTask(userId, sceneCode, taskId, ORCHARD_SOURCE))
-                        if (ResChecker.checkRes(TAG, finishResponse)) {
-                            invalidateOrchardListTaskCache()
-                            Log.orchard("农场任务🧾[$title]")
-                        } else {
-                            Log.error(TAG, "农场任务🧾[$title]${finishResponse.optString("desc")}")
-                        }
+                        executeOrchardFinishTask(actionType, sceneCode, taskId, groupId, title)
                     }
                     "ANTFARM_COLLECT_MANURE" -> {
                         // actionType=ANTFARM_COLLECT_MANURE(taskStatus=TODO) 时，需要调用 com.alipay.antfarm.collectManurePot(sceneCode=ORCHARD)
@@ -1416,37 +1444,185 @@ class AntOrchard : ModelTask() {
         taskId: String,
         groupId: String,
         title: String
-    ): Boolean {
+    ): OrchardDirectVisitTaskResult {
+        return executeOrchardFinishTask("VISIT", sceneCode, taskId, groupId, title)
+    }
+
+    private fun executeOrchardFinishTask(
+        action: String,
+        sceneCode: String,
+        taskId: String,
+        groupId: String,
+        title: String
+    ): OrchardDirectVisitTaskResult {
         val currentUserId = userId
         if (currentUserId.isNullOrBlank() || sceneCode.isBlank() || taskId.isBlank()) {
-            return false
+            return OrchardDirectVisitTaskResult.UNSUPPORTED
         }
         val finishResponse = JSONObject(
             AntOrchardRpcCall.finishTask(currentUserId, sceneCode, taskId, ORCHARD_SOURCE)
         )
-        if (ResChecker.checkRes(TAG, finishResponse)) {
+        if (isRpcSuccessResponse(finishResponse)) {
             invalidateOrchardListTaskCache()
             Log.orchard("农场任务🧾[$title]")
-            return true
+            return OrchardDirectVisitTaskResult.COMPLETED
         }
         val errorCode = finishResponse.optString("resultCode")
             .ifBlank { finishResponse.optString("errorCode") }
             .ifBlank { finishResponse.optString("code") }
-        if (errorCode.isNotBlank()) {
-            TaskBlacklist.autoAddToBlacklist(
-                ORCHARD_TASK_BLACKLIST_MODULE,
-                groupId.ifBlank { taskId },
-                title,
-                errorCode
-            )
-        }
         val errorMsg = finishResponse.optString("memo")
             .ifBlank { finishResponse.optString("desc") }
             .ifBlank { finishResponse.optString("resultDesc") }
             .ifBlank { finishResponse.optString("errorMsg") }
-        Log.orchard("农场任务⏭️[$title] action=VISIT 直提RPC失败 code=${errorCode.ifBlank { "UNKNOWN" }} msg=$errorMsg raw=$finishResponse"
+
+        return handleDirectVisitTaskFailure(
+            action = action,
+            title = title,
+            taskKey = groupId.ifBlank { taskId },
+            errorCode = errorCode,
+            errorMsg = errorMsg,
+            response = finishResponse
         )
-        return false
+    }
+
+    private fun handleDirectVisitTaskFailure(
+        action: String,
+        title: String,
+        taskKey: String,
+        errorCode: String,
+        errorMsg: String,
+        response: JSONObject
+    ): OrchardDirectVisitTaskResult {
+        val detail = "module=$ORCHARD_TASK_BLACKLIST_MODULE taskId=$taskKey taskName=$title " +
+            "action=$action rpc=AntOrchardRpcCall.finishTask " +
+            "code=${errorCode.ifBlank { "UNKNOWN" }} msg=${errorMsg.ifBlank { "UNKNOWN" }} raw=$response"
+
+        return when (classifyDirectVisitRpcFailure(errorCode, errorMsg, response)) {
+            OrchardRpcFailureType.TERMINAL_DONE -> {
+                invalidateOrchardListTaskCache()
+                Log.orchard("农场任务[$title] classification=TERMINAL_DONE decision=MARK_HANDLED $detail")
+                OrchardDirectVisitTaskResult.HANDLED_FAILURE
+            }
+
+            OrchardRpcFailureType.BUSINESS_LIMIT -> {
+                Log.orchard("农场任务[$title] classification=BUSINESS_LIMIT decision=STOP_TODAY_OR_CURRENT_CHAIN $detail")
+                OrchardDirectVisitTaskResult.HANDLED_FAILURE
+            }
+
+            OrchardRpcFailureType.UNSUPPORTED_NO_CLOSURE -> {
+                blacklistClassifiedOrchardTask(taskKey, title, errorCode)
+                Log.error(
+                    TAG,
+                    "农场任务[$title] classification=UNSUPPORTED_NO_CLOSURE decision=BLACKLIST " +
+                        "reason=未抓到稳定完成RPC $detail"
+                )
+                OrchardDirectVisitTaskResult.HANDLED_FAILURE
+            }
+
+            OrchardRpcFailureType.NON_RETRYABLE_INVALID -> {
+                blacklistClassifiedOrchardTask(taskKey, title, errorCode)
+                Log.error(
+                    TAG,
+                    "农场任务[$title] classification=NON_RETRYABLE_INVALID decision=BLACKLIST $detail"
+                )
+                OrchardDirectVisitTaskResult.HANDLED_FAILURE
+            }
+
+            OrchardRpcFailureType.RETRYABLE_RPC -> {
+                Log.error(
+                    TAG,
+                    "农场任务[$title] classification=RETRYABLE_RPC decision=RETRY_LATER $detail"
+                )
+                OrchardDirectVisitTaskResult.HANDLED_FAILURE
+            }
+
+            OrchardRpcFailureType.UNKNOWN_NEEDS_REVIEW -> {
+                Log.error(
+                    TAG,
+                    "农场任务[$title] classification=UNKNOWN_NEEDS_REVIEW decision=LOG_ONLY $detail"
+                )
+                OrchardDirectVisitTaskResult.HANDLED_FAILURE
+            }
+        }
+    }
+
+    private fun blacklistClassifiedOrchardTask(taskKey: String, title: String, errorCode: String) {
+        if (errorCode.isNotBlank()) {
+            TaskBlacklist.autoAddToBlacklist(
+                ORCHARD_TASK_BLACKLIST_MODULE,
+                taskKey,
+                title,
+                errorCode
+            )
+        }
+        TaskBlacklist.addToBlacklist(ORCHARD_TASK_BLACKLIST_MODULE, taskKey, title)
+    }
+
+    private fun isRpcSuccessResponse(response: JSONObject): Boolean {
+        if (response.optBoolean("success") || response.optBoolean("isSuccess")) {
+            return true
+        }
+
+        when (val resultCode = response.opt("resultCode")) {
+            is Number -> if (resultCode.toInt() == 100 || resultCode.toInt() == 200) {
+                return true
+            }
+            is String -> if (resultCode.equals("SUCCESS", ignoreCase = true) ||
+                resultCode == "100" ||
+                resultCode == "200"
+            ) {
+                return true
+            }
+        }
+
+        return response.optString("memo").equals("SUCCESS", ignoreCase = true)
+    }
+
+    private fun classifyDirectVisitRpcFailure(
+        errorCode: String,
+        errorMsg: String,
+        response: JSONObject
+    ): OrchardRpcFailureType {
+        val message = errorMsg.ifBlank {
+            response.optString("resultMsg")
+                .ifBlank { response.optString("errorMessage") }
+                .ifBlank { response.toString() }
+        }
+
+        return when {
+            containsAny(message, "已领取", "已经领取", "重复领取", "重复领奖", "重复完成", "已完成", "任务已完结", "任务已结束") ->
+                OrchardRpcFailureType.TERMINAL_DONE
+
+            errorCode in ORCHARD_BUSINESS_LIMIT_CODES ||
+                errorCode.contains("LIMIT", ignoreCase = true) ||
+                containsAny(message, "上限", "限制", "受限", "不可领取", "次数超过限制", "风控", "风险") ->
+                OrchardRpcFailureType.BUSINESS_LIMIT
+
+            errorCode in ORCHARD_UNSUPPORTED_RPC_CODES ||
+                containsAny(message, "不支持rpc调用", "不支持RPC完成") ->
+                OrchardRpcFailureType.UNSUPPORTED_NO_CLOSURE
+
+            errorCode in ORCHARD_NON_RETRYABLE_INVALID_CODES ||
+                containsAny(message, "参数错误", "任务ID非法") ->
+                OrchardRpcFailureType.NON_RETRYABLE_INVALID
+
+            errorCode in ORCHARD_RETRYABLE_RPC_CODES ||
+                containsAny(message, "稍后", "繁忙", "系统出错", "系统繁忙", "频繁", "重试") ||
+                isMarkedRetryable(response) ->
+                OrchardRpcFailureType.RETRYABLE_RPC
+
+            else -> OrchardRpcFailureType.UNKNOWN_NEEDS_REVIEW
+        }
+    }
+
+    private fun isMarkedRetryable(response: JSONObject): Boolean {
+        return listOf("retryable", "retriable", "canRetry").any { key ->
+            response.has(key) && response.optBoolean(key, false)
+        }
+    }
+
+    private fun containsAny(text: String, vararg keywords: String): Boolean {
+        return keywords.any { keyword -> text.contains(keyword, ignoreCase = true) }
     }
 
     private fun isTaobaoVisitTask(task: JSONObject): Boolean {

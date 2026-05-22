@@ -184,6 +184,15 @@ class AntMember : ModelTask() {
         NON_RETRYABLE
     }
 
+    private enum class GoldTicketRpcFailureType {
+        TERMINAL_DONE,
+        BUSINESS_LIMIT,
+        UNSUPPORTED_NO_CLOSURE,
+        NON_RETRYABLE_INVALID,
+        RETRYABLE_RPC,
+        UNKNOWN_NEEDS_REVIEW
+    }
+
     private val insuredTaskCenterConfigs = listOf(
         InsuredTaskCenterConfig("AP16236844", "TASK_LIST", "GIFT_GOLD_NORMAL_TASK_CONTROL"),
         InsuredTaskCenterConfig("AP19236833", "TOP_LIST", "GIFT_GOLD_TOP_TASK_CONTROL"),
@@ -779,7 +788,7 @@ class AntMember : ModelTask() {
                 return true
             }
 
-            if (ResChecker.checkRes(TAG + "会员权益兑换失败:", jo)) {
+            if (ResChecker.checkRes(TAG, "会员权益兑换失败:", jo)) {
                 memberPointExchangeBenefitToday(benefitId)
                 return true
             }
@@ -806,7 +815,7 @@ class AntMember : ModelTask() {
                 } else {
                     val s = AntMemberRpcCall.queryMemberSigninCalendar()
                     val jo = JSONObject(s)
-                    if (ResChecker.checkRes(TAG + "会员签到失败:", jo)) {
+                    if (ResChecker.checkRes(TAG, "会员签到失败:", jo)) {
                         val currentSigned = jo.optBoolean("currentSigninStatus") || jo.optBoolean("autoSignInSuccess")
                         if (currentSigned) {
                             val signPoint = jo.optString("signinPoint", "0")
@@ -999,7 +1008,7 @@ class AntMember : ModelTask() {
         try {
             val response = AntMemberRpcCall.queryMemberTaskProcessList()
             val taskListObject = JSONObject(response)
-            if (!ResChecker.checkRes(TAG + "查询会员阶段奖励失败:", taskListObject)) {
+            if (!ResChecker.checkRes(TAG, "查询会员阶段奖励失败:", taskListObject)) {
                 Log.member("会员任务[阶段奖励]#查询失败:" + taskListObject.optString("resultDesc", response)
                 )
                 return@run 0
@@ -1013,7 +1022,7 @@ class AntMember : ModelTask() {
                     award.taskProcessId
                 )
                 val awardObject = JSONObject(awardResponse)
-                if (!ResChecker.checkRes(TAG + "领取会员阶段奖励失败:", awardObject)) {
+                if (!ResChecker.checkRes(TAG, "领取会员阶段奖励失败:", awardObject)) {
                     Log.member("会员任务[${award.title}]#阶段奖励领取失败:" + awardObject.optString("resultDesc", awardResponse)
                     )
                     continue
@@ -1447,7 +1456,7 @@ class AntMember : ModelTask() {
                 Log.member("会员任务[${executableTask.title}]#不满足营销规则，跳过执行")
                 return@run false
             }
-            if (!ResChecker.checkRes(TAG + "执行会员任务失败:", executeObject)) {
+            if (!ResChecker.checkRes(TAG, "执行会员任务失败:", executeObject)) {
                 Log.error(TAG, "执行任务失败:" + executeObject.optString("resultDesc", executeResponse))
                 return@run false
             }
@@ -1488,7 +1497,7 @@ class AntMember : ModelTask() {
             Log.member("会员任务[${task.title}]#不满足营销规则，跳过领取")
             return null
         }
-        if (!ResChecker.checkRes(TAG + "领取会员任务失败:", applyObject)) {
+        if (!ResChecker.checkRes(TAG, "领取会员任务失败:", applyObject)) {
             Log.error(TAG, "领取会员任务失败:" + applyObject.optString("resultDesc", applyResponse))
             return null
         }
@@ -1539,7 +1548,7 @@ class AntMember : ModelTask() {
 
             val detailResponse = AntMemberRpcCall.querySingleTaskProcessDetail(task.taskProcessId)
             val detailObject = JSONObject(detailResponse)
-            if (!ResChecker.checkRes(TAG + "查询会员任务详情失败:", detailObject)) {
+            if (!ResChecker.checkRes(TAG, "查询会员任务详情失败:", detailObject)) {
                 Log.error(
                     "$TAG.checkCurrentMemberTaskFinished",
                     "会员任务详情响应失败: " + detailObject.optString("resultDesc", detailResponse)
@@ -2004,7 +2013,8 @@ class AntMember : ModelTask() {
         val status = task.optString("taskProcessStatus")
         val reason = resolveUnsupportedInsuredTaskReason(taskMainType, taskType, operationType, taskCategory)
         Log.member(
-            "保障金🏥[任务中心-$title]#$reason，加入黑名单待补抓:" +
+            "保障金🏥[任务中心-$title] classification=UNSUPPORTED_NO_CLOSURE decision=BLACKLIST reason=$reason " +
+                "module=$insuredTaskBlacklistModule action=unsupportedInsuredTask rpc=<none> code=400000040 msg=未抓到稳定完成RPC " +
                 "taskId=$taskId taskMainType=$taskMainType taskType=$taskType " +
                 "operationType=$operationType category=$taskCategory status=$status"
         )
@@ -2973,6 +2983,117 @@ class AntMember : ModelTask() {
         }
     }
 
+    private fun handleGoldTicketTaskFailure(
+        source: String,
+        phase: String,
+        taskId: String,
+        title: String,
+        status: String,
+        response: JSONObject
+    ): Boolean {
+        val code = extractGoldTicketRpcCode(response)
+        val message = extractGoldTicketRpcMessage(response)
+        val rpc = when (phase) {
+            "trigger" -> "AntMemberRpcCall.goldBillTaskTrigger"
+            "push" -> "AntMemberRpcCall.taskQueryPush"
+            else -> "AntMemberRpcCall.$phase"
+        }
+        val detail = "module=$goldTicketTaskBlacklistModule taskId=$taskId taskName=$title " +
+            "source=$source status=$status action=$phase rpc=$rpc code=${code.ifBlank { "UNKNOWN" }} msg=$message raw=$response"
+        return when (classifyGoldTicketRpcFailure(response)) {
+            GoldTicketRpcFailureType.TERMINAL_DONE -> {
+                Log.member("黄金票🎫[${source}任务-$title] classification=TERMINAL_DONE decision=MARK_HANDLED $detail")
+                true
+            }
+
+            GoldTicketRpcFailureType.BUSINESS_LIMIT -> {
+                Log.member("黄金票🎫[${source}任务-$title] classification=BUSINESS_LIMIT decision=STOP_TODAY_OR_CURRENT_CHAIN $detail")
+                false
+            }
+
+            GoldTicketRpcFailureType.UNSUPPORTED_NO_CLOSURE -> {
+                blacklistClassifiedGoldTicketTask(taskId, title, code)
+                Log.error(TAG, "黄金票🎫[${source}任务-$title] classification=UNSUPPORTED_NO_CLOSURE decision=BLACKLIST reason=未抓到稳定完成RPC $detail")
+                false
+            }
+
+            GoldTicketRpcFailureType.NON_RETRYABLE_INVALID -> {
+                blacklistClassifiedGoldTicketTask(taskId, title, code)
+                Log.error(TAG, "黄金票🎫[${source}任务-$title] classification=NON_RETRYABLE_INVALID decision=BLACKLIST $detail")
+                false
+            }
+
+            GoldTicketRpcFailureType.RETRYABLE_RPC -> {
+                Log.error(TAG, "黄金票🎫[${source}任务-$title] classification=RETRYABLE_RPC decision=RETRY_LATER $detail")
+                false
+            }
+
+            GoldTicketRpcFailureType.UNKNOWN_NEEDS_REVIEW -> {
+                Log.error(TAG, "黄金票🎫[${source}任务-$title] classification=UNKNOWN_NEEDS_REVIEW decision=LOG_ONLY $detail")
+                false
+            }
+        }
+    }
+
+    private fun blacklistClassifiedGoldTicketTask(taskId: String, title: String, code: String) {
+        if (code.isNotBlank()) {
+            TaskBlacklist.autoAddToBlacklist(goldTicketTaskBlacklistModule, taskId, title, code)
+        }
+        TaskBlacklist.addToBlacklist(goldTicketTaskBlacklistModule, taskId, title)
+    }
+
+    private fun classifyGoldTicketRpcFailure(response: JSONObject): GoldTicketRpcFailureType {
+        val code = extractGoldTicketRpcCode(response)
+        val message = extractGoldTicketRpcMessage(response)
+        return when {
+            containsAny(message, "已领取", "已经领取", "重复领取", "重复领奖", "重复完成", "已完成", "任务已完结", "任务已结束") ->
+                GoldTicketRpcFailureType.TERMINAL_DONE
+
+            code in setOf("104", "PROMISE_HAS_PROCESSING_TEMPLATE", "CAMP_TRIGGER_ERROR") ||
+                code.contains("LIMIT", ignoreCase = true) ||
+                containsAny(message, "上限", "限制", "受限", "不可领取", "资格不足", "兑完", "风控", "风险", "模板处理中") ->
+                GoldTicketRpcFailureType.BUSINESS_LIMIT
+
+            code == "400000040" ||
+                containsAny(message, "不支持rpc调用", "不支持RPC完成") ->
+                GoldTicketRpcFailureType.UNSUPPORTED_NO_CLOSURE
+
+            code in setOf("20020012", "TASK_ID_INVALID", "ILLEGAL_ARGUMENT", "PROMISE_TEMPLATE_NOT_EXIST") ||
+                containsAny(message, "参数错误", "任务ID非法", "模板不存在", "生活记录模板不存在") ->
+                GoldTicketRpcFailureType.NON_RETRYABLE_INVALID
+
+            code in setOf("3000", "REMOTE_INVOKE_EXCEPTION", "OP_REPEAT_CHECK", "SYSTEM_BUSY", "NETWORK_ERROR") ||
+                containsAny(message, "系统出错", "系统繁忙", "稍后", "繁忙", "频繁", "重试") ||
+                isGoldTicketMarkedRetryable(response) ->
+                GoldTicketRpcFailureType.RETRYABLE_RPC
+
+            else -> GoldTicketRpcFailureType.UNKNOWN_NEEDS_REVIEW
+        }
+    }
+
+    private fun extractGoldTicketRpcCode(response: JSONObject): String {
+        return response.optString("resultCode")
+            .ifBlank { response.optString("errorCode") }
+            .ifBlank { response.optString("code") }
+            .ifBlank { response.optString("errCode") }
+    }
+
+    private fun extractGoldTicketRpcMessage(response: JSONObject): String {
+        return response.optString("resultDesc")
+            .ifBlank { response.optString("memo") }
+            .ifBlank { response.optString("desc") }
+            .ifBlank { response.optString("errorMsg") }
+            .ifBlank { response.optString("errorMessage") }
+            .ifBlank { response.optString("resultView") }
+            .ifBlank { response.toString() }
+    }
+
+    private fun isGoldTicketMarkedRetryable(response: JSONObject): Boolean {
+        return listOf("retryable", "retriable", "canRetry").any { key ->
+            response.has(key) && response.optBoolean(key, false)
+        }
+    }
+
     private fun tryReceiveGoldTicketTask(task: JSONObject, source: String = "首页"): Boolean {
         val taskId = task.optString("taskId")
         if (taskId.isBlank()) {
@@ -2995,15 +3116,14 @@ class AntMember : ModelTask() {
                 val triggerRes = AntMemberRpcCall.goldBillTaskTrigger(taskId) ?: return false
                 val triggerJson = JSONObject(triggerRes)
                 if (!ResChecker.checkRes(TAG, triggerJson)) {
-                    val triggerCode = triggerJson.optString("resultCode", triggerJson.optString("errorCode", ""))
-                    val triggerDesc = triggerJson.optString("resultDesc", triggerJson.optString("memo"))
-                    if (triggerCode.isNotBlank()) {
-                        TaskBlacklist.autoAddToBlacklist(goldTicketTaskBlacklistModule, taskId, title, triggerCode)
-                    }
-                    if (triggerDesc.isNotBlank()) {
-                        Log.error("黄金票🎫[${source}任务领取失败] $title#$taskId#$status#$triggerDesc")
-                    }
-                    return false
+                    return handleGoldTicketTaskFailure(
+                        source = source,
+                        phase = "trigger",
+                        taskId = taskId,
+                        title = title,
+                        status = status,
+                        response = triggerJson
+                    )
                 }
             }
 
@@ -3014,15 +3134,14 @@ class AntMember : ModelTask() {
             }
             val pushJson = JSONObject(pushRes)
             if (!ResChecker.checkRes(TAG, pushJson)) {
-                val pushCode = pushJson.optString("resultCode", pushJson.optString("errorCode", ""))
-                val pushDesc = pushJson.optString("resultDesc", pushJson.optString("memo"))
-                if (pushCode.isNotBlank()) {
-                    TaskBlacklist.autoAddToBlacklist(goldTicketTaskBlacklistModule, taskId, title, pushCode)
-                }
-                if (pushDesc.isNotBlank()) {
-                    Log.member("黄金票🎫[${source}任务推送提示] $title#$taskId#$status#$pushDesc")
-                }
-                return false
+                return handleGoldTicketTaskFailure(
+                    source = source,
+                    phase = "push",
+                    taskId = taskId,
+                    title = title,
+                    status = status,
+                    response = pushJson
+                )
             }
             val pushDone = pushJson.optJSONObject("result")
                 ?.optJSONObject("pushResult")
@@ -4221,12 +4340,12 @@ class AntMember : ModelTask() {
             try {
                 var s = AntMemberRpcCall.queryPointCertV2(page, pageSize)
                 var jo = JSONObject(s)
-                if (ResChecker.checkRes(TAG + "查询会员积分证书失败:", jo) && jo.has("pointToClaim")) {
+                if (ResChecker.checkRes(TAG, "查询会员积分证书失败:", jo) && jo.has("pointToClaim")) {
                     val pointToClaim = jo.optInt("pointToClaim", 0)
                     if (pointToClaim > 0 && jo.optBoolean("showReceiveAllPointFunction")) {
                         s = AntMemberRpcCall.receiveAllPointByUser()
                         val receiveAllObject = JSONObject(s)
-                        val receiveAllSuccess = ResChecker.checkRes(TAG + "会员积分一键领取失败:", receiveAllObject)
+                        val receiveAllSuccess = ResChecker.checkRes(TAG, "会员积分一键领取失败:", receiveAllObject)
                         if (receiveAllSuccess) {
                             val receiveSumPoint = receiveAllObject.optInt("receiveSumPoint", 0)
                             val receiveStatus = receiveAllObject.optString("receiveStatus")
@@ -4250,7 +4369,7 @@ class AntMember : ModelTask() {
 
                 s = AntMemberRpcCall.queryPointCert(page, pageSize)
                 jo = JSONObject(s)
-                if (ResChecker.checkRes(TAG + "查询会员积分证书失败:", jo)) {
+                if (ResChecker.checkRes(TAG, "查询会员积分证书失败:", jo)) {
                     claimMemberPointCertList(jo, page, pageSize)
                 } else {
                     Log.member(jo.getString("resultDesc"))
@@ -4276,7 +4395,7 @@ class AntMember : ModelTask() {
                 val pointAmount = certObject.optInt("pointAmount", certObject.optInt("point", 0))
                 val response = AntMemberRpcCall.receivePointByUser(id)
                 val receiveObject = JSONObject(response)
-                if (ResChecker.checkRes(TAG + "会员积分领取失败:", receiveObject)) {
+                if (ResChecker.checkRes(TAG, "会员积分领取失败:", receiveObject)) {
                     Log.member("会员积分🎖️[领取$bizTitle]#${pointAmount}积分")
                 } else {
                     Log.member(receiveObject.optString("resultDesc"))

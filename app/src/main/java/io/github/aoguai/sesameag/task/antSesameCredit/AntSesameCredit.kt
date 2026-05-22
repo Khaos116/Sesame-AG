@@ -578,7 +578,7 @@ class AntSesameCredit : ModelTask() {
                 skippedCount = overallSkippedTasks
             )
         } catch (t: Throwable) {
-            Log.printStackTrace(TAG + "doAllAvailableSesameTask err", t)
+            Log.printStackTrace(TAG, "doAllAvailableSesameTask err", t)
             return@run SesameTaskRunSummary(
                 completedCount = overallCompletedTasks,
                 skippedCount = overallSkippedTasks,
@@ -778,11 +778,20 @@ class AntSesameCredit : ModelTask() {
                 )
                 val msg = buildSesameRpcMessage(collectAllJo, collectAllResp)
                 if (isTransientSesameTaskError(errorCode, msg)) {
-                    Log.sesame("$logPrefix[一键收取失败，回退逐个收取]#$msg")
+                    Log.error(
+                        TAG,
+                        "$logPrefix[一键收取失败，回退逐个收取] classification=RETRYABLE_RPC decision=RETRY_LATER " +
+                            "module=$logPrefix taskId=collectAllCreditFeedback taskName=一键收取芝麻粒 " +
+                            "action=collectAllCreditFeedback rpc=AntSesameCreditRpcCall.collectAllCreditFeedback " +
+                            "code=${errorCode.ifEmpty { "UNKNOWN" }} msg=$msg raw=$collectAllJo"
+                    )
                 } else {
                     Log.error(
                         "$TAG.collectSesameFeedbackItems",
-                        "$logPrefix[一键收取响应失败，回退逐个收取]#$collectAllJo"
+                        "$logPrefix[一键收取响应失败，回退逐个收取] classification=UNKNOWN_NEEDS_REVIEW decision=LOG_ONLY " +
+                            "module=$logPrefix taskId=collectAllCreditFeedback taskName=一键收取芝麻粒 " +
+                            "action=collectAllCreditFeedback rpc=AntSesameCreditRpcCall.collectAllCreditFeedback " +
+                            "code=${errorCode.ifEmpty { "UNKNOWN" }} msg=$msg raw=$collectAllJo"
                     )
                 }
             }
@@ -799,9 +808,20 @@ class AntSesameCredit : ModelTask() {
             val collectResp = AntSesameCreditRpcCall.collectCreditFeedback(item.creditFeedbackId)
             val collectJo = JSONObject(collectResp)
             if (!ResChecker.checkRes(TAG, collectJo)) {
+                val itemErrorCode = collectJo.optString("errorCode", collectJo.optString("resultCode", ""))
+                val itemMsg = buildSesameRpcMessage(collectJo, collectResp)
+                val itemClassification = if (isTransientSesameTaskError(itemErrorCode, itemMsg)) {
+                    "RETRYABLE_RPC"
+                } else {
+                    "UNKNOWN_NEEDS_REVIEW"
+                }
+                val itemDecision = if (itemClassification == "RETRYABLE_RPC") "RETRY_LATER" else "LOG_ONLY"
                 Log.error(
                     "$TAG.collectSesameFeedbackItems",
-                    "$logPrefix[收取芝麻粒响应失败]#$collectJo"
+                    "$logPrefix[${item.title}] classification=$itemClassification decision=$itemDecision " +
+                        "module=$logPrefix taskId=${item.creditFeedbackId} taskName=${item.title} " +
+                        "action=collectCreditFeedback rpc=AntSesameCreditRpcCall.collectCreditFeedback " +
+                        "code=${itemErrorCode.ifEmpty { "UNKNOWN" }} msg=$itemMsg raw=$collectJo"
                 )
                 continue
             }
@@ -897,7 +917,7 @@ class AntSesameCredit : ModelTask() {
 
             val queryResp = JSONObject(queryRespStr)
             val queryData = queryResp.optJSONObject("data")
-            if (!ResChecker.checkRes(TAG + "查询时段任务失败:", queryResp) || !ResChecker.checkRes(
+            if (!ResChecker.checkRes(TAG, "查询时段任务失败:", queryResp) || !ResChecker.checkRes(
                     TAG, queryResp
                 ) || queryData == null
             ) {
@@ -1204,7 +1224,7 @@ class AntSesameCredit : ModelTask() {
                     //  Log.error(TAG, "任务提交失败: $title - $errorMsg")
                     // 自动添加到黑名单
                     if (!errorCode.isEmpty()) {
-                        autoBlacklistSesameTaskIfNeeded(sesameAlchemyTaskBlacklistModule, title, errorCode, resultView)
+                        autoBlacklistSesameTaskIfNeeded(sesameAlchemyTaskBlacklistModule, title, errorCode, resultView, "finish")
                     }
                 }
             }
@@ -1881,6 +1901,15 @@ class AntSesameCredit : ModelTask() {
         private val TAG: String = AntSesameCredit::class.java.simpleName
         private const val sesameCreditTaskBlacklistModule = "芝麻信用"
 
+        private enum class SesameTaskFailureType {
+            TERMINAL_DONE,
+            BUSINESS_LIMIT,
+            UNSUPPORTED_NO_CLOSURE,
+            NON_RETRYABLE_INVALID,
+            RETRYABLE_RPC,
+            UNKNOWN_NEEDS_REVIEW
+        }
+
         /**
          * 查询 + 自动领取可领取球（精简一行输出领取信息）
          */
@@ -1942,7 +1971,7 @@ class AntSesameCredit : ModelTask() {
                     Thread.sleep(1200)
                 }
             } catch (e: Exception) {
-                Log.printStackTrace(TAG + "queryAndCollect err", e)
+                Log.printStackTrace(TAG, "queryAndCollect err", e)
             }
         }
 
@@ -2271,15 +2300,91 @@ class AntSesameCredit : ModelTask() {
             moduleName: String,
             taskTitle: String,
             errorCode: String,
-            resultView: String = ""
+            resultView: String = "",
+            action: String = "task"
         ) {
-            if (taskTitle.isBlank() || errorCode.isBlank()) {
+            if (taskTitle.isBlank() || (errorCode.isBlank() && resultView.isBlank())) {
                 return
             }
-            if (isTransientSesameTaskError(errorCode, resultView)) {
-                return
+            val code = errorCode.ifBlank { "UNKNOWN" }
+            val message = resultView.ifBlank { "<empty>" }
+            val rpc = when (action) {
+                "join" -> "AntSesameCreditRpcCall.joinSesameTask"
+                "feedback" -> "AntSesameCreditRpcCall.feedBackSesameTask"
+                "finish" -> "AntSesameCreditRpcCall.finishSesameTask"
+                "adFinish" -> "AntSesameCreditRpcCall.taskFinish"
+                else -> "AntSesameCreditRpcCall.$action"
             }
-            autoAddToBlacklist(moduleName, taskTitle, taskTitle, errorCode)
+            val detail = "module=$moduleName taskId=$taskTitle taskName=$taskTitle action=$action rpc=$rpc " +
+                "code=$code msg=$message raw=$message"
+            when (classifySesameTaskFailure(errorCode, resultView)) {
+                SesameTaskFailureType.TERMINAL_DONE -> {
+                    Log.sesame("$moduleName[$taskTitle] classification=TERMINAL_DONE decision=MARK_HANDLED $detail")
+                }
+
+                SesameTaskFailureType.BUSINESS_LIMIT -> {
+                    Log.sesame("$moduleName[$taskTitle] classification=BUSINESS_LIMIT decision=STOP_TODAY_OR_CURRENT_CHAIN $detail")
+                }
+
+                SesameTaskFailureType.UNSUPPORTED_NO_CLOSURE -> {
+                    blacklistClassifiedSesameTask(moduleName, taskTitle, errorCode)
+                    Log.error(TAG, "$moduleName[$taskTitle] classification=UNSUPPORTED_NO_CLOSURE decision=BLACKLIST reason=未抓到稳定完成RPC $detail")
+                }
+
+                SesameTaskFailureType.NON_RETRYABLE_INVALID -> {
+                    blacklistClassifiedSesameTask(moduleName, taskTitle, errorCode)
+                    Log.error(TAG, "$moduleName[$taskTitle] classification=NON_RETRYABLE_INVALID decision=BLACKLIST $detail")
+                }
+
+                SesameTaskFailureType.RETRYABLE_RPC -> {
+                    Log.error(TAG, "$moduleName[$taskTitle] classification=RETRYABLE_RPC decision=RETRY_LATER $detail")
+                }
+
+                SesameTaskFailureType.UNKNOWN_NEEDS_REVIEW -> {
+                    Log.error(TAG, "$moduleName[$taskTitle] classification=UNKNOWN_NEEDS_REVIEW decision=LOG_ONLY $detail")
+                }
+            }
+        }
+
+        private fun blacklistClassifiedSesameTask(moduleName: String, taskTitle: String, errorCode: String) {
+            if (errorCode.isNotBlank()) {
+                autoAddToBlacklist(moduleName, taskTitle, taskTitle, errorCode)
+            }
+            TaskBlacklist.addToBlacklist(moduleName, taskTitle, taskTitle)
+        }
+
+        private fun classifySesameTaskFailure(errorCode: String, resultView: String): SesameTaskFailureType {
+            val code = errorCode.trim()
+            val message = resultView.trim()
+            return when {
+                code in setOf("TASK_ALREADY_FINISHED", "TASK_HAS_FINISHED", "REPEAT_FINISH", "REPEAT_REWARD") ||
+                    containsAnySesame(message, "已完成", "已领取", "已经领取", "重复领取", "重复领奖", "重复完成") ->
+                    SesameTaskFailureType.TERMINAL_DONE
+
+                code in setOf("CAMP_TRIGGER_ERROR", "PROMISE_TODAY_FINISH_TIMES_LIMIT", "PROMISE_HAS_PROCESSING_TEMPLATE", "104") ||
+                    code.contains("LIMIT", ignoreCase = true) ||
+                    containsAnySesame(message, "上限", "限制", "受限", "不可领取", "资格不足", "风控", "风险", "模板处理中") ->
+                    SesameTaskFailureType.BUSINESS_LIMIT
+
+                code == "400000040" ||
+                    containsAnySesame(message, "不支持rpc调用", "不支持RPC完成") ->
+                    SesameTaskFailureType.UNSUPPORTED_NO_CLOSURE
+
+                code in setOf("20020012", "TASK_ID_INVALID", "ILLEGAL_ARGUMENT", "PROMISE_TEMPLATE_NOT_EXIST") ||
+                    containsAnySesame(message, "参数错误", "任务ID非法", "模板不存在", "生活记录模板不存在") ->
+                    SesameTaskFailureType.NON_RETRYABLE_INVALID
+
+                code in setOf("3000", "REMOTE_INVOKE_EXCEPTION", "OP_REPEAT_CHECK", "SYSTEM_BUSY", "NETWORK_ERROR", "COLLECT_CREDIT_FEEDBACK_FAILED") ||
+                    isTransientSesameTaskError(code, message) ||
+                    containsAnySesame(message, "系统出错", "系统繁忙", "稍后", "繁忙", "频繁", "重试", "网络不可用") ->
+                    SesameTaskFailureType.RETRYABLE_RPC
+
+                else -> SesameTaskFailureType.UNKNOWN_NEEDS_REVIEW
+            }
+        }
+
+        private fun containsAnySesame(value: String, vararg keywords: String): Boolean {
+            return keywords.any { keyword -> value.contains(keyword, ignoreCase = true) }
         }
 
         private suspend fun joinSesameTaskWithFallback(
@@ -2364,7 +2469,8 @@ class AntSesameCredit : ModelTask() {
                 moduleName,
                 taskTitle,
                 lastErrorCode,
-                lastResultView.ifEmpty { lastFeedbackRes }
+                lastResultView.ifEmpty { lastFeedbackRes },
+                "feedback"
             )
             return false
         }
@@ -2442,10 +2548,7 @@ class AntSesameCredit : ModelTask() {
             Log.sesame("$logPrefix[广告任务已完成，跳过重复上报]#$taskTitle - $resultView")
             return true
         }
-        Log.error(TAG, "$logPrefix[广告任务上报失败]#$taskTitle - $resultView")
-        if (!isAdTaskRetryable(adFinishJo, resultView)) {
-            autoBlacklistSesameTaskIfNeeded(moduleName, taskTitle, errorCode, resultView)
-        }
+        autoBlacklistSesameTaskIfNeeded(moduleName, taskTitle, errorCode, resultView, "adFinish")
         return false
     }
 
@@ -2565,7 +2668,13 @@ class AntSesameCredit : ModelTask() {
                     }
                     if (isTransientSesameTaskError(joinResultCode, joinResultView)) {
                         transientSkippedTasks.add(taskTitle)
-                        Log.sesame("芝麻信用💳[领取任务暂时跳过]#$taskTitle#$joinResultView")
+                        Log.error(
+                            TAG,
+                            "芝麻信用💳[$taskTitle] classification=RETRYABLE_RPC decision=RETRY_LATER " +
+                                "module=$sesameCreditTaskBlacklistModule taskId=$taskTemplateId taskName=$taskTitle " +
+                                "action=join rpc=AntSesameCreditRpcCall.joinSesameTask " +
+                                "code=${joinResultCode.ifEmpty { "UNKNOWN" }} msg=$joinResultView raw=${s ?: responseObj}"
+                        )
                         skippedCount++
                         continue
                     }
@@ -2574,7 +2683,7 @@ class AntSesameCredit : ModelTask() {
                         val errorCode = responseObj.optString("errorCode", responseObj.optString("resultCode", ""))
                         val resultView = responseObj.optString("resultView", s ?: "")
                         if (!errorCode.isEmpty()) {
-                            autoBlacklistSesameTaskIfNeeded(sesameCreditTaskBlacklistModule, taskTitle, errorCode, resultView)
+                            autoBlacklistSesameTaskIfNeeded(sesameCreditTaskBlacklistModule, taskTitle, errorCode, resultView, "join")
                         }
                         skippedCount++
                         if (isSesameTaskFlowInterrupted(responseObj)) {
@@ -2616,7 +2725,13 @@ class AntSesameCredit : ModelTask() {
                 }
                 if (isTransientSesameTaskError(errorCode, resultView)) {
                     transientSkippedTasks.add(taskTitle)
-                    Log.sesame("芝麻信用💳[完成任务暂时跳过]#$taskTitle#$resultView")
+                    Log.error(
+                        TAG,
+                        "芝麻信用💳[$taskTitle] classification=RETRYABLE_RPC decision=RETRY_LATER " +
+                            "module=$sesameCreditTaskBlacklistModule taskId=$recordId taskName=$taskTitle " +
+                            "action=finish rpc=AntSesameCreditRpcCall.finishSesameTask " +
+                            "code=${errorCode.ifEmpty { "UNKNOWN" }} msg=$resultView raw=${s ?: responseObj}"
+                    )
                     if (isSesameTaskFlowInterrupted(responseObj)) {
                         interrupted = true
                     }
@@ -2627,7 +2742,7 @@ class AntSesameCredit : ModelTask() {
                 } else {
                     Log.error(TAG, "芝麻信用💳[完成任务" + taskTitle + "失败]#" + s)
                     if (!errorCode.isEmpty()) {
-                        autoBlacklistSesameTaskIfNeeded(sesameCreditTaskBlacklistModule, taskTitle, errorCode, resultView)
+                        autoBlacklistSesameTaskIfNeeded(sesameCreditTaskBlacklistModule, taskTitle, errorCode, resultView, "finish")
                     }
                     if (isSesameTaskFlowInterrupted(responseObj)) {
                         interrupted = true

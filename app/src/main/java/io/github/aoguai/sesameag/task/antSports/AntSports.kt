@@ -246,6 +246,15 @@ class AntSports : ModelTask() {
         STOP_CURRENT_ROUND
     }
 
+    private enum class SportsRpcFailureType {
+        TERMINAL_DONE,
+        BUSINESS_LIMIT,
+        UNSUPPORTED_NO_CLOSURE,
+        NON_RETRYABLE_INVALID,
+        RETRYABLE_RPC,
+        UNKNOWN_NEEDS_REVIEW
+    }
+
     /** @brief 临时步数缓存（-1 表示未初始化） */
     private var tmpStepCount: Int = -1
     private var cachedOriginDailyStep: Int = -1
@@ -1546,47 +1555,49 @@ class AntSports : ModelTask() {
             } else {
                 val errorCode = extractSportsRpcErrorCode(result)
                 val errorMsg = extractSportsRpcErrorMessage(result)
+                val completeSource = when {
+                    useVerifiedNewCompleteRpc -> "AntSportsRpcCall.completeTask"
+                    useAdTaskFinishRpc -> "AntSportsRpcCall.finishAdTask"
+                    else -> "AntSportsRpcCall.completeExerciseTasks"
+                }
+                val detail = "module=$SPORTS_TASK_BLACKLIST_MODULE taskId=$taskId taskName=$taskName " +
+                    "action=completeTask rpc=$completeSource code=${errorCode.ifEmpty { "UNKNOWN" }} msg=$errorMsg raw=$result"
                 if (shouldTemporarilyStopSportsTask(errorCode, errorMsg)) {
                     Log.error(
                         TAG,
-                        "做任务得能量🎈[任务失败-本轮止损：$taskName，错误：${errorCode.ifEmpty { "UNKNOWN" }} - $errorMsg}]$progressText"
+                        "做任务得能量🎈[$taskName] classification=RETRYABLE_RPC decision=RETRY_LATER result=STOP_CURRENT_ROUND $detail$progressText"
                     )
                     return SportsPanelTaskCompleteResult.STOP_CURRENT_ROUND
                 }
 
-                val shouldAutoBlacklist =
-                    errorCode.isNotEmpty() &&
-                        errorCode != "CAMP_TRIGGER_ERROR" &&
-                        errorCode != "RECEIVE_REWARD_REPEATED"
-                if (shouldAutoBlacklist) {
-                    TaskBlacklist.autoAddToBlacklist(SPORTS_TASK_BLACKLIST_MODULE, taskId, taskName, errorCode)
+                return when (classifySportsTaskFailure(result)) {
+                    SportsRpcFailureType.TERMINAL_DONE -> {
+                        Log.sports("做任务得能量🎈[$taskName] classification=TERMINAL_DONE decision=MARK_HANDLED $detail$progressText")
+                        SportsPanelTaskCompleteResult.SUCCESS
+                    }
+                    SportsRpcFailureType.BUSINESS_LIMIT -> {
+                        Log.error(TAG, "做任务得能量🎈[$taskName] classification=BUSINESS_LIMIT decision=STOP_TODAY_OR_CURRENT_CHAIN $detail$progressText")
+                        SportsPanelTaskCompleteResult.FAILED
+                    }
+                    SportsRpcFailureType.UNSUPPORTED_NO_CLOSURE -> {
+                        blacklistClassifiedSportsTask(taskId, taskName, errorCode)
+                        Log.error(TAG, "做任务得能量🎈[$taskName] classification=UNSUPPORTED_NO_CLOSURE decision=BLACKLIST reason=未抓到稳定完成RPC $detail$progressText")
+                        SportsPanelTaskCompleteResult.FAILED
+                    }
+                    SportsRpcFailureType.NON_RETRYABLE_INVALID -> {
+                        blacklistClassifiedSportsTask(taskId, taskName, errorCode)
+                        Log.error(TAG, "做任务得能量🎈[$taskName] classification=NON_RETRYABLE_INVALID decision=BLACKLIST $detail$progressText")
+                        SportsPanelTaskCompleteResult.FAILED
+                    }
+                    SportsRpcFailureType.RETRYABLE_RPC -> {
+                        Log.error(TAG, "做任务得能量🎈[$taskName] classification=RETRYABLE_RPC decision=RETRY_LATER $detail$progressText")
+                        SportsPanelTaskCompleteResult.FAILED
+                    }
+                    SportsRpcFailureType.UNKNOWN_NEEDS_REVIEW -> {
+                        Log.error(TAG, "做任务得能量🎈[$taskName] classification=UNKNOWN_NEEDS_REVIEW decision=LOG_ONLY $detail$progressText")
+                        SportsPanelTaskCompleteResult.FAILED
+                    }
                 }
-                if (errorCode == "CAMP_TRIGGER_ERROR") {
-                    Log.error(
-                        TAG,
-                        "做任务得能量🎈[任务失败-业务RPC受限：$taskName，错误：${errorCode.ifEmpty { "UNKNOWN" }} - $errorMsg}]$progressText"
-                    )
-                    return SportsPanelTaskCompleteResult.FAILED
-                }
-                if (!isSportsRpcRetryable(result)) {
-                    Log.error(
-                        TAG,
-                        "做任务得能量🎈[任务失败-非重试RPC：$taskName，错误：${errorCode.ifEmpty { "UNKNOWN" }} - $errorMsg}]$progressText"
-                    )
-                    return SportsPanelTaskCompleteResult.FAILED
-                }
-                if (errorCode == "RECEIVE_REWARD_REPEATED") {
-                    Log.error(
-                        TAG,
-                        "做任务得能量🎈[任务失败-状态异常：$taskName，completeTask 返回重复领奖错误：${errorCode.ifEmpty { "UNKNOWN" }} - $errorMsg}]$progressText"
-                    )
-                    return SportsPanelTaskCompleteResult.FAILED
-                }
-                Log.error(
-                    TAG,
-                    "做任务得能量🎈[任务失败：$taskName，错误：${errorCode.ifEmpty { "UNKNOWN" }} - $errorMsg]$progressText"
-                )
-                SportsPanelTaskCompleteResult.FAILED
             }
         } catch (e: Exception) {
             Log.error(TAG, "做任务得能量🎈[执行异常：$taskName，错误：${e.message}]")
@@ -1809,6 +1820,56 @@ class AntSports : ModelTask() {
             result.optString("desc", "").trim(),
             result.optString("errorTip", "").trim()
         ).firstOrNull { it.isNotEmpty() } ?: "未知错误"
+    }
+
+    private fun classifySportsTaskFailure(result: JSONObject): SportsRpcFailureType {
+        val code = extractSportsRpcErrorCode(result)
+        val message = extractSportsRpcErrorMessage(result)
+        return when {
+            code in setOf("RECEIVE_REWARD_REPEATED", "TASK_ALREADY_FINISHED", "TASK_HAS_FINISHED", "REPEAT_FINISH", "REPEAT_REWARD") ||
+                containsAnySports(message, "已领取", "已经领取", "重复领取", "重复领奖", "重复完成", "已完成", "任务已完结", "任务已结束") ->
+                SportsRpcFailureType.TERMINAL_DONE
+
+            code == "CAMP_TRIGGER_ERROR" ||
+                code.contains("LIMIT", ignoreCase = true) ||
+                containsAnySports(message, "上限", "限制", "受限", "不可领取", "资格不足", "兑完", "能量不足", "风控", "风险") ->
+                SportsRpcFailureType.BUSINESS_LIMIT
+
+            code == "400000040" ||
+                containsAnySports(message, "不支持rpc调用", "不支持RPC完成") ->
+                SportsRpcFailureType.UNSUPPORTED_NO_CLOSURE
+
+            code in setOf("20020012", "TASK_ID_INVALID", "ILLEGAL_ARGUMENT", "PROMISE_TEMPLATE_NOT_EXIST") ||
+                containsAnySports(message, "参数错误", "任务ID非法", "模板不存在") ->
+                SportsRpcFailureType.NON_RETRYABLE_INVALID
+
+            code in setOf("3000", "REMOTE_INVOKE_EXCEPTION", "OP_REPEAT_CHECK", "SYSTEM_BUSY", "NETWORK_ERROR", "1009", "I07", "USER_FREQUENTLY_LOCK") ||
+                containsAnySports(message, "系统出错", "系统繁忙", "稍后", "繁忙", "频繁", "重试", "需要验证", "访问被拒绝") ||
+                isSportsFailureMarkedRetryable(result) ->
+                SportsRpcFailureType.RETRYABLE_RPC
+
+            else -> SportsRpcFailureType.UNKNOWN_NEEDS_REVIEW
+        }
+    }
+
+    private fun blacklistClassifiedSportsTask(taskId: String, taskName: String, errorCode: String) {
+        if (errorCode.isNotBlank()) {
+            TaskBlacklist.autoAddToBlacklist(SPORTS_TASK_BLACKLIST_MODULE, taskId, taskName, errorCode)
+        }
+        TaskBlacklist.addToBlacklist(SPORTS_TASK_BLACKLIST_MODULE, taskId, taskName)
+    }
+
+    private fun isSportsFailureMarkedRetryable(result: JSONObject): Boolean {
+        result.optJSONObject("resData")?.let {
+            return isSportsFailureMarkedRetryable(it)
+        }
+        return listOf("retryable", "retriable", "canRetry").any { key ->
+            result.has(key) && result.optBoolean(key, false)
+        }
+    }
+
+    private fun containsAnySports(text: String, vararg keywords: String): Boolean {
+        return keywords.any { keyword -> text.contains(keyword, ignoreCase = true) }
     }
 
     private fun extractSportsHomeBubbleErrorCode(result: JSONObject): String {
@@ -2198,20 +2259,40 @@ class AntSports : ModelTask() {
 
                     val errorCode = extractSportsHomeBubbleErrorCode(completeRes)
                     val errorMsg = extractSportsHomeBubbleErrorMessage(completeRes)
+                    val detail = "module=$SPORTS_TASK_BLACKLIST_MODULE taskId=$taskId taskName=$taskName " +
+                        "action=completeHomeBubbleTask rpc=AntSportsRpcCall.completeHomeBubbleTask " +
+                        "code=${errorCode.ifEmpty { "UNKNOWN" }} msg=$errorMsg raw=$completeRes"
                     if (shouldCooldownSportsHomeBubbleTask(completeRes)) {
                         Status.setFlagToday(cooldownFlag)
                         Log.error(
                             TAG,
-                            "运动首页任务业务RPC失败[进入冷却：$taskName，taskId=$taskId，code=$errorCode，msg=$errorMsg] 响应：$completeRes"
+                            "运动首页任务[$taskName] classification=${classifySportsTaskFailure(completeRes)} decision=STOP_TODAY_OR_CURRENT_CHAIN $detail"
                         )
                     } else {
-                        if (errorCode.isNotBlank()) {
-                            TaskBlacklist.autoAddToBlacklist(SPORTS_TASK_BLACKLIST_MODULE, taskId, taskName, errorCode)
+                        when (classifySportsTaskFailure(completeRes)) {
+                            SportsRpcFailureType.TERMINAL_DONE -> {
+                                hasCompletedTask = true
+                                hasPendingRewardBubble = true
+                                Log.sports("运动首页任务[$taskName] classification=TERMINAL_DONE decision=MARK_HANDLED $detail")
+                            }
+                            SportsRpcFailureType.BUSINESS_LIMIT -> {
+                                Log.error(TAG, "运动首页任务[$taskName] classification=BUSINESS_LIMIT decision=STOP_TODAY_OR_CURRENT_CHAIN $detail")
+                            }
+                            SportsRpcFailureType.UNSUPPORTED_NO_CLOSURE -> {
+                                blacklistClassifiedSportsTask(taskId, taskName, errorCode)
+                                Log.error(TAG, "运动首页任务[$taskName] classification=UNSUPPORTED_NO_CLOSURE decision=BLACKLIST reason=未抓到稳定完成RPC $detail")
+                            }
+                            SportsRpcFailureType.NON_RETRYABLE_INVALID -> {
+                                blacklistClassifiedSportsTask(taskId, taskName, errorCode)
+                                Log.error(TAG, "运动首页任务[$taskName] classification=NON_RETRYABLE_INVALID decision=BLACKLIST $detail")
+                            }
+                            SportsRpcFailureType.RETRYABLE_RPC -> {
+                                Log.error(TAG, "运动首页任务[$taskName] classification=RETRYABLE_RPC decision=RETRY_LATER $detail")
+                            }
+                            SportsRpcFailureType.UNKNOWN_NEEDS_REVIEW -> {
+                                Log.error(TAG, "运动首页任务[$taskName] classification=UNKNOWN_NEEDS_REVIEW decision=LOG_ONLY $detail")
+                            }
                         }
-                        Log.error(
-                            TAG,
-                            "运动首页任务❌[$taskName][taskId=$taskId][code=$errorCode][msg=$errorMsg] 响应：$completeRes"
-                        )
                     }
                 }
 
@@ -3236,7 +3317,7 @@ class AntSports : ModelTask() {
         if (themeId.isNullOrEmpty()) return null
         try {
             val jo = JSONObject(AntSportsRpcCall.queryWorldMap(themeId))
-            if (ResChecker.checkRes(TAG + "queryWorldMap失败： [ThemeID: $themeId]: ", jo)) {
+            if (ResChecker.checkRes(TAG, "queryWorldMap失败： [ThemeID: $themeId]: ", jo)) {
                 theme = jo.getJSONObject("data")
             } else {
                 Log.error(TAG, "queryWorldMap失败： [ThemeID: $themeId]: $jo")
@@ -5335,7 +5416,7 @@ class AntSports : ModelTask() {
                 Log.sports("健康岛 · 检查签到状态")
                 val jo = JSONObject(AntSportsRpcCall.NeverlandRpcCall.querySign(3, "jkdsportcard"))
 
-                if (!ResChecker.checkRes(TAG + "查询签到失败:", jo) ||
+                if (!ResChecker.checkRes(TAG, "查询签到失败:", jo) ||
                     !ResChecker.checkRes(TAG, jo) ||
                     jo.optJSONObject("data") == null
                 ) {
@@ -5359,7 +5440,7 @@ class AntSports : ModelTask() {
                 Log.sports("健康岛 · 正在签到…")
                 val signRes = JSONObject(AntSportsRpcCall.NeverlandRpcCall.takeSign(3, "jkdsportcard"))
 
-                if (!ResChecker.checkRes(TAG + "签到失败:", signRes) ||
+                if (!ResChecker.checkRes(TAG, "签到失败:", signRes) ||
                     !ResChecker.checkRes(TAG, signRes) ||
                     signRes.optJSONObject("data") == null
                 ) {
@@ -5435,7 +5516,11 @@ class AntSports : ModelTask() {
                         val taskId = task.optString("id", task.optString("taskId", ""))
 
                         if ("NOT_SIGNUP" == status) {
-                            Log.sports("任务 [$title] 需要手动报名，已自动拉黑并跳过")
+                            Log.sports(
+                                "任务[$title] classification=UNSUPPORTED_NO_CLOSURE decision=BLACKLIST " +
+                                    "module=$SPORTS_TASK_BLACKLIST_MODULE taskId=$taskId taskName=$title " +
+                                    "action=signup rpc=<none> reason=需要手动报名 status=$status raw=$task"
+                            )
                             if (taskId.isNotEmpty()) {
                                 TaskBlacklist.addToBlacklist(SPORTS_TASK_BLACKLIST_MODULE, taskId, title)
                             }
@@ -5576,7 +5661,7 @@ class AntSports : ModelTask() {
                         )
                     )
 
-                    if (!ResChecker.checkRes(TAG + "查询健康岛浏览任务失败:", taskInfoResp) ||
+                    if (!ResChecker.checkRes(TAG, "查询健康岛浏览任务失败:", taskInfoResp) ||
                         taskInfoResp.optJSONObject("data") == null
                     ) {
                         Log.error(TAG, "健康岛浏览任务查询失败 [$taskInfoResp] 请关闭此功能")
@@ -5650,7 +5735,7 @@ class AntSports : ModelTask() {
                                 null
                             )
                         )
-                        if (ResChecker.checkRes(TAG + "领取健康岛任务奖励:", receiveResp) &&
+                        if (ResChecker.checkRes(TAG, "领取健康岛任务奖励:", receiveResp) &&
                             ResChecker.checkRes(TAG, receiveResp)
                         ) {
                             completedEncryptValues.add(encryptValue)
@@ -5776,7 +5861,7 @@ class AntSports : ModelTask() {
                     Log.sports("健康岛 · 检查可领取泡泡[source=$source]")
                     val jo = JSONObject(AntSportsRpcCall.NeverlandRpcCall.queryBubbleTask(source))
 
-                    if (!ResChecker.checkRes(TAG + "查询泡泡失败:", jo) ||
+                    if (!ResChecker.checkRes(TAG, "查询泡泡失败:", jo) ||
                         jo.optJSONObject("data") == null
                     ) {
                         Log.error(TAG, "queryBubbleTask source=$source raw=$jo")
@@ -5858,7 +5943,7 @@ class AntSports : ModelTask() {
                             )
                         )
 
-                        if (!ResChecker.checkRes(TAG + "领取泡泡失败:", pick) ||
+                        if (!ResChecker.checkRes(TAG, "领取泡泡失败:", pick) ||
                             pick.optJSONObject("data") == null
                         ) {
                             Log.error(TAG, "pickBubbleTaskEnergy source=$source raw=$pick")
@@ -5900,7 +5985,7 @@ class AntSports : ModelTask() {
                             )
                         )
 
-                        if (ResChecker.checkRes(TAG + "领取泡泡任务奖励:", receiveResp)) {
+                        if (ResChecker.checkRes(TAG, "领取泡泡任务奖励:", receiveResp)) {
                             handledNeverlandBubbleEncryptValues.add(encryptValue)
                             Log.sports("✅ 浏览任务[$title]完成，获得能量+$energyNum")
                         } else {
@@ -5989,7 +6074,7 @@ class AntSports : ModelTask() {
             if (source != NEVERLAND_SOURCE_SPORT_HOME) return
             runCatching {
                 val quickGame = JSONObject(AntSportsRpcCall.NeverlandRpcCall.queryQuickGameList(source))
-                if (!ResChecker.checkRes(TAG + " 查询健康岛快捷入口失败:", quickGame)) {
+                if (!ResChecker.checkRes(TAG, " 查询健康岛快捷入口失败:", quickGame)) {
                     Log.error(
                         TAG,
                         "queryQuickGameList 失败[source=$source][code=${extractSportsRpcErrorCode(quickGame).ifEmpty { "UNKNOWN" }}][msg=${extractSportsRpcErrorMessage(quickGame)}] raw=$quickGame"
@@ -6005,7 +6090,7 @@ class AntSports : ModelTask() {
                 warmNeverlandQuickGameList(source)
                 val baseInfo = JSONObject(AntSportsRpcCall.NeverlandRpcCall.queryBaseinfo(source))
                 val baseData = baseInfo.optJSONObject("data")
-                if (ResChecker.checkRes(TAG + " 查询基础信息失败:", baseInfo) && baseData != null &&
+                if (ResChecker.checkRes(TAG, " 查询基础信息失败:", baseInfo) && baseData != null &&
                     (!baseData.optBoolean("newGame", false) || baseData.optString("mapId", "").isNotBlank())
                 ) {
                     rememberNeverlandSource(source)
@@ -6121,7 +6206,7 @@ class AntSports : ModelTask() {
         private fun queryUserEnergy(source: String = activeNeverlandSource): Int {
             return try {
                 val energyResp = JSONObject(AntSportsRpcCall.NeverlandRpcCall.queryUserEnergy(source))
-                if (!ResChecker.checkRes(TAG + " 查询用户能量失败:", energyResp) ||
+                if (!ResChecker.checkRes(TAG, " 查询用户能量失败:", energyResp) ||
                     energyResp.optJSONObject("data") == null
                 ) {
                     Log.error(TAG, "queryUserEnergy 失败[source=$source], 响应数据: $energyResp")
@@ -6155,7 +6240,7 @@ class AntSports : ModelTask() {
                     AntSportsRpcCall.NeverlandRpcCall.queryMapInfo(mapId, branchId, source)
                 )
 
-                if (!ResChecker.checkRes(TAG + " queryMapInfo 失败:", mapInfoResp) ||
+                if (!ResChecker.checkRes(TAG, " queryMapInfo 失败:", mapInfoResp) ||
                     mapInfoResp.optJSONObject("data") == null
                 ) {
                     Log.error(TAG, "queryMapInfo 失败，终止走路任务")
@@ -6182,7 +6267,7 @@ class AntSports : ModelTask() {
                         AntSportsRpcCall.NeverlandRpcCall.walkGrid(branchId, mapId, false, source)
                     )
 
-                    if (!ResChecker.checkRes(TAG + " walkGrid 失败:", walkResp) ||
+                    if (!ResChecker.checkRes(TAG, " walkGrid 失败:", walkResp) ||
                         walkResp.optJSONObject("data") == null
                     ) {
                         val errorCode = walkResp.optString("errorCode", "")
@@ -6342,7 +6427,7 @@ class AntSports : ModelTask() {
         private fun queryNeverlandMapList(source: String = activeNeverlandSource): JSONArray? {
             return try {
                 val mapResp = JSONObject(AntSportsRpcCall.NeverlandRpcCall.queryMapList(source))
-                if (!ResChecker.checkRes(TAG + " 查询地图失败:", mapResp)) {
+                if (!ResChecker.checkRes(TAG, " 查询地图失败:", mapResp)) {
                     Log.error(
                         TAG,
                         "queryMapList 失败[code=${extractSportsRpcErrorCode(mapResp).ifEmpty { "UNKNOWN" }}][msg=${extractSportsRpcErrorMessage(mapResp)}] raw=$mapResp"
@@ -6493,7 +6578,7 @@ class AntSports : ModelTask() {
                 val resp = JSONObject(
                     AntSportsRpcCall.NeverlandRpcCall.queryBaseinfo(branchId, mapId, fromMapId, source)
                 )
-                if (!ResChecker.checkRes(TAG + " 切岛后同步基础信息失败:", resp)) {
+                if (!ResChecker.checkRes(TAG, " 切岛后同步基础信息失败:", resp)) {
                     Log.error(
                         TAG,
                         "切岛后同步基础信息失败[mapId=$mapId][fromMapId=${fromMapId.orEmpty()}]" +
@@ -6561,7 +6646,7 @@ class AntSports : ModelTask() {
                     val mapInfo = JSONObject(
                         AntSportsRpcCall.NeverlandRpcCall.queryMapInfoNew(mapId, branchId, source)
                     )
-                    if (!ResChecker.checkRes(TAG + " 查询建造地图失败", mapInfo)) {
+                    if (!ResChecker.checkRes(TAG, " 查询建造地图失败", mapInfo)) {
                         Log.error(
                             TAG,
                             "查询建造地图失败[mapId=$mapId][branchId=$branchId][code=${extractSportsRpcErrorCode(mapInfo).ifEmpty { "UNKNOWN" }}][msg=${extractSportsRpcErrorMessage(mapInfo)}] raw=$mapInfo"
@@ -6628,7 +6713,7 @@ class AntSports : ModelTask() {
                     val buildResp = JSONObject(
                         AntSportsRpcCall.NeverlandRpcCall.build(mapId, multiNum, branchId, source)
                     )
-                    if (!ResChecker.checkRes(TAG + " build 失败:", buildResp)) {
+                    if (!ResChecker.checkRes(TAG, " build 失败:", buildResp)) {
                         val errorCode = extractSportsRpcErrorCode(buildResp)
                         val errorMsg = extractSportsRpcErrorMessage(buildResp)
                         if (isNeverlandEnergyLimit(errorCode, errorMsg)) {
@@ -6705,7 +6790,7 @@ class AntSports : ModelTask() {
                 val mapInfo = JSONObject(
                     AntSportsRpcCall.NeverlandRpcCall.queryMapInfoNew(mapId, branchId, source)
                 )
-                if (!ResChecker.checkRes(TAG + " 查询建造地图失败", mapInfo)) {
+                if (!ResChecker.checkRes(TAG, " 查询建造地图失败", mapInfo)) {
                     Log.error(
                         TAG,
                         "健康岛结束前查询地图失败[mapId=$mapId][branchId=$branchId][code=${extractSportsRpcErrorCode(mapInfo).ifEmpty { "UNKNOWN" }}][msg=${extractSportsRpcErrorMessage(mapInfo)}] raw=$mapInfo"
@@ -6773,7 +6858,7 @@ class AntSports : ModelTask() {
                 return false
             }
             val detailResp = JSONObject(AntSportsRpcCall.NeverlandRpcCall.queryMapDetail(mapId, source))
-            if (!ResChecker.checkRes(TAG + " queryMapDetail 失败:", detailResp)) {
+            if (!ResChecker.checkRes(TAG, " queryMapDetail 失败:", detailResp)) {
                 Log.error(
                     TAG,
                     "健康岛查询领奖详情失败[mapId=$mapId][code=${extractSportsRpcErrorCode(detailResp).ifEmpty { "UNKNOWN" }}][msg=${extractSportsRpcErrorMessage(detailResp)}] raw=$detailResp"

@@ -164,7 +164,10 @@ object TaskBlacklist {
     }
 
     /**
-     * 自动添加任务到模块黑名单
+     * 自动添加任务到模块黑名单。
+     *
+     * 调用方必须已经把失败分类为“无稳定完成闭环”或“稳定非重试参数错误”。
+     * 业务受限、重复领取、系统繁忙、稍后再试、操作频繁等临时/业务终态不要传入这里。
      */
     fun autoAddToBlacklist(moduleName: String?, taskId: String, taskTitle: String = "", errorCode: String) {
         if (moduleName.isNullOrBlank() || taskId.isBlank()) return
@@ -174,21 +177,13 @@ object TaskBlacklist {
 
         when {
             errorCode == "400000040" -> { shouldAutoAdd = true; reason = "不支持rpc调用" }
-            errorCode == "CAMP_TRIGGER_ERROR" -> { shouldAutoAdd = true; reason = "活动触发错误" }
-            errorCode == "OP_REPEAT_CHECK" -> { shouldAutoAdd = true; reason = "操作太频繁" }
+            errorCode == "20020012" -> { shouldAutoAdd = true; reason = "任务ID为空或无效" }
             errorCode == "ILLEGAL_ARGUMENT" -> { shouldAutoAdd = true; reason = "参数错误" }
-            errorCode == "104" || errorCode == "PROMISE_HAS_PROCESSING_TEMPLATE" -> {
-                shouldAutoAdd = true; reason = "存在进行中的记录"
-            }
             errorCode == "TASK_ID_INVALID" -> { shouldAutoAdd = true; reason = "任务ID非法" }
             errorCode == "PROMISE_TEMPLATE_NOT_EXIST" || errorCode == "生活记录模板不存在" -> {
                 shouldAutoAdd = true; reason = "模板不存在"
             }
-            errorCode.contains("系统繁忙") || errorCode.contains("稍后再试") -> {
-                shouldAutoAdd = true; reason = "系统繁忙/稍后再试"
-            }
             errorCode == "FAKE_SUCCESS" -> { shouldAutoAdd = true; reason = "检测到伪成功" }
-            errorCode == "10000005" -> { shouldAutoAdd = true; reason = "海豚服务异常" }
         }
 
         if (shouldAutoAdd) {
