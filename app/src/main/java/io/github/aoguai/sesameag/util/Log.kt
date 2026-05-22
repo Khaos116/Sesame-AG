@@ -51,6 +51,8 @@ object Log {
     }
 
     private fun logRaw(channel: LogChannel, severity: Severity, msg: String) {
+        Logback.refreshIfCrossDay()
+
         if (!shouldWrite(channel)) {
             return
         }
@@ -63,15 +65,21 @@ object Log {
         }
     }
 
-    private fun write(channel: LogChannel, severity: Severity, msg: String) {
-        if (channel.mirrorToRecord) {
-            logRaw(LogChannel.RECORD, Severity.INFO, msg)
+
+    private fun write(channel: LogChannel, severity: Severity, msg: String, type: Int = 1) {
+        if (channel.mirrorToRecord && type == 1) {
+            val recordMsg = if (!channel.logTag.isNullOrEmpty()) {
+                formatTaggedMessage(channel.logTag, msg)
+            } else {
+                msg
+            }
+            logRaw(LogChannel.RECORD, Severity.INFO, recordMsg)
         }
         logRaw(channel, severity, msg)
     }
 
-    private fun business(channel: LogChannel, msg: String) {
-        write(channel, Severity.INFO, msg)
+    private fun business(channel: LogChannel, msg: String, type: Int = 1) {
+        write(channel, Severity.INFO, msg, type)
     }
 
     @JvmStatic
@@ -95,13 +103,18 @@ object Log {
     }
 
     @JvmStatic
-    fun record(msg: String) {
-        write(LogChannel.RECORD, Severity.INFO, msg)
+    fun record(msg: String, type: Int = 1) {
+        logRaw(LogChannel.RUNTIME, Severity.DEBUG, msg)
+
+        val shouldRecord = if (type == 1) shouldWrite(LogChannel.RECORD) else false
+        if (shouldRecord) {
+            logRaw(LogChannel.RECORD, Severity.INFO, msg)
+        }
     }
 
     @JvmStatic
-    fun record(tag: String, msg: String) {
-        record(formatTaggedMessage(tag, msg))
+    fun record(tag: String, msg: String, type: Int = 1) {
+        record(formatTaggedMessage(tag, msg), type)
     }
 
     @JvmStatic
@@ -125,13 +138,9 @@ object Log {
     }
 
     @JvmStatic
-    fun forest(msg: String) {
-        business(LogChannel.FOREST, msg)
-    }
-
-    @JvmStatic
-    fun forest(tag: String, msg: String) {
-        forest(formatTaggedMessage(tag, msg))
+    @JvmOverloads
+    fun forest(msg: String, type: Int = 1) {
+        business(LogChannel.FOREST, msg, type)
     }
 
     @JvmStatic
@@ -140,18 +149,9 @@ object Log {
     }
 
     @JvmStatic
-    fun orchard(tag: String, msg: String) {
-        orchard(formatTaggedMessage(tag, msg))
-    }
-
-    @JvmStatic
-    fun farm(msg: String) {
-        business(LogChannel.FARM, msg)
-    }
-
-    @JvmStatic
-    fun farm(tag: String, msg: String) {
-        farm(formatTaggedMessage(tag, msg))
+    @JvmOverloads
+    fun farm(msg: String, type: Int = 1) {
+        business(LogChannel.FARM, msg, type)
     }
 
     @JvmStatic
@@ -160,18 +160,13 @@ object Log {
     }
 
     @JvmStatic
-    fun stall(tag: String, msg: String) {
-        stall(formatTaggedMessage(tag, msg))
-    }
-
-    @JvmStatic
     fun ocean(msg: String) {
         business(LogChannel.OCEAN, msg)
     }
 
     @JvmStatic
-    fun ocean(tag: String, msg: String) {
-        ocean(formatTaggedMessage(tag, msg))
+    fun dodo(msg: String) {
+        business(LogChannel.DODO, msg)
     }
 
     @JvmStatic
@@ -180,8 +175,8 @@ object Log {
     }
 
     @JvmStatic
-    fun member(tag: String, msg: String) {
-        member(formatTaggedMessage(tag, msg))
+    fun fishpond(msg: String) {
+        business(LogChannel.FISHPOND, msg)
     }
 
     @JvmStatic
@@ -190,28 +185,13 @@ object Log {
     }
 
     @JvmStatic
-    fun sports(tag: String, msg: String) {
-        sports(formatTaggedMessage(tag, msg))
-    }
-
-    @JvmStatic
     fun greenFinance(msg: String) {
         business(LogChannel.GREEN_FINANCE, msg)
     }
 
     @JvmStatic
-    fun greenFinance(tag: String, msg: String) {
-        greenFinance(formatTaggedMessage(tag, msg))
-    }
-
-    @JvmStatic
     fun sesame(msg: String) {
         business(LogChannel.SESAME_CREDIT, msg)
-    }
-
-    @JvmStatic
-    fun sesame(tag: String, msg: String) {
-        sesame(formatTaggedMessage(tag, msg))
     }
 
     @JvmStatic

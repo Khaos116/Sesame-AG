@@ -19,17 +19,19 @@ object AntForestRpcCall {
     private const val PROTECT_BUBBLE_VERSION = "20230501"
     private const val ENERGY_RAIN_SOURCE = "forest"
     private const val ENERGY_RAIN_VERSION = "20230501"
+    private const val WHACK_MOLE_VERSION = "20230824"
     const val OPEN_GREEN_RIGHTS_SOURCE = "chInfo_ch_appid-60000002"
     internal const val BACK_FROM_ENERGY_RAIN_SOURCE = "backFromEnergyRain"
     private var VERSION = "20250818"
     private var HOME_PAGE_VERSION = "20250818"
     private var TASK_LIST_VERSION = "20250821"
     private var TASK_LIST_EXT_VERSION = "20260109"
+    private var TAKE_LOOK_VERSION = "20260107"
 
     @JvmStatic
     fun init() {
         val alipayVersion = io.github.aoguai.sesameag.hook.ApplicationHook.alipayVersion
-        Log.forest("AntForestRpcCall", "当前支付宝版本: $alipayVersion")
+        Log.forest("当前支付宝版本: $alipayVersion")
         try {
             when (alipayVersion.versionString) {
                 "10.8.20.8000" -> {
@@ -37,6 +39,7 @@ object AntForestRpcCall {
                     HOME_PAGE_VERSION = "20250818"
                     TASK_LIST_VERSION = "20250821"
                     TASK_LIST_EXT_VERSION = "20260109"
+                    TAKE_LOOK_VERSION = "20260107"
                 }
 
                 "10.7.30.8000" -> {
@@ -44,6 +47,7 @@ object AntForestRpcCall {
                     HOME_PAGE_VERSION = "20250813"
                     TASK_LIST_VERSION = "20250813"
                     TASK_LIST_EXT_VERSION = "20250813"
+                    TAKE_LOOK_VERSION = "20250813"
                 }
 
                 "10.5.88.8000" -> {
@@ -51,6 +55,7 @@ object AntForestRpcCall {
                     HOME_PAGE_VERSION = "20240403"
                     TASK_LIST_VERSION = "20240403"
                     TASK_LIST_EXT_VERSION = "20240403"
+                    TAKE_LOOK_VERSION = "20240403"
                 }
 
                 "10.3.96.8100" -> {
@@ -58,6 +63,7 @@ object AntForestRpcCall {
                     HOME_PAGE_VERSION = "20230501"
                     TASK_LIST_VERSION = "20230501"
                     TASK_LIST_EXT_VERSION = "20230501"
+                    TAKE_LOOK_VERSION = "20230501"
                 }
 
                 else -> {
@@ -65,11 +71,10 @@ object AntForestRpcCall {
                     HOME_PAGE_VERSION = "20250818"
                     TASK_LIST_VERSION = "20250821"
                     TASK_LIST_EXT_VERSION = "20260109"
+                    TAKE_LOOK_VERSION = "20260107"
                 }
             }
-            Log.forest(
-                "AntForestRpcCall",
-                "使用API版本: $VERSION, 首页版本: $HOME_PAGE_VERSION, 任务版本: $TASK_LIST_VERSION"
+            Log.forest("使用API版本: $VERSION, 首页版本: $HOME_PAGE_VERSION, 任务版本: $TASK_LIST_VERSION"
             )
         } catch (e: Exception) {
             Log.error("AntForestRpcCall", "版本初始化异常，使用默认版本: $VERSION")
@@ -204,6 +209,62 @@ object AntForestRpcCall {
         }
     }
 
+    @JvmStatic
+    fun queryPvpHomeInfo(queryWaitToReceive: Boolean = true, source: String = DEFAULT_SOURCE): String {
+        return try {
+            val arg = JSONObject().apply {
+                put("queryWaitToReceive", queryWaitToReceive)
+                put("source", source)
+            }
+            RequestManager.requestString("alipay.antforest.forest.h5.queryPvpHomeInfo", JSONArray().put(arg).toString())
+        } catch (e: Exception) {
+            Log.printStackTrace(e)
+            ""
+        }
+    }
+
+    @JvmStatic
+    fun receivePvpRewards(source: String = DEFAULT_SOURCE): String {
+        return try {
+            val arg = JSONObject().apply {
+                put("source", source)
+            }
+            RequestManager.requestString("alipay.antforest.forest.h5.receivePvpRewards", JSONArray().put(arg).toString())
+        } catch (e: Exception) {
+            Log.printStackTrace(e)
+            ""
+        }
+    }
+
+    @JvmStatic
+    fun queryPvpBattleRecords(pageSize: Int = 5, source: String = DEFAULT_SOURCE): String {
+        return try {
+            val arg = JSONObject().apply {
+                put("pageSize", pageSize.coerceAtLeast(1))
+                put("source", source)
+            }
+            RequestManager.requestString("alipay.antforest.forest.h5.queryPvpBattleRecords", JSONArray().put(arg).toString())
+        } catch (e: Exception) {
+            Log.printStackTrace(e)
+            ""
+        }
+    }
+
+    @JvmStatic
+    fun queryEnergyPvpInfo(checkReward: Boolean = true, source: String = DEFAULT_SOURCE): String {
+        return try {
+            val arg = JSONObject().apply {
+                put("extInfo", JSONObject().put("checkReward", checkReward).toString())
+                put("queryBizType", "energyPvpInfo")
+                put("source", source)
+            }
+            RequestManager.requestString("alipay.antforest.forest.h5.queryMiscInfo", JSONArray().put(arg).toString())
+        } catch (e: Exception) {
+            Log.printStackTrace(e)
+            ""
+        }
+    }
+
     /**
      * 批量获取好友能量信息（标准版）
      */
@@ -309,17 +370,22 @@ object AntForestRpcCall {
      * 找能量方法 - 查找可收取能量的好友（带跳过用户列表）
      */
     @JvmStatic
-    fun takeLook(skipUsers: JSONObject, source: String? = null): String {
+    fun takeLook(
+        skipUsers: JSONObject,
+        source: String? = null,
+        exposedUserId: String = "",
+        takeLookStart: Boolean = true
+    ): String {
         return try {
             val actualSource = source ?: DEFAULT_SOURCE
             val requestData = JSONObject().apply {
                 put("contactsStatus", "N")
-                put("exposedUserId", "")
+                put("exposedUserId", exposedUserId)
                 put("skipUsers", skipUsers)
                 put("source", actualSource)
                 put("takeLookEnd", false)
-                put("takeLookStart", true)
-                put("version", VERSION)
+                put("takeLookStart", takeLookStart)
+                put("version", TAKE_LOOK_VERSION)
             }
             RequestManager.requestString("alipay.antforest.forest.h5.takeLook", "[$requestData]")
         } catch (e: JSONException) {
@@ -852,7 +918,7 @@ object AntForestRpcCall {
     fun settlementWhackMole(token: String, moleIdList: List<String>, source: String): String {
         return RequestManager.requestString(
             "alipay.antforest.forest.h5.settlementWhackMole",
-            "[{\"moleIdList\":[${moleIdList.joinToString(",")}],\"settlementScene\":\"NORMAL\",\"source\":\"$source\",\"token\":\"$token\",\"version\":\"$VERSION\"}]"
+            "[{\"moleIdList\":[${moleIdList.joinToString(",")}],\"settlementScene\":\"NORMAL\",\"source\":\"$source\",\"token\":\"$token\",\"version\":\"$WHACK_MOLE_VERSION\"}]"
         )
     }
 
@@ -860,35 +926,8 @@ object AntForestRpcCall {
     fun whackMole(moleId: Long, token: String, source: String): String {
         return RequestManager.requestString(
             "alipay.antforest.forest.h5.whackMole",
-            "[{\"moleId\":$moleId,\"source\":\"$source\",\"token\":\"$token\",\"version\":\"$VERSION\"}]"
+            "[{\"moleId\":$moleId,\"source\":\"$source\",\"token\":\"$token\",\"version\":\"$WHACK_MOLE_VERSION\"}]"
         )
-    }
-
-    @JvmStatic
-    fun oldwhackMole(moleId: Long, token: String, source: String): String {
-        return whackMole(moleId, token, source)
-    }
-
-    @JvmStatic
-    fun oldstartWhackMole(source: String): String {
-        return startWhackMole(source)
-    }
-
-    @JvmStatic
-    fun oldsettlementWhackMole(token: String, moleIdList: List<String>, source: String): String {
-        return settlementWhackMole(token, moleIdList, source)
-    }
-
-    @JvmStatic
-    fun startWhackMole(): String {
-        return startWhackMole("senlinguangchangdadishu")
-    }
-
-    @JvmStatic
-    @Throws(JSONException::class)
-    fun settlementWhackMole(token: String): String {
-        val moleIdList = (1..20).map { it.toString() }
-        return settlementWhackMole(token, moleIdList, "senlinguangchangdadishu")
     }
 
     @JvmStatic
@@ -1098,11 +1137,15 @@ object AntForestRpcCall {
     fun enterDrawActivityopengreen(activityId: String?, sceneCode: String, source: String): String {
         val requestData = JSONObject().apply {
             put("activityId", activityId ?: "")
+            put("context", JSONObject().apply {
+                put("appMode", "normal")
+                put("layerTipDisplayInfos", "[]")
+            })
             put("requestType", "RPC")
             put("sceneCode", sceneCode)
             put("source", source)
         }
-        Log.forest("AntForestRpcCall", "enterDrawActivityopengreen - 活动: $activityId, 场景: $sceneCode, source: $source")
+        Log.forest("enterDrawActivityopengreen - 活动: $activityId, 场景: $sceneCode, source: $source")
         return RequestManager.requestString("com.alipay.antiepdrawprod.enterDrawActivityopengreen", "[$requestData]")
     }
 
@@ -1110,11 +1153,12 @@ object AntForestRpcCall {
     @Throws(JSONException::class)
     fun listTaskopengreen(sceneCode: String, source: String): String {
         val requestData = JSONObject().apply {
+            put("extend", JSONObject().put("appMode", "normal"))
             put("requestType", "RPC")
             put("sceneCode", sceneCode)
             put("source", source)
         }
-        Log.forest("AntForestRpcCall", "listTaskopengreen - 场景: $sceneCode, source: $source")
+        Log.forest("listTaskopengreen - 场景: $sceneCode, source: $source")
         return RequestManager.requestString("com.alipay.antieptask.listTaskopengreen", "[$requestData]")
     }
 
@@ -1123,13 +1167,28 @@ object AntForestRpcCall {
     fun drawopengreen(activityId: String, sceneCode: String, source: String, userId: String): String {
         val requestData = JSONObject().apply {
             put("activityId", activityId)
+            put("context", JSONObject().put("appMode", "normal"))
             put("requestType", "RPC")
             put("sceneCode", sceneCode)
             put("source", source)
             put("userId", userId)
         }
-        Log.forest("AntForestRpcCall", "drawopengreen - 活动: $activityId, 场景: $sceneCode, source: $source")
+        Log.forest("drawopengreen - 活动: $activityId, 场景: $sceneCode, source: $source")
         return RequestManager.requestString("com.alipay.antiepdrawprod.drawopengreen", "[$requestData]")
+    }
+
+    @JvmStatic
+    @Throws(JSONException::class)
+    fun drawSyncopengreen(activityId: String, sceneCode: String, source: String): String {
+        val requestData = JSONObject().apply {
+            put("activityId", activityId)
+            put("context", JSONObject().put("appMode", "normal"))
+            put("requestType", "RPC")
+            put("sceneCode", sceneCode)
+            put("source", source)
+        }
+        Log.forest("drawSyncopengreen - 活动: $activityId, 场景: $sceneCode, source: $source")
+        return RequestManager.requestString("com.alipay.antiepdrawprod.drawSyncopengreen", "[$requestData]")
     }
 
     @JvmStatic
@@ -1142,7 +1201,7 @@ object AntForestRpcCall {
             put("source", source)
             put("taskType", taskType)
         }
-        Log.forest("AntForestRpcCall", "receiveTaskAwardopengreen - 任务: $taskType, source: $source")
+        Log.forest("receiveTaskAwardopengreen - 任务: $taskType, source: $source")
         return RequestManager.requestString("com.alipay.antieptask.receiveTaskAwardopengreen", "[$requestData]")
     }
 
@@ -1167,9 +1226,7 @@ object AntForestRpcCall {
             put("sceneCode", sceneCode)
             put("source", source)
         }
-        Log.forest(
-            "AntForestRpcCall",
-            "batchQueryAndTouchOpenGreen - sceneCode: $sceneCode, source: $source, touchIds: ${touchIds.joinToString()}"
+        Log.forest("batchQueryAndTouchOpenGreen - sceneCode: $sceneCode, source: $source, touchIds: ${touchIds.joinToString()}"
         )
         return RequestManager.requestString("com.alipay.antieprights.batchQueryAndTouchopengreen", "[$requestData]")
     }
@@ -1185,7 +1242,7 @@ object AntForestRpcCall {
             put("taskSceneCode", taskSceneCode)
             put("taskType", taskType)
         }
-        Log.forest("AntForestRpcCall", "exchangeTimesFromTaskopengreen - 活动: $activityId, 任务: $taskType, source: $source")
+        Log.forest("exchangeTimesFromTaskopengreen - 活动: $activityId, 任务: $taskType, source: $source")
         return RequestManager.requestString("com.alipay.antiepdrawprod.exchangeTimesFromTaskopengreen", "[$requestData]")
     }
 
@@ -1203,7 +1260,7 @@ object AntForestRpcCall {
             }
             put("taskType", taskType)
         }
-        Log.forest("AntForestRpcCall", "finishTask4Chouchoule - 任务: $taskType")
+        Log.forest("finishTask4Chouchoule - 任务: $taskType")
         return RequestManager.requestString("com.alipay.antiep.finishTask", "[$params]")
     }
 
@@ -1217,7 +1274,7 @@ object AntForestRpcCall {
             put("source", "task_entry")
             put("taskType", taskType)
         }
-        Log.forest("AntForestRpcCall", "finishTaskopengreen - 任务: $taskType")
+        Log.forest("finishTaskopengreen - 任务: $taskType")
         return RequestManager.requestString("com.alipay.antieptask.finishTaskopengreen", "[$params]")
     }
 

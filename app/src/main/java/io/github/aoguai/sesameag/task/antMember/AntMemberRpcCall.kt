@@ -2,7 +2,7 @@ package io.github.aoguai.sesameag.task.antMember
 
 import io.github.aoguai.sesameag.hook.RequestManager
 import io.github.aoguai.sesameag.util.RandomUtil
-import io.github.aoguai.sesameag.util.TimeUtil
+import io.github.aoguai.sesameag.util.RpcCache
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
@@ -10,14 +10,11 @@ import java.util.UUID
 
 object AntMemberRpcCall {
 
-    private const val SESAME_CHECK_IN_VERSION = "2025-10-22"
-    private const val SESAME_GROWTH_GUIDE_INVOKE_VERSION = "1.0.2025.10.27"
-    private const val SESAME_TASK_VERSION = "new"
-    private const val SESAME_TASK_SCENE_CODE = "DAILY_MUST_DO_CARD"
-    private const val SESAME_TASK_SCENE_ZML = "zml"
-    private const val SESAME_TASK_CH_INFO = "ch_zmxy_zmlsy__chsub_zmsy_jingangwei"
-    private const val SESAME_TASK_JOIN_CH_INFO = "seasameList"
     private const val GAME_CENTER_SOURCE = "ch_appcollect__chsub_my-recentlyUsed"
+    private const val METHOD_QUERY_MULTI_SCENE_WAIT_TO_GAIN_LIST =
+        "com.alipay.insgiftbff.insgiftMain.queryMultiSceneWaitToGainList"
+    private const val METHOD_GAIN_MY_AND_FAMILY_SUM_INSURED =
+        "com.alipay.insgiftbff.insgiftMain.gainMyAndFamilySumInsured"
     
     private fun getUniqueId(): String {
         return System.currentTimeMillis().toString() + RandomUtil.nextLong()
@@ -252,37 +249,42 @@ object AntMemberRpcCall {
     }
 
     @JvmStatic
-    fun applyTask(darwinName: String, taskConfigId: Long): String {
-        return RequestManager.requestString(
-            "alipay.antmember.biz.rpc.membertask.h5.applyTask",
-            """[{"darwinExpParams":{"darwinName":"$darwinName"},"sourcePassMap":{"innerSource":"","source":"mytab","unid":""},"taskConfigId":$taskConfigId}]"""
-        )
-    }
-
-    @JvmStatic
-    fun executeTask(bizParam: String, bizSubType: String, bizType: String, taskConfigId: Long): String {
-        val bizOutNo = TimeUtil.getFormatDate().replace("-", "")
-        return RequestManager.requestString(
-            "alipay.antmember.biz.rpc.membertask.h5.executeTask",
-            """[{"bizOutNo":"$bizOutNo","bizParam":"$bizParam","bizSubType":"$bizSubType","bizType":"$bizType","sourcePassMap":{"innerSource":"","source":"mytab","unid":""},"syncProcess":true,"taskConfigId":"$taskConfigId"}]"""
-        )
-    }
-
-    @JvmStatic
-    fun queryLegacyAllStatusTaskList(): String {
-        return RequestManager.requestString(
-            "alipay.antmember.biz.rpc.membertask.h5.queryAllStatusTaskList",
-            """[{"sourceBusiness":"signInAd","sourcePassMap":{"innerSource":"","source":"mytab","unid":""}}]"""
-        )
-    }
-
-    @JvmStatic
     fun queryMemberTaskList(): String {
         val args = JSONObject().apply {
             put("source", "signInAd")
         }
         return RequestManager.requestString(
             "com.alipay.amic.memtask.h5.MemTaskListQueryFacade.queryAllStatusTaskList",
+            JSONArray().put(args).toString()
+        )
+    }
+
+    @JvmStatic
+    fun queryMemberSignPageTaskList(pageNo: Int = 1, pageSize: Int = 8): String {
+        val args = JSONObject().apply {
+            put("pageNo", pageNo)
+            put("pageSize", pageSize)
+            put("source", "antmember")
+            put("sourcePassMap", buildMemberSourcePassMap())
+            put("spaceCode", "ant_member_xlight_task")
+            put("switchNormal", true)
+            put("taskTopConfigId", "")
+        }
+        return RequestManager.requestString(
+            "com.alipay.amic.memtask.h5.MemTaskListQueryFacade.signPageTaskList",
+            JSONArray().put(args).toString()
+        )
+    }
+
+    @JvmStatic
+    fun applyMemberTask(taskConfigId: String): String {
+        val args = JSONObject().apply {
+            put("alipayGrowthTask", false)
+            put("sourcePassMap", buildMemberSourcePassMap())
+            put("taskConfigId", taskConfigId)
+        }
+        return RequestManager.requestString(
+            "com.alipay.amic.memtask.h5.MemTaskManagerFacade.applyTask",
             JSONArray().put(args).toString()
         )
     }
@@ -345,7 +347,7 @@ object AntMemberRpcCall {
             put("bizParam", bizParam)
             put("bizSubType", bizSubType)
             put("bizType", bizType)
-            put("outBizNo", TimeUtil.getFormatDate().replace("-", ""))
+            put("outBizNo", System.currentTimeMillis().toString())
             put("sourcePassMap", buildMemberSourcePassMap())
         }
         return RequestManager.requestString(
@@ -554,181 +556,6 @@ object AntMemberRpcCall {
         )
     }
 
-    /**
-     * 芝麻信用首页
-     */
-    @JvmStatic
-    fun queryHome(): String {
-        return RequestManager.requestString(
-            "com.antgroup.zmxy.zmcustprod.biz.rpc.home.api.HomeV7RpcManager.queryHome",
-            """[{"invokeSource":"zmHome","miniZmGrayInside":"","version":"week"}]"""
-        )
-    }
-
-    /**
-     * 芝麻信用首页（V8 兼容）
-     */
-    @JvmStatic
-    fun queryHomeV8(): String {
-        val args = JSONObject().apply {
-            put("invokeSource", "zmHome")
-            put("miniZmGrayInside", "")
-            put("switchNavigation", true)
-            put("switchNewPage", true)
-            put("version", "week")
-        }
-        return RequestManager.requestString(
-            "com.antgroup.zmxy.zmcustprod.biz.rpc.home.api.HomeV8RpcManager.queryHome",
-            JSONArray().put(args).toString()
-        )
-    }
-
-    /**
-     * 获取芝麻信用任务列表
-     */
-    @JvmStatic
-    fun queryAvailableSesameTask(): String {
-        return RequestManager.requestString(
-            "com.antgroup.zmxy.zmmemberop.biz.rpc.creditaccumulate.CreditAccumulateStrategyRpcManager.queryListV3",
-            """[{"chInfo":"$SESAME_TASK_CH_INFO","deliverStatus":"","deliveryTemplateId":"","sceneCode":"$SESAME_TASK_SCENE_CODE","searchAddToHomeTask":true,"searchGuidePopFlag":true,"searchShareAssistTask":true,"searchSubscribeTask":true,"supportJumpAuth":true,"version":"$SESAME_TASK_VERSION"}]"""
-        )
-    }
-
-    /**
-     * 芝麻信用领取任务
-     */
-    @JvmStatic
-    fun joinSesameTask(taskTemplateId: String, sceneCode: String? = null): String {
-        val args = JSONObject().apply {
-            put("chInfo", SESAME_TASK_JOIN_CH_INFO)
-            put("joinFromOuter", false)
-            if (!sceneCode.isNullOrBlank()) {
-                put("sceneCode", sceneCode)
-            }
-            put("templateId", taskTemplateId)
-        }
-        return RequestManager.requestString(
-            "com.antgroup.zmxy.zmmemberop.biz.rpc.promise.PromiseRpcManager.joinActivity",
-            JSONArray().put(args).toString()
-        )
-    }
-
-    /**
-     * 芝麻信用获取任务回调
-     */
-    @JvmStatic
-    fun feedBackSesameTask(
-        taskTemplateId: String,
-        bizType: String? = null,
-        sceneCode: String? = null,
-        version: String? = null
-    ): String {
-        val args = JSONObject().apply {
-            put("actionType", "TO_COMPLETE")
-            if (!bizType.isNullOrBlank()) {
-                put("bizType", bizType)
-            }
-            if (!sceneCode.isNullOrBlank()) {
-                put("sceneCode", sceneCode)
-            }
-            put("templateId", taskTemplateId)
-            if (!version.isNullOrBlank()) {
-                put("version", version)
-            }
-        }
-        return RequestManager.requestString(
-            "com.antgroup.zmxy.zmmemberop.biz.rpc.creditaccumulate.CreditAccumulateStrategyRpcManager.taskFeedback",
-            JSONArray().put(args).toString(),
-            "zmmemberop", "taskFeedback", "CreditAccumulateStrategyRpcManager"
-        )
-    }
-
-    /**
-     * 芝麻信用完成任务
-     */
-    @JvmStatic
-    fun finishSesameTask(recordId: String): String {
-        return RequestManager.requestString(
-            "com.antgroup.zmxy.zmmemberop.biz.rpc.promise.PromiseRpcManager.pushActivity",
-            """[{"recordId":"$recordId"}]"""
-        )
-    }
-
-    @JvmStatic
-    fun adRewardLjcs(adTaskBizId: String): String {
-        return RequestManager.requestString(
-            "com.antgroup.zmxy.zmmemberop.biz.rpc.promise.PromiseRpcManager.adRewardLjcs",
-            """[{"adTaskBizId":"$adTaskBizId"}]"""
-        )
-    }
-
-    /**
-     * 查询可收取的芝麻粒
-     */
-    @JvmStatic
-    fun queryCreditFeedback(): String {
-        return RequestManager.requestString(
-            "com.antgroup.zmxy.zmcustprod.biz.rpc.home.creditaccumulate.api.CreditAccumulateRpcManager.queryCreditFeedback",
-            """[{"queryPotential":false,"size":20,"status":"UNCLAIMED"}]"""
-        )
-    }
-
-    /**
-     * 一键收取芝麻粒
-     */
-    @JvmStatic
-    fun collectAllCreditFeedback(): String {
-        return RequestManager.requestString(
-            "com.antgroup.zmxy.zmcustprod.biz.rpc.home.creditaccumulate.api.CreditAccumulateRpcManager.collectCreditFeedback",
-            """[{"collectAll":true,"status":"UNCLAIMED"}]"""
-        )
-    }
-
-    /**
-     * 收取芝麻粒
-     *
-     * @param creditFeedbackId creditFeedbackId
-     */
-    @JvmStatic
-    fun collectCreditFeedback(creditFeedbackId: String): String {
-        return RequestManager.requestString(
-            "com.antgroup.zmxy.zmcustprod.biz.rpc.home.creditaccumulate.api.CreditAccumulateRpcManager.collectCreditFeedback",
-            """[{"collectAll":false,"creditFeedbackId":"$creditFeedbackId","status":"UNCLAIMED"}]"""
-        )
-    }
-
-    /**
-     * 芝麻粒首页
-     */
-    @JvmStatic
-    fun queryPointHome(): String {
-        return RequestManager.requestString(
-            "com.antgroup.zmxy.zmmemberop.biz.rpc.PointHomeRpcManager.queryHome",
-            "[{}]"
-        )
-    }
-
-    /**
-     * 查询最近一次被操作的芝麻任务
-     */
-    @JvmStatic
-    fun queryLastOperateTask(version: String = SESAME_TASK_VERSION): String {
-        return RequestManager.requestString(
-            "com.antgroup.zmxy.zmmemberop.biz.rpc.creditaccumulate.CreditAccumulateStrategyRpcManager.queryLastOperateTask",
-            """[{"version":"$version"}]"""
-        )
-    }
-
-    /**
-     * 芝麻粒福利签到列表
-     */
-    @JvmStatic
-    fun zmlCheckInQueryTaskLists(): String {
-        return RequestManager.requestString(
-            "com.antgroup.zmxy.zmmemberop.biz.rpc.pointtask.CheckInTaskRpcManager.queryTaskLists",
-            """[{"supportMakeUp":true,"version":"$SESAME_CHECK_IN_VERSION"}]"""
-        )
-    }
 
     /**
      * 获取保障金信息
@@ -747,9 +574,74 @@ object AntMemberRpcCall {
     @JvmStatic
     fun queryAvailableCollectInsuredGold(): String {
         return RequestManager.requestString(
-            "com.alipay.insgiftbff.insgiftMain.queryMultiSceneWaitToGainList",
+            METHOD_QUERY_MULTI_SCENE_WAIT_TO_GAIN_LIST,
             """[{"entrance":"cfsy","eventToWaitParamDTO":{"giftProdCode":"GIFT_UNIVERSAL_COVERAGE","rightNoList":["UNIVERSAL_ACCIDENT","UNIVERSAL_HOSPITAL","UNIVERSAL_OUTPATIENT","UNIVERSAL_SERIOUSNESS","UNIVERSAL_WEALTH","UNIVERSAL_TRANS","UNIVERSAL_FRAUD_LIABILITY"]},"helpChildParamDTO":{"giftProdCode":"GIFT_HEALTH_GOLD_CHILD","rightNoList":["UNIVERSAL_ACCIDENT","UNIVERSAL_HOSPITAL","UNIVERSAL_OUTPATIENT","UNIVERSAL_SERIOUSNESS","UNIVERSAL_WEALTH","UNIVERSAL_TRANS","UNIVERSAL_FRAUD_LIABILITY"]},"priorityChannelParamDTO":{"giftProdCode":"GIFT_UNIVERSAL_COVERAGE","rightNoList":["UNIVERSAL_ACCIDENT","UNIVERSAL_HOSPITAL","UNIVERSAL_OUTPATIENT","UNIVERSAL_SERIOUSNESS","UNIVERSAL_WEALTH","UNIVERSAL_TRANS","UNIVERSAL_FRAUD_LIABILITY"]},"signInParamDTO":{"giftProdCode":"GIFT_UNIVERSAL_COVERAGE","rightNoList":["UNIVERSAL_ACCIDENT","UNIVERSAL_HOSPITAL","UNIVERSAL_OUTPATIENT","UNIVERSAL_SERIOUSNESS","UNIVERSAL_WEALTH","UNIVERSAL_TRANS","UNIVERSAL_FRAUD_LIABILITY"]}}]""",
             "insgiftbff", "queryMultiSceneWaitToGainList", "insgiftMain"
+        )
+    }
+
+    @JvmStatic
+    fun queryInsuredOpenAndAllowAndUpgrade(entrance: String = "cfsy"): String {
+        val rightNoList = JSONArray().apply {
+            put("UNIVERSAL_ACCIDENT")
+            put("UNIVERSAL_HOSPITAL")
+            put("UNIVERSAL_OUTPATIENT")
+            put("UNIVERSAL_SERIOUSNESS")
+            put("UNIVERSAL_WEALTH")
+            put("UNIVERSAL_TRANS")
+            put("UNIVERSAL_FRAUD_LIABILITY")
+        }
+        val args = JSONObject().apply {
+            put("entrance", entrance)
+            put("giftProdCode", "GIFT_UNIVERSAL_COVERAGE")
+            put("pageRenderRequest", JSONObject().apply {
+                put("channelType", entrance)
+                put("contentKey", "couponId")
+                put("sceneCode", "INSGIFT_APP")
+                put("templateCode", "INSGIFT_APP_NEW_OPEN")
+            })
+            put("rightNoList", rightNoList)
+        }
+        return RequestManager.requestString(
+            "com.alipay.insgiftbff.insgiftMain.queryOpenAndAllowAndUpgrade",
+            JSONArray().put(args).toString(),
+            "insgiftbff", "queryOpenAndAllowAndUpgrade", "insgiftMain"
+        )
+    }
+
+    @JvmStatic
+    fun queryInsuredGiftHomeRender(entrance: String = "cfsy"): String {
+        fun buildPageOptions() = JSONObject().apply {
+            put("channelType", entrance)
+            put("greatPromoPrefetchRPCFlag", true)
+        }
+
+        val args = JSONObject().apply {
+            put("configPageRenderParam", JSONObject().apply {
+                put("pageOptions", buildPageOptions())
+                put("sceneCode", "INSGIFT_APP_CONFIG")
+            })
+            put("pageRenderParam", JSONObject().apply {
+                put("pageOptions", buildPageOptions())
+                put("sceneCode", "INSGIFT_APP")
+            })
+            put("trackCardParam", JSONObject().apply {
+                put("pageOptions", buildPageOptions())
+            })
+            put("vicePageRenderParam", JSONObject().apply {
+                put("pageOptions", buildPageOptions())
+                put("sceneCode", "INSGIFT_APP_VICE")
+            })
+            put("voucherQuery", JSONObject().apply {
+                put("entrance", entrance)
+                put("mktPrizeType", "VOUCHER_QUERY")
+                put("voucherQueryDTO", JSONObject())
+            })
+        }
+        return RequestManager.requestString(
+            "com.alipay.insgiftbff.insgiftMain.giftHomeRender",
+            JSONArray().put(args).toString(),
+            "insgiftbff", "giftHomeRender", "insgiftMain"
         )
     }
 
@@ -758,9 +650,78 @@ object AntMemberRpcCall {
      */
     @JvmStatic
     fun collectInsuredGold(goldBallObj: JSONObject): String {
-        return RequestManager.requestString(
-            "com.alipay.insgiftbff.insgiftMain.gainMyAndFamilySumInsured",
+        val response = RequestManager.requestString(
+            METHOD_GAIN_MY_AND_FAMILY_SUM_INSURED,
             JSONArray().put(goldBallObj).toString(), "insgiftbff", "gainMyAndFamilySumInsured", "insgiftMain"
+        )
+        invalidateInsuredGoldWaitListCacheIfSuccess(response)
+        return response
+    }
+
+    private fun invalidateInsuredGoldWaitListCacheIfSuccess(response: String) {
+        try {
+            val responseObject = JSONObject(response)
+            if (responseObject.optBoolean("success") || responseObject.optBoolean("isSuccess")) {
+                RpcCache.invalidate(METHOD_QUERY_MULTI_SCENE_WAIT_TO_GAIN_LIST)
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
+    @JvmStatic
+    fun queryInsuredTaskListV2(
+        taskCenterId: String,
+        sceneCode: String,
+        entrance: String,
+        controlSolutionSceneCode: String? = null
+    ): String {
+        val args = JSONObject().apply {
+            put("bizData", JSONObject())
+            if (!controlSolutionSceneCode.isNullOrBlank()) {
+                put("controlSolutionSceneCode", controlSolutionSceneCode)
+                put("displayTaskCount", 30)
+            }
+            put("entrance", entrance)
+            put("sceneCode", sceneCode)
+            put("taskCenterId", taskCenterId)
+        }
+        return RequestManager.requestString(
+            "com.alipay.insgiftbff.insgiftTask.queryTaskListv2",
+            JSONArray().put(args).toString(),
+            "insgiftbff", "queryTaskListv2", "insgiftTask"
+        )
+    }
+
+    @JvmStatic
+    fun triggerInsuredTaskV2(
+        appletId: String,
+        taskCenterId: String,
+        sceneCode: String,
+        stageCode: String
+    ): String {
+        val args = JSONObject().apply {
+            put("appletId", appletId)
+            put("sceneCode", sceneCode)
+            put("stageCode", stageCode)
+            put("taskCenId", taskCenterId)
+        }
+        return RequestManager.requestString(
+            "com.alipay.insgiftbff.insgiftTask.taskTriggerv2",
+            JSONArray().put(args).toString(),
+            "insgiftbff", "taskTriggerv2", "insgiftTask"
+        )
+    }
+
+    @JvmStatic
+    fun consultInsuredTaskCenterById(taskCenterId: String, taskId: String): String {
+        val args = JSONObject().apply {
+            put("taskCenterId", taskCenterId)
+            put("taskId", taskId)
+        }
+        return RequestManager.requestString(
+            "com.alipay.insgiftbff.insgiftTask.taskCenterConsultById",
+            JSONArray().put(args).toString(),
+            "insgiftbff", "taskCenterConsultById", "insgiftTask"
         )
     }
 
@@ -769,41 +730,6 @@ object AntMemberRpcCall {
      *
      * @return 结果
      */
-    @JvmStatic
-    fun promiseQueryHome(): String {
-        return RequestManager.requestString(
-            "com.antgroup.zmxy.zmmemberop.biz.rpc.promise.PromiseRpcManager.queryHome",
-            null
-        )
-    }
-
-    /**
-     * 查询生活记录明细
-     *
-     * @param recordId recordId
-     * @return 结果
-     */
-    @JvmStatic
-    fun promiseQueryDetail(recordId: String): String {
-        return RequestManager.requestString(
-            "com.antgroup.zmxy.zmmemberop.biz.rpc.promise.PromiseRpcManager.queryDetail",
-            """[{"recordId":"$recordId"}]"""
-        )
-    }
-
-    /**
-     * 生活记录加入新纪录
-     *
-     * @param data data
-     * @return 结果
-     */
-    @JvmStatic
-    fun promiseJoin(data: String): String {
-        return RequestManager.requestString(
-            "com.antgroup.zmxy.zmmemberop.biz.rpc.promise.PromiseRpcManager.join",
-            "[$data]"
-        )
-    }
 
     /**
      * 查询待领取的保障金
@@ -975,113 +901,6 @@ object AntMemberRpcCall {
         return RequestManager.requestString("com.alipay.alipaymember.biz.rpc.config.h5.queryDeliveryZoneDetail", data)
     }
 
-    @JvmStatic
-    fun queryExchangeList(page: Int, pageSize: Int): String {
-        val args =
-            """[{"currentPage":$page,"formDelivery":"false","pageSize":$pageSize,"privilegeSource":"","privilegeTab":"","tabList":[]}]"""
-        return RequestManager.requestString(
-            "com.antgroup.zmxy.zmmemberop.biz.rpc.award.AwardRpcManager.queryListV2",
-            args
-        )
-    }
-
-    @JvmStatic
-    fun obtainAward(templateId: String): String {
-        val args = """[{"awardTemplateId":"$templateId"}]"""
-        return RequestManager.requestString(
-            "com.antgroup.zmxy.zmmemberop.biz.rpc.award.AwardRpcManager.obtainAward",
-            args
-        )
-    }
-
-    private const val ZHIMATREE_PLAY_INFO = "SwbtxJSo8OOUrymAU%2FHnY2jyFRc%2BkCJ3"
-    private const val ZHIMATREE_REFER =
-        "https://render.alipay.com/p/yuyan/180020010001269849/zmTree.html?caprMode=sync&chInfo=chInfo=ch_zmzltf__chsub_xinyongsyyingxiaowei"
-
-    @JvmStatic
-    fun zhimaTreeHomePage(): String? {
-        return try {
-            val args = JSONObject().apply {
-                put("operation", "ZHIMA_TREE_HOME_PAGE")
-                put("playInfo", ZHIMATREE_PLAY_INFO)
-                put("refer", ZHIMATREE_REFER)
-                put("extInfo", JSONObject())
-            }
-            RequestManager.requestString(
-                "alipay.promoprod.play.trigger",
-                JSONArray().put(args).toString()
-            )
-        } catch (e: Exception) {
-            null
-        }
-    }
-
-    @JvmStatic
-    fun zhimaTreeCleanAndPush(treeCode: String): String? {
-        return try {
-            val extInfo = JSONObject().apply {
-                put("clickNum", "1")
-                put("treeCode", treeCode)
-            }
-            val args = JSONObject().apply {
-                put("operation", "ZHIMA_TREE_CLEAN_AND_PUSH")
-                put("playInfo", ZHIMATREE_PLAY_INFO)
-                put("refer", ZHIMATREE_REFER)
-                put("extInfo", extInfo)
-            }
-            RequestManager.requestString(
-                "alipay.promoprod.play.trigger",
-                JSONArray().put(args).toString()
-            )
-        } catch (e: Exception) {
-            null
-        }
-    }
-
-    @JvmStatic
-    fun queryRentGreenTaskList(): String? {
-        return try {
-            val extInfo = JSONObject().apply {
-                put("chInfo", "ch_share__chsub_ALPContact")
-                put("batchId", "")
-            }
-            val args = JSONObject().apply {
-                put("operation", "RENT_GREEN_TASK_LIST_QUERY")
-                put("playInfo", ZHIMATREE_PLAY_INFO)
-                put("refer", ZHIMATREE_REFER)
-                put("extInfo", extInfo)
-            }
-            RequestManager.requestString(
-                "alipay.promoprod.play.trigger",
-                JSONArray().put(args).toString()
-            )
-        } catch (e: Exception) {
-            null
-        }
-    }
-
-    @JvmStatic
-    fun rentGreenTaskFinish(taskId: String, stageCode: String): String? {
-        return try {
-            val extInfo = JSONObject().apply {
-                put("chInfo", "ch_share__chsub_ALPContact")
-                put("taskId", taskId)
-                put("stageCode", stageCode)
-            }
-            val args = JSONObject().apply {
-                put("operation", "RENT_GREEN_TASK_FINISH")
-                put("playInfo", ZHIMATREE_PLAY_INFO)
-                put("refer", ZHIMATREE_REFER)
-                put("extInfo", extInfo)
-            }
-            RequestManager.requestString(
-                "alipay.promoprod.play.trigger",
-                JSONArray().put(args).toString()
-            )
-        } catch (e: Exception) {
-            null
-        }
-    }
 
     @JvmStatic
     fun queryGoldTicketHome(taskId: String = ""): String? {
@@ -1318,183 +1137,5 @@ object AntMemberRpcCall {
         )
     }
 
-    @JvmStatic
-    fun zmCheckInCompleteTask(checkInDate: String, sceneCode: String): String {
-        val args = """[{"checkInDate":"$checkInDate","sceneCode":"$sceneCode"}]"""
-        return RequestManager.requestString(
-            "com.antgroup.zmxy.zmmemberop.biz.rpc.pointtask.CheckInTaskRpcManager.completeTask",
-            args
-        )
-    }
-
-    /**
-     * 兼容旧实现：将芝麻信用相关 RPC 归类到 Zmxy 命名空间下，供 AntMember 调用。
-     *
-     * 说明：这些方法来自历史实现（Sesame-GR），在 AG Kotlin 迁移过程中被引用但未补齐。
-     * 这里按最小集补齐，确保编译通过与功能可用。
-     */
-    object Zmxy {
-
-        /**
-         * 查询“成长引导/信誉任务”待办列表
-         */
-        @JvmStatic
-        fun queryGrowthGuideToDoList(
-            guideBehaviorId: String = "",
-            invokeVersion: String = SESAME_GROWTH_GUIDE_INVOKE_VERSION
-        ): String {
-            val requestData =
-                """[{"guideBehaviorId":"$guideBehaviorId","invokeVersion":"$invokeVersion","switchNewPage":true}]"""
-            return RequestManager.requestString(
-                "com.antgroup.zmxy.zmcustprod.biz.rpc.growthbehavior.apiGrowthBehaviorRpcManager.queryToDoList",
-                requestData
-            )
-        }
-
-        /**
-         * 接受/开启一个行为任务
-         */
-        @JvmStatic
-        fun openBehaviorCollect(behaviorId: String): String {
-            val requestData = """[{"behaviorId":"$behaviorId"}]"""
-            return RequestManager.requestString(
-                "com.antgroup.zmxy.zmcustprod.biz.rpc.growthbehavior.apiGrowthBehaviorRpcManager.openBehaviorCollect",
-                requestData
-            )
-        }
-
-        /**
-         * 查询每日问答题目
-         */
-        @JvmStatic
-        fun queryDailyQuiz(behaviorId: String): String {
-            val requestData = """[{"behaviorId":"$behaviorId"}]"""
-            return RequestManager.requestString(
-                "com.antgroup.zmxy.zmcustprod.biz.rpc.growthtask.api.GrowthTaskRpcManager.queryDailyQuiz",
-                requestData
-            )
-        }
-
-        /**
-         * 提交每日问答/视频问答答案
-         */
-        @JvmStatic
-        fun pushDailyTask(
-            behaviorId: String,
-            bizDate: Long,
-            answerId: String,
-            questionId: String,
-            answerStatus: String
-        ): String {
-            val extInfo =
-                """{"answerId":"$answerId","answerStatus":"$answerStatus","questionId":"$questionId"}"""
-            val requestData = """[{"behaviorId":"$behaviorId","bizDate":$bizDate,"extInfo":$extInfo}]"""
-            return RequestManager.requestString(
-                "com.antgroup.zmxy.zmcustprod.biz.rpc.growthtask.api.GrowthTaskRpcManager.pushDailyTask",
-                requestData
-            )
-        }
-
-        /**
-         * 查询当前可领取的进度球
-         */
-        @JvmStatic
-        fun queryScoreProgress(): String {
-            val requestData = """[{"needTotalProcess":"TRUE","queryGuideInfo":true,"switchNewPage":true}]"""
-            return RequestManager.requestString(
-                "com.antgroup.zmxy.zmcustprod.biz.rpc.home.api.HomeV8RpcManager.queryScoreProgress",
-                requestData
-            )
-        }
-
-        /**
-         * 收集一个或多个进度球
-         */
-        @JvmStatic
-        fun collectProgressBall(ballIdList: JSONArray?): String? {
-            if (ballIdList == null || ballIdList.length() == 0) return null
-            val requestData = """[{"ballIdList":${ballIdList}}]"""
-            return RequestManager.requestString(
-                "com.antgroup.zmxy.zmcustprod.biz.rpc.growthbehavior.apiGrowthBehaviorRpcManager.collectProgressBall",
-                requestData
-            )
-        }
-
-        object Alchemy {
-            @JvmStatic
-            fun alchemyQueryCheckIn(sceneCode: String): String {
-                val requestData = """[{"sceneCode":"$sceneCode","version":"$SESAME_CHECK_IN_VERSION"}]"""
-                return RequestManager.requestString(
-                    "com.antgroup.zmxy.zmmemberop.biz.rpc.pointtask.CheckInTaskRpcManager.queryTaskLists",
-                    requestData
-                )
-            }
-
-            @JvmStatic
-            fun alchemyQueryEntryList(): String {
-                val requestData = """[{"version":"$SESAME_CHECK_IN_VERSION"}]"""
-                return RequestManager.requestString(
-                    "com.antgroup.zmxy.zmmemberop.biz.rpc.AlchemyRpcManager.queryEntryList",
-                    requestData
-                )
-            }
-
-            @JvmStatic
-            fun claimAward(awardId: String = ""): String {
-                val requestData = if (awardId.isBlank()) {
-                    "[{}]"
-                } else {
-                    """[{"awardId":"$awardId"}]"""
-                }
-                return RequestManager.requestString(
-                    "com.antgroup.zmxy.zmmemberop.biz.rpc.AlchemyRpcManager.claimAward",
-                    requestData
-                )
-            }
-
-            @JvmStatic
-            fun alchemyQueryHome(): String {
-                return RequestManager.requestString(
-                    "com.antgroup.zmxy.zmmemberop.biz.rpc.AlchemyRpcManager.queryHome",
-                    "[{}]"
-                )
-            }
-
-            @JvmStatic
-            fun alchemyExecute(): String {
-                return RequestManager.requestString(
-                    "com.antgroup.zmxy.zmmemberop.biz.rpc.AlchemyRpcManager.alchemy",
-                    "[null]"
-                )
-            }
-
-            @JvmStatic
-            fun alchemyQueryTimeLimitedTask(): String {
-                return RequestManager.requestString(
-                    "com.antgroup.zmxy.zmmemberop.biz.rpc.pointtask.TimeLimitedTaskRpcManager.queryTask",
-                    "[{}]"
-                )
-            }
-
-            @JvmStatic
-            fun alchemyCompleteTimeLimitedTask(templateId: String): String {
-                val requestData = """[{"templateId":"$templateId"}]"""
-                return RequestManager.requestString(
-                    "com.antgroup.zmxy.zmmemberop.biz.rpc.pointtask.TimeLimitedTaskRpcManager.completeTask",
-                    requestData
-                )
-            }
-
-            @JvmStatic
-            fun alchemyQueryListV3(): String {
-                val requestData =
-                    """[{"chInfo":"","deliverStatus":"","deliveryTemplateId":"","searchSubscribeTask":true,"supportRewardLJCS":true,"version":"alchemy"}]"""
-                return RequestManager.requestString(
-                    "com.antgroup.zmxy.zmmemberop.biz.rpc.creditaccumulate.CreditAccumulateStrategyRpcManager.queryListV3",
-                    requestData
-                )
-            }
-        }
-    }
 }
 

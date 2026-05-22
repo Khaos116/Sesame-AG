@@ -16,16 +16,22 @@ enum class ModelGroup(
     BASE("BASE", "基础", "svg/group/base.svg"),
     /** 森林 */
     FOREST("FOREST", "森林", "svg/group/forest.svg"),
+    /** 神奇物种 */
+    DODO("DODO", "神奇物种", "svg/group/forest.svg"),
     /** 庄园 */
     FARM("FARM", "庄园", "svg/group/farm.svg"),
     /** 新村 */
     STALL("STALL", "新村", "svg/group/stall.svg"),
     /** 农场 */
     ORCHARD("ORCHARD", "农场", "svg/group/orchard.svg"),
+    /** 福气鱼池 */
+    FISHPOND("FISHPOND", "福气鱼池", "svg/group/orchard.svg"),
     /** 运动 */
     SPORTS("SPORTS", "运动", "svg/group/sports.svg"),
     /** 会员 */
     MEMBER("MEMBER", "会员", "svg/group/member.svg"),
+    /** 芝麻信用 */
+    SESAME_CREDIT("SESAME_CREDIT", "芝麻信用", "svg/group/member.svg"),
     /** 其他 */
     OTHER("OTHER", "其他", "svg/group/other.svg");
 

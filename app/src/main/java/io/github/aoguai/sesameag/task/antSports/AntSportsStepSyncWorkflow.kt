@@ -11,7 +11,7 @@ internal fun AntSports.runStepSyncWorkflow() {
         earliestSyncStepTime.hasReachedToday()
     ) {
         if (isEnergyOnlyModeNow()) {
-            Log.sports("AntSports", "⏸ 当前为只收能量时间【${BaseModel.energyTime.value}】，跳过同步步数")
+            Log.sports("⏸ 当前为只收能量时间【${BaseModel.energyTime.value}】，跳过同步步数")
             return
         }
         syncStepTask()

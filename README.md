@@ -1,17 +1,21 @@
 <div align="center">
   <img src="artwork/sesame-ag-app-icon.svg" width="140" alt="Sesame-AG Logo" />
   <h1>Sesame-AG</h1>
-  <p><strong>面向学习研究场景的 Alipay LSPosed 模块分支。</strong></p>
-  <p>项目技术源流可追溯至 <code>XQuickEnergy</code> / <code>Sesame</code> 系列，当前以 <code>Sesame-AG</code> 名义继续维护、重构与补全。</p>
+  <p><strong>面向学习研究场景的独立演进 Android LSPosed 模块。</strong></p>
+
+  <p>
+    <a href="LICENSE"><img src="https://img.shields.io/github/license/Sesame-AG/Sesame-AG?style=flat-square&color=orange" alt="License" /></a>
+    <a href="https://github.com/Sesame-AG/Sesame-AG/discussions"><img src="https://img.shields.io/github/discussions/Sesame-AG/Sesame-AG?style=flat-square&color=success" alt="Discussions" /></a>
+  </p>
+
+  <p><code>Sesame-AG</code> 一个面向学习研究场景的 Alipay LSPosed 模块分支。</p>
 </div>
 
 ---
 
-## 项目说明
+## 🚀 项目简介
 
-`Sesame-AG` 是一个以学习、研究、静态分析、代码整理和调试为主要目的的 Android 模块仓库。
-
-它不是单一上游仓库的线性延续，而是在 `XQuickEnergy`、`Sesame`、`Sesame-TK` 等公开维护线的基础上，结合当前仓库自己的结构调整、功能补全、调试能力和工程化改造，继续独立演进的分支。
+虽然项目在演进过程中吸收了多条公开实现思路的精华，但它**不是**任何单一上游仓库的简单延续，而是成长为一个**完全独立演进**的研究分支。与任何上游仓库维护者无任何关联，我们倡导开源与社区共创。
 
 > [!IMPORTANT]
 > 为避免滥用，确保模块以学习研究为主的定位，当前仓库仅对以下环境组合提供“支持维护”：
@@ -28,23 +32,33 @@
 
 ---
 
-## 研究参考与技术源流
+## 🤝 社区与贡献
 
-> [!NOTE]
-> 下面只保留与当前仓库关系最直接的公开维护线索，用于帮助理解代码来源，不表示单一的法律继承关系。
+我们鼓励每一位研究者参与到 `Sesame-AG` 的建设中来，共同维护一个健康、积极的开源环境。
 
-| 时期 | 代表仓库 | 与当前仓库的关系 |
-| --- | --- | --- |
-| 早期起点 | [yongjun925/autocollectenergy](https://github.com/yongjun925/autocollectenergy) | 更上游的历史根系。 |
-| `XQuickEnergy` 公开线 | [pansong291/XQuickEnergy](https://github.com/pansong291/XQuickEnergy) | 早期公开实现思路的重要节点。 |
-| `XQuickEnergy` 扩展线 | [constanline/XQuickEnergy](https://github.com/constanline/XQuickEnergy) | 后续 `Sesame` 系列的重要工程前置。 |
-| `Sesame` 主续线 | [LazyImmortal/Sesame](https://github.com/LazyImmortal/Sesame) | 公开续线中的关键节点。 |
-| `Sesame-TK` 阶段 | [TKaxv-7S/Sesame-TK](https://github.com/TKaxv-7S/Sesame-TK) | `Sesame` 之后的重要接棒节点。 |
-| `Sesame-TK` 分叉传播线 | [Liujishou/Sesame-TK-Fork](https://github.com/Liujishou/Sesame-TK-Fork) / [Fansirsqi/Sesame-TK](https://github.com/Fansirsqi/Sesame-TK) | 与当前代码组织更接近的一条传播线。 |
-| 并行参考线 | [Youyu-Github/Sesame-TK-Y](https://github.com/Youyu-Github/Sesame-TK-Y) / [iceshell/Sesame-TK3](https://github.com/iceshell/Sesame-TK3) | 提供并行参考，但不是唯一上游。 |
-| 当前仓库 | `Sesame-AG` | 综合吸收多条公开实现思路后继续独立演进。 |
+- **分享 RPC 配置**：如果你发现了有趣的 RPC 调用或实用的调试配置，欢迎前往 [RPC 分享讨论区](https://github.com/Sesame-AG/Sesame-AG/discussions/categories/rpc-%E5%88%86%E4%BA%AB) 进行分享。
+- **讨论想法**：有好的想法？请优先通过 [Discussions](https://github.com/Sesame-AG/Sesame-AG/discussions) 进行交流，确保 Issue 列表聚焦于可复现的技术问题。
+- **参与开发**：请参考 [CONTRIBUTING.md](CONTRIBUTING.md) 了解协作规范。
 
-如果你关注的是合规、许可证或附加限制，请不要只依据“历史源流”做判断，而应结合提交时期、来源仓库声明和当前仓库的 [LEGAL.md](LEGAL.md) 一并理解。
+---
+
+## ⚖️ 法律与协议
+
+在使用本项目之前，请务必阅读并理解以下文档：
+
+- [LEGAL.md](LEGAL.md)：包含许可说明、使用边界、风险提示与免责声明。
+- [LICENSE](LICENSE)：项目采用 **AGPL-3.0** 协议开源。
+
+<details>
+<summary><b>点击查看：研究参考与技术源流</b></summary>
+
+本项目在独立演进过程中，曾参考或吸收了以下公开维护线的实现思路（按时间/关联度排序）：
+
+早期起点 ([yongjun925/autocollectenergy](https://github.com/yongjun925/autocollectenergy)) -> `XQuickEnergy` 系列 ([pansong291](https://github.com/pansong291/XQuickEnergy) / [constanline](https://github.com/constanline/XQuickEnergy)) -> `Sesame` 系列 ([LazyImmortal](https://github.com/LazyImmortal/Sesame) / [TKaxv-7S](https://github.com/TKaxv-7S/Sesame-TK) / [Liujishou](https://github.com/Liujishou/Sesame-TK-Fork) / [Fansirsqi](https://github.com/Fansirsqi/Sesame-TK))。
+
+再次强调：`Sesame-AG` 现已进入独立演进阶段，历史源流仅供技术参考，不代表单一的法律继承关系。
+
+</details>
 
 ---
 
@@ -74,5 +88,5 @@
 
 感谢所有为 `Sesame-AG` 提交代码、修复问题、补全文档与改进协作流程的贡献者。
 
-[![贡献者头像墙](https://contrib.rocks/image?repo=aoguai/Sesame-AG&max=200)](https://github.com/aoguai/Sesame-AG/graphs/contributors)
+[![贡献者头像墙](https://contrib.rocks/image?repo=Sesame-AG/Sesame-AG&max=200)](https://github.com/Sesame-AG/Sesame-AG/graphs/contributors)
 

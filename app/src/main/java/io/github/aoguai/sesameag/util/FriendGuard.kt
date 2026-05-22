@@ -1,5 +1,7 @@
 package io.github.aoguai.sesameag.util
 
+import io.github.aoguai.sesameag.entity.friend.FriendRelation
+import io.github.aoguai.sesameag.util.friend.FriendRepository
 import io.github.aoguai.sesameag.util.maps.UserMap
 
 /**
@@ -28,7 +30,7 @@ object FriendGuard {
         if (normalized == UserMap.currentUid) {
             return false
         }
-        return UserMap.get(normalized)?.friendStatus == MUTUAL_FRIEND_STATUS
+        return FriendRepository.relationOf(normalized) == FriendRelation.MUTUAL
     }
 
     @JvmStatic
@@ -47,16 +49,21 @@ object FriendGuard {
             Log.record(logTag, "$sceneName 跳过自己账号[$normalized]")
             return true
         }
-        val userEntity = UserMap.get(normalized)
-        if (userEntity == null) {
+        val relation = FriendRepository.relationOf(normalized)
+        if (relation == FriendRelation.UNKNOWN) {
             Log.record(logTag, "$sceneName 跳过[$normalized]：好友信息不存在")
             return true
         }
-        if (userEntity.friendStatus != MUTUAL_FRIEND_STATUS) {
+        if (FriendRepository.isGlobalBlocked(normalized)) {
+            val maskName = UserMap.getMaskName(normalized) ?: normalized
+            Log.record(logTag, "$sceneName 跳过[$maskName]：好友中心全局黑名单")
+            return true
+        }
+        if (relation != FriendRelation.MUTUAL) {
             val maskName = UserMap.getMaskName(normalized) ?: normalized
             Log.record(
                 logTag,
-                "$sceneName 跳过[$maskName]：单向好友或已失效(friendStatus=${userEntity.friendStatus ?: -1})"
+                "$sceneName 跳过[$maskName]：单向好友或已失效(relation=$relation)"
             )
             return true
         }

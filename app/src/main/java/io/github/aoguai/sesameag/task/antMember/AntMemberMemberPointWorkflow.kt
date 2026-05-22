@@ -9,8 +9,6 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 
-private val memberWorkflowTag: String = AntMember::class.java.simpleName
-
 internal data class AntMemberPointWorkflowPlan(
     val claimTaskAwards: Boolean,
     val claimMemberPoints: Boolean
@@ -27,7 +25,7 @@ internal fun AntMember.prepareMemberPointWorkflows(
 
     if (memberSign?.value == true) {
         if (hasFlagToday(StatusFlags.FLAG_ANTMEMBER_MEMBER_SIGN_DONE)) {
-            Log.member(memberWorkflowTag, "⏭️ 今天已处理过会员签到，跳过执行")
+            Log.member("⏭️ 今天已处理过会员签到，跳过执行")
         } else {
             deferredTasks.add(scope.async(Dispatchers.IO) { doMemberSign() })
         }
@@ -35,10 +33,10 @@ internal fun AntMember.prepareMemberPointWorkflows(
 
     if (memberTask?.value == true) {
         if (hasFlagToday(StatusFlags.FLAG_ANTMEMBER_MEMBER_TASK_RISK_STOP_TODAY)) {
-            Log.member(memberWorkflowTag, "⏭️ 今天会员任务已因风控/离线止损，停止执行")
+            Log.member("⏭️ 今天会员任务已因风控/离线止损，停止执行")
         } else {
             if (hasFlagToday(StatusFlags.FLAG_ANTMEMBER_MEMBER_TASK_EMPTY_TODAY)) {
-                Log.member(memberWorkflowTag, "ℹ️ 检测到会员任务空列表旧标记，继续按本轮查询")
+                Log.member("ℹ️ 检测到会员任务空列表旧标记，继续按本轮查询")
             }
             deferredTasks.add(scope.async(Dispatchers.IO) { doAllMemberAvailableTaskCompat() })
         }
@@ -54,20 +52,20 @@ internal fun AntMember.prepareMemberPointWorkflows(
 internal suspend fun AntMember.finishMemberPointWorkflows(plan: AntMemberPointWorkflowPlan) {
     if (plan.claimTaskAwards) {
         if (ApplicationHookConstants.isOffline()) {
-            Log.member(memberWorkflowTag, "⏭️ 当前处于离线模式，跳过会员阶段奖励领取")
+            Log.member("⏭️ 当前处于离线模式，跳过会员阶段奖励领取")
         } else {
             val claimedRewardCount = collectMemberTaskProcessAwards()
             if (claimedRewardCount > 0) {
-                Log.member(memberWorkflowTag, "🎯 会员阶段奖励领取完成，共${claimedRewardCount}项")
+                Log.member("🎯 会员阶段奖励领取完成，共${claimedRewardCount}项")
             }
         }
     }
 
     if (plan.claimMemberPoints) {
         if (ApplicationHookConstants.isOffline()) {
-            Log.member(memberWorkflowTag, "⏭️ 当前处于离线模式，跳过统一领取会员积分")
+            Log.member("⏭️ 当前处于离线模式，跳过统一领取会员积分")
         } else {
-            Log.member(memberWorkflowTag, "🎯 会员流程执行完成，开始统一领取会员积分")
+            Log.member("🎯 会员流程执行完成，开始统一领取会员积分")
             AntMember.queryPointCert(1, 20)
         }
     }

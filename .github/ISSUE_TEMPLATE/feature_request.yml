@@ -9,12 +9,14 @@ body:
       value: |
         感谢你愿意提出建议。
 
-        如果你要发的是一般讨论、使用交流、提问，或只是还不够明确的想法，请优先前往 [Discussions](https://github.com/aoguai/Sesame-AG/discussions)。
+        **注意**：如果你要分享 RPC 配置，请前往 [RPC 分享讨论区](https://github.com/Sesame-AG/Sesame-AG/discussions/categories/rpc-%E5%88%86%E4%BA%AB)。
+
+        如果你要发的是一般讨论、使用交流、提问，或只是还不够明确的想法，请优先前往 [Discussions](https://github.com/Sesame-AG/Sesame-AG/discussions)。
 
         提交前请先阅读：
-        - [README](https://github.com/aoguai/Sesame-AG/blob/dev/README.md)
-        - [LEGAL](https://github.com/aoguai/Sesame-AG/blob/dev/LEGAL.md)
-        - [CONTRIBUTING](https://github.com/aoguai/Sesame-AG/blob/dev/CONTRIBUTING.md)
+        - [README](https://github.com/Sesame-AG/Sesame-AG/blob/dev/README.md)
+        - [LEGAL](https://github.com/Sesame-AG/Sesame-AG/blob/dev/LEGAL.md)
+        - [CONTRIBUTING](https://github.com/Sesame-AG/Sesame-AG/blob/dev/CONTRIBUTING.md)
 
         当前仓库优先接受与学习研究、代码维护、调试辅助和公开协作一致的建议。不符合项目边界诉求的请求，通常不会被受理。
 

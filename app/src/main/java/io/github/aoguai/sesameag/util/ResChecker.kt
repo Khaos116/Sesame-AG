@@ -115,8 +115,8 @@ object ResChecker {
             val resCode = jo.opt("resultCode")
             if (resCode != null) {
                 when (resCode) {
-                    is Int -> if (resCode == 200) return true
-                    is String -> if (Pattern.matches("(?i)SUCCESS|100", resCode)) return true
+                    is Number -> if (resCode.toInt() == 100 || resCode.toInt() == 200) return true
+                    is String -> if (Pattern.matches("(?i)SUCCESS|100|200", resCode)) return true
                 }
             }
             

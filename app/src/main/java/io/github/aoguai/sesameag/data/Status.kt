@@ -59,7 +59,6 @@ class Status {
     var intFlagMap: MutableMap<String, Int> = HashMap()
 
     var dailyAnswerList: MutableSet<String> = HashSet()
-    var donationEggList: MutableSet<String> = HashSet()
     var useAccelerateToolCount: Int = 0
 
     /** 小鸡换装 */
@@ -472,15 +471,26 @@ class Status {
             save()
         }
 
+        /**
+         * 获取今日捐蛋总数
+         */
         @JvmStatic
-        fun canDonationEgg(uid: String?): Boolean {
-            return !INSTANCE.donationEggList.contains(uid)
+        fun getDailyDonationTotal(uid: String?): Int {
+            if (uid.isNullOrEmpty()) return 0
+            return getIntFlagToday(StatusFlags.FLAG_FARM_DONATION_COUNT + uid) ?: 0
         }
 
+        /**
+         * 更新今日捐蛋总数
+         * @param incremental true: 累加原有数值, false: 强制覆盖为新数值(用于服务器同步)
+         */
         @JvmStatic
-        fun donationEgg(uid: String?) {
-            if (!uid.isNullOrEmpty() && INSTANCE.donationEggList.add(uid)) {
-                save()
+        fun updateDailyDonationTotal(uid: String?, count: Int, incremental: Boolean = true) {
+            if (uid.isNullOrEmpty()) return
+            val finalCount = if (incremental) getDailyDonationTotal(uid) + count else count
+
+            if (finalCount != getDailyDonationTotal(uid)) {
+                setIntFlagToday(StatusFlags.FLAG_FARM_DONATION_COUNT + uid, finalCount)
             }
         }
 

@@ -111,7 +111,7 @@ class ChouChouLe {
                 if (isTimeReached) {
                     executeAndSync(antFarm)
                 } else {
-                    Log.farm(TAG, "当前处于按时抽抽乐模式，未到设定时间，跳过")
+                    Log.farm("当前处于按时抽抽乐模式，未到设定时间，跳过")
                 }
             }
             isGameFinished -> {
@@ -130,7 +130,7 @@ class ChouChouLe {
             Log.farm("今日抽抽乐已完成")
         } else {
             antFarm.syncAnimalStatus(antFarm.ownerFarmId)
-            Log.farm(TAG, "抽抽乐尚有未完成项（请检查是否需要验证）")
+            Log.farm("抽抽乐尚有未完成项（请检查是否需要验证）")
         }
     }
 
@@ -293,7 +293,7 @@ class ChouChouLe {
         }
         Status.setFlagToday(limitedTaskFlag(task.taskId))
         val detail = reason.ifBlank { "服务端返回活动已结束" }
-        Log.farm(TAG, "限时抽抽乐任务[${task.title}]已结束，今日不再尝试：$detail")
+        Log.farm("限时抽抽乐任务[${task.title}]已结束，今日不再尝试：$detail")
     }
 
     private fun getResponseMessage(jo: JSONObject): String {
@@ -404,7 +404,7 @@ class ChouChouLe {
             return remainingTimes
         }
         if (task.rightsTimesLimit <= 0) {
-            Log.farm(TAG, "广告任务[${task.title}]剩余次数字段异常，按默认3次兜底")
+            Log.farm("广告任务[${task.title}]剩余次数字段异常，按默认3次兜底")
             return 3
         }
         return 0
@@ -419,7 +419,7 @@ class ChouChouLe {
                 return false
             }
             if (task.taskId.isBlank()) {
-                Log.farm(TAG, "抽抽乐任务[${task.title}]缺少 taskId，跳过")
+                Log.farm("抽抽乐任务[${task.title}]缺少 taskId，跳过")
                 return false
             }
             val taskName = if (drawType == "ipDraw") "IP抽抽乐" else "抽抽乐"
@@ -432,7 +432,7 @@ class ChouChouLe {
             // 普通任务
             if (task.title == "消耗饲料换机会") {
                 if (AntFarm.foodStock < 90) {
-                    Log.farm(TAG, "饲料余量(${AntFarm.foodStock}g)少于90g，跳过任务: ${task.title}")
+                    Log.farm("饲料余量(${AntFarm.foodStock}g)少于90g，跳过任务: ${task.title}")
                     return false // 返回 false 避免 doubleCheck，且不执行后续 RPC
                 }
             }
@@ -440,11 +440,11 @@ class ChouChouLe {
             val jo = JSONObject(s)
             val resultCode = jo.optString("resultCode")
             if ("DRAW_MACHINE07" == resultCode) {
-                Log.farm(TAG, "${taskName}任务[${task.title}]失败: 饲料不足，停止后续尝试")
+                Log.farm("${taskName}任务[${task.title}]失败: 饲料不足，停止后续尝试")
                 return false
             }
             if (isTaskQuotaReachedResponse(jo)) {
-                Log.farm(TAG, "${taskName}任务[${task.title}]今日次数已达上限，停止继续尝试")
+                Log.farm("${taskName}任务[${task.title}]今日次数已达上限，停止继续尝试")
                 return false
             }
             if (ResChecker.checkRes(TAG, jo)) {
@@ -494,7 +494,7 @@ class ChouChouLe {
             val response = AntFarmRpcCall.finishTask(task.taskId, taskSceneCode, outBizNo)
             val jo = JSONObject(response)
             if (isTaskQuotaReachedResponse(jo)) {
-                Log.farm(TAG, "广告任务[${task.title}]今日权益已达上限，停止继续尝试")
+                Log.farm("广告任务[${task.title}]今日权益已达上限，停止继续尝试")
                 return -1
             }
             if (ResChecker.checkRes(TAG, jo)) {
@@ -511,7 +511,7 @@ class ChouChouLe {
                 return max(1, successCount)
             }
             if (successCount == 0) {
-                Log.farm(TAG, "广告任务直连完成失败[${task.title}]: ${message.ifBlank { jo.toString() }}")
+                Log.farm("广告任务直连完成失败[${task.title}]: ${message.ifBlank { jo.toString() }}")
             }
             break
         }
@@ -537,7 +537,7 @@ class ChouChouLe {
                 val response = AntFarmRpcCall.xlightPlugin(referToken, "HDWFCJGXNZW_CUSTOM_20250826173111")
                 val jo = JSONObject(response)
                 if (isTaskQuotaReachedResponse(jo)) {
-                    Log.farm(TAG, "浏览广告任务[${task.title}]今日权益已达上限，跳过插件流程")
+                    Log.farm("浏览广告任务[${task.title}]今日权益已达上限，跳过插件流程")
                     return false
                 }
 
@@ -556,12 +556,12 @@ class ChouChouLe {
                             }
                         }
                     } else {
-                        Log.farm(TAG, "浏览广告任务[广告插件未返回resData，回退普通完成方式]")
+                        Log.farm("浏览广告任务[广告插件未返回resData，回退普通完成方式]")
                     }
                 }
-                Log.farm(TAG, "浏览广告任务[没有可用广告或不支持，使用普通完成方式]")
+                Log.farm("浏览广告任务[没有可用广告或不支持，使用普通完成方式]")
             } else {
-                Log.farm(TAG, "浏览广告任务[没有可用Token，请手动看一起广告]")
+                Log.farm("浏览广告任务[没有可用Token，请手动看一起广告]")
             }
 
             return finishAdTaskDirectly(drawType, task, taskSceneCode, 1) > 0
@@ -629,7 +629,7 @@ class ChouChouLe {
                 }
             }
 
-            Log.farm(TAG, "猜价格任务[未找到合适价格，使用普通完成方式]")
+            Log.farm("猜价格任务[未找到合适价格，使用普通完成方式]")
             return false
         } catch (t: Throwable) {
             Log.printStackTrace("处理猜价格任务 err:", t)
@@ -643,7 +643,7 @@ class ChouChouLe {
     private fun receiveTaskAward(drawType: String, task: TaskInfo): Boolean {
         try {
             if (task.taskId.isBlank()) {
-                Log.farm(TAG, "抽抽乐奖励[${task.title}]缺少 taskId，跳过领取")
+                Log.farm("抽抽乐奖励[${task.title}]缺少 taskId，跳过领取")
                 return false
             }
             val s = AntFarmRpcCall.chouchouleReceiveFarmTaskAward(
@@ -672,7 +672,7 @@ class ChouChouLe {
                 )
             )
             if (!ResChecker.checkRes(TAG, jo)) {
-                Log.farm(TAG, "IP抽抽乐新版活动查询失败，切换旧版接口重试")
+                Log.farm("IP抽抽乐新版活动查询失败，切换旧版接口重试")
                 return handleIpDrawLegacy()
             }
 
@@ -680,26 +680,26 @@ class ChouChouLe {
             val activityId = activity.optString("activityId")
             val endTime = activity.optLong("endTime", 0)
             if (endTime > 0 && System.currentTimeMillis() > endTime) {
-                Log.farm(TAG, "该[${activity.optString("activityId")}]抽奖活动已结束")
+                Log.farm("该[${activity.optString("activityId")}]抽奖活动已结束")
                 return true
             }
 
             var remainingTimes = extractDrawTimes(jo)
             if (remainingTimes <= 0) {
-                Log.farm(TAG, "IP抽抽乐当前无可用次数，跳过旧版兜底接口")
+                Log.farm("IP抽抽乐当前无可用次数，跳过旧版兜底接口")
                 return true
             }
             var allSuccess = true
-            Log.farm(TAG, "IP抽抽乐剩余次数: $remainingTimes")
+            Log.farm("IP抽抽乐剩余次数: $remainingTimes")
 
             while (remainingTimes > 0) {
                 val batchCount = remainingTimes.coerceAtMost(10)
-                Log.farm(TAG, "执行 IP 抽抽乐 $batchCount 连抽...")
+                Log.farm("执行 IP 抽抽乐 $batchCount 连抽...")
 
                 val response = AntFarmRpcCall.drawMachineIP(batchCount)
                 val batchSuccess = drawPrize("IP抽抽乐", response)
                 if (!batchSuccess) {
-                    Log.farm(TAG, "IP抽抽乐连抽失败，切换旧版单抽流程")
+                    Log.farm("IP抽抽乐连抽失败，切换旧版单抽流程")
                     return handleIpDrawLegacy()
                 }
                 allSuccess = allSuccess and batchSuccess
@@ -730,34 +730,34 @@ class ChouChouLe {
                 )
             )
             if (!ResChecker.checkRes(TAG, jo)) {
-                Log.farm(TAG, "日常抽抽乐新版活动查询失败，切换旧版接口重试")
+                Log.farm("日常抽抽乐新版活动查询失败，切换旧版接口重试")
                 return handleDailyDrawLegacy()
             }
 
             val activity = jo.optJSONObject("drawMachineActivity") ?: return handleDailyDrawLegacy()
             val endTime = activity.optLong("endTime", 0)
             if (endTime > 0 && System.currentTimeMillis() > endTime) {
-                Log.farm(TAG, "该[${activity.optString("activityId")}]抽奖活动已结束")
+                Log.farm("该[${activity.optString("activityId")}]抽奖活动已结束")
                 return true
             }
 
             var remainingTimes = extractDrawTimes(jo)
             if (remainingTimes <= 0) {
-                Log.farm(TAG, "日常抽抽乐当前无可用次数，跳过旧版兜底接口")
+                Log.farm("日常抽抽乐当前无可用次数，跳过旧版兜底接口")
                 return true
             }
             var allSuccess = true
 
-            Log.farm(TAG, "日常抽抽乐剩余次数: $remainingTimes")
+            Log.farm("日常抽抽乐剩余次数: $remainingTimes")
 
             while (remainingTimes > 0) {
                 val batchCount = remainingTimes.coerceAtMost(10)
-                Log.farm(TAG, "执行日常抽抽乐 $batchCount 连抽...")
+                Log.farm("执行日常抽抽乐 $batchCount 连抽...")
 
                 val response = AntFarmRpcCall.drawMachineDaily(batchCount)
                 val batchSuccess = drawPrize("日常抽抽乐", response)
                 if (!batchSuccess) {
-                    Log.farm(TAG, "日常抽抽乐连抽失败，切换旧版单抽流程")
+                    Log.farm("日常抽抽乐连抽失败，切换旧版单抽流程")
                     return handleDailyDrawLegacy()
                 }
                 allSuccess = allSuccess and batchSuccess
@@ -783,7 +783,7 @@ class ChouChouLe {
                 val activity = jo.optJSONObject("drawMachineActivity") ?: return true
                 val endTime = activity.optLong("endTime", 0)
                 if (endTime > 0 && System.currentTimeMillis() > endTime) {
-                    Log.farm(TAG, "该[${activity.optString("activityId")}]抽奖活动已结束")
+                    Log.farm("该[${activity.optString("activityId")}]抽奖活动已结束")
                     return true
                 }
 
@@ -818,7 +818,7 @@ class ChouChouLe {
                 val drawActivityInfo = jo.optJSONObject("drawActivityInfo") ?: return true
                 val endTime = drawActivityInfo.optLong("endTime", 0)
                 if (endTime > 0 && System.currentTimeMillis() > endTime) {
-                    Log.farm(TAG, "该[${drawActivityInfo.optString("activityId")}]抽奖活动已结束")
+                    Log.farm("该[${drawActivityInfo.optString("activityId")}]抽奖活动已结束")
                     return true
                 }
 
@@ -897,7 +897,7 @@ class ChouChouLe {
 
                 if (remainingMs > limitMs) {
                     val remainingDays = remainingMs / (24 * 60 * 60 * 1000L)
-                    Log.farm("自动兑换", "未到设定兑换时间：活动尚余 $remainingDays 天结束，设定为提前 $daysBefore 天兑换，跳过。")
+                    Log.farm("[自动兑换]: 未到设定兑换时间：活动尚余 $remainingDays 天结束，设定为提前 $daysBefore 天兑换，跳过。")
                     return
                 }
             }
@@ -913,7 +913,7 @@ class ChouChouLe {
                         totalCent = holdingCount.optInt("cent", 0)
                     }
                 }
-                Log.farm("自动兑换", "当前持有总碎片: " + (totalCent / 100))
+                Log.farm("[自动兑换]: 当前持有总碎片: " + (totalCent / 100))
                 val itemVOList = respJson.optJSONArray("itemInfoVOList") ?: return
 
                 val userId = UserMap.currentUid
@@ -922,7 +922,7 @@ class ChouChouLe {
                 // 1. 同步物品列表到本地文件，常规情况下只做增量更新
                 var changed = false
                 if (data.activityId != activityId) {
-                    Log.farm("自动兑换", "检测到活动变更 ($activityId)，重置本地兑换记录并更新商店列表")
+                    Log.farm("[自动兑换]: 检测到活动变更 ($activityId)，重置本地兑换记录并更新商店列表")
                     data.activityId = activityId
                     data.exchangedCounts.clear()
                     data.shopItems.clear()
@@ -1019,7 +1019,7 @@ class ChouChouLe {
                                     sku.put("_needToExchange", needToExchange)
                                     finalSequence.add(sku)
                                 } else {
-                                    Log.farm("自动兑换", "[${sku.optString("_spuName") + sku.optString("skuName")}] 已达到自定义兑换数量($targetCount)，跳过")
+                                    Log.farm("[自动兑换]: [${sku.optString("_spuName") + sku.optString("skuName")}] 已达到自定义兑换数量($targetCount)，跳过")
                                 }
                             } else {
                                 missingCustomSkuIds.add(skuId)
@@ -1031,10 +1031,10 @@ class ChouChouLe {
                             data.shopItems.clear()
                             data.shopItems.putAll(latestShopItems)
                             saveData(userId, data)
-                            Log.farm("自动兑换", "检测到自定义商品缺失，已按当前商店补做一次全量快照同步")
+                            Log.farm("[自动兑换]: 检测到自定义商品缺失，已按当前商店补做一次全量快照同步")
                         }
                         missingCustomSkuIds.forEach { skuId ->
-                            Log.farm("自动兑换", "自定义商品[$skuId] 当前商店未找到，已跳过")
+                            Log.farm("[自动兑换]: 自定义商品[$skuId] 当前商店未找到，已跳过")
                         }
                     }
                 } else {
@@ -1063,7 +1063,7 @@ class ChouChouLe {
                         if (fullName.contains("新蛋卡")) continue
                         val cent = sku.optInt("_cent", 0)
                         if (isNoEnoughPoint(sku) || (cent > 0 && totalCent < cent)) {
-                            Log.farm("自动兑换", "最高价值项 [$fullName] 碎片不足，等攒够再换，终止本次兑换")
+                            Log.farm("[自动兑换]: 最高价值项 [$fullName] 碎片不足，等攒够再换，终止本次兑换")
                             return
                         }
                         break
@@ -1110,9 +1110,9 @@ class ChouChouLe {
 
                     if (isNoEnoughPoint(sku) || (cent > 0 && totalCent < cent)) {
                         if (!isCustom && fullName.contains("新蛋卡")) {
-                            Log.farm("自动兑换", "新蛋卡碎片不足(需 ${cent/100})，等攒够再换")
+                            Log.farm("[自动兑换]: 新蛋卡碎片不足(需 ${cent/100})，等攒够再换")
                         } else {
-                            Log.farm("自动兑换", "剩余碎片不足以兑换优先级项 [$fullName] (需 ${cent/100})，停止后续兑换任务")
+                            Log.farm("[自动兑换]: 剩余碎片不足以兑换优先级项 [$fullName] (需 ${cent/100})，停止后续兑换任务")
                         }
                         return
                     }
@@ -1120,7 +1120,7 @@ class ChouChouLe {
                     var sessionExchangedCount = 0
                     while (sessionExchangedCount < limitCount) {
                         if (cent > 0 && totalCent < cent) {
-                            Log.farm("自动兑换", "剩余碎片[${totalCent / 100}]，不足以兑换[$fullName]，兑换终止")
+                            Log.farm("[自动兑换]: 剩余碎片[${totalCent / 100}]，不足以兑换[$fullName]，兑换终止")
                             stoppedByPoints = true
                             break
                         }
@@ -1144,13 +1144,13 @@ class ChouChouLe {
                             Log.farm("IP抽抽乐商店兑换: $fullName (本地累计已换 ${data.exchangedCounts[skuId]} 次，剩余碎片: ${totalCent/100})")
                             GlobalThreadPools.sleepCompat(800L)
                         } else if ("NO_ENOUGH_POINT" == resultCode) {
-                            Log.farm("自动兑换", "兑换过程中碎片不足，停止兑换")
+                            Log.farm("[自动兑换]: 兑换过程中碎片不足，停止兑换")
                             return
                         } else if (resultCode.contains("LIMIT") || resultCode.contains("MAX")) {
-                            Log.farm("自动兑换", "[$fullName] 达到服务器上限，尝试兑换下一个物品...")
+                            Log.farm("[自动兑换]: [$fullName] 达到服务器上限，尝试兑换下一个物品...")
                             break
                         } else {
-                            Log.farm("自动兑换", "跳过 [$fullName]: " + resObj.optString("resultDesc"))
+                            Log.farm("[自动兑换]: 跳过 [$fullName]: " + resObj.optString("resultDesc"))
                             break
                         }
                     }

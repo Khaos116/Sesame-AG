@@ -28,9 +28,9 @@ enum class GameTask(
 
     private fun logTask(msg: String) {
         when (this) {
-            Orchard_ncscc -> Log.orchard(title, msg)
-            Farm_ddply -> Log.farm(title, msg)
-            Forest_slxcc, Forest_sljyd -> Log.forest(title, msg)
+            Orchard_ncscc -> Log.orchard("[$title]: $msg")
+            Farm_ddply -> Log.farm("[$title]: $msg")
+            Forest_slxcc, Forest_sljyd -> Log.forest("[$title]: $msg")
         }
     }
 

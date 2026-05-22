@@ -1,6 +1,7 @@
 package io.github.aoguai.sesameag.task.antStall
 
 import io.github.aoguai.sesameag.hook.RequestManager
+import io.github.aoguai.sesameag.util.RpcCache
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
@@ -16,6 +17,16 @@ object AntStallRpcCall {
 
     /** 接口版本号 */
     private const val VERSION = "0.1.2601161444.47"
+    private const val METHOD_TASK_LIST = "com.alipay.antstall.task.list"
+    private const val METHOD_SIGN_TODAY = "com.alipay.antstall.sign.today"
+    private const val METHOD_FINISH_TASK = "com.alipay.antiep.finishTask"
+    private const val METHOD_RECEIVE_TASK_AWARD = "com.alipay.antiep.receiveTaskAward"
+    private const val METHOD_TASK_FINISH = "com.alipay.antstall.task.finish"
+    private const val METHOD_TASK_AWARD = "com.alipay.antstall.task.award"
+
+    private fun invalidateTaskCache() {
+        RpcCache.invalidate(METHOD_TASK_LIST)
+    }
 
     /**
      * @brief 获取个人主页数据
@@ -153,7 +164,7 @@ object AntStallRpcCall {
      */
     fun taskList(): String {
         return RequestManager.requestString(
-            "com.alipay.antstall.task.list",
+            METHOD_TASK_LIST,
             "[{\"source\":\"search\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
         )
     }
@@ -163,10 +174,12 @@ object AntStallRpcCall {
      * @return 响应字符串
      */
     fun signToday(): String {
-        return RequestManager.requestString(
-            "com.alipay.antstall.sign.today",
+        val response = RequestManager.requestString(
+            METHOD_SIGN_TODAY,
             "[{\"source\":\"search\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
         )
+        invalidateTaskCache()
+        return response
     }
 
     /**
@@ -176,10 +189,12 @@ object AntStallRpcCall {
      * @return 响应字符串
      */
     fun finishTask(outBizNo: String, taskType: String): String {
-        return RequestManager.requestString(
-            "com.alipay.antiep.finishTask",
+        val response = RequestManager.requestString(
+            METHOD_FINISH_TASK,
             "[{\"outBizNo\":\"$outBizNo\",\"requestType\":\"RPC\",\"sceneCode\":\"ANTSTALL_TASK\",\"source\":\"AST\",\"systemType\":\"android\",\"taskType\":\"$taskType\",\"version\":\"$VERSION\"}]"
         )
+        invalidateTaskCache()
+        return response
     }
 
     /**
@@ -224,10 +239,12 @@ object AntStallRpcCall {
      * @return 响应字符串
      */
     fun receiveTaskAward(taskType: String): String {
-        return RequestManager.requestString(
-            "com.alipay.antiep.receiveTaskAward",
+        val response = RequestManager.requestString(
+            METHOD_RECEIVE_TASK_AWARD,
             "[{\"ignoreLimit\":true,\"requestType\":\"RPC\",\"sceneCode\":\"ANTSTALL_TASK\",\"source\":\"AST\",\"systemType\":\"android\",\"taskType\":\"$taskType\",\"version\":\"$VERSION\"}]"
         )
+        invalidateTaskCache()
+        return response
     }
 
     /**
@@ -236,10 +253,12 @@ object AntStallRpcCall {
      * @return 响应字符串
      */
     fun taskFinish(taskType: String): String {
-        return RequestManager.requestString(
-            "com.alipay.antstall.task.finish",
+        val response = RequestManager.requestString(
+            METHOD_TASK_FINISH,
             "[{\"source\":\"search\",\"systemType\":\"android\",\"taskType\":\"$taskType\",\"version\":\"$VERSION\"}]"
         )
+        invalidateTaskCache()
+        return response
     }
 
     /**
@@ -250,10 +269,12 @@ object AntStallRpcCall {
      * @return 响应字符串
      */
     fun taskAward(amount: String, prizeId: String, taskType: String): String {
-        return RequestManager.requestString(
-            "com.alipay.antstall.task.award",
+        val response = RequestManager.requestString(
+            METHOD_TASK_AWARD,
             "[{\"amount\":$amount,\"prizeId\":\"$prizeId\",\"source\":\"search\",\"systemType\":\"android\",\"taskType\":\"$taskType\",\"version\":\"$VERSION\"}]"
         )
+        invalidateTaskCache()
+        return response
     }
 
     /**

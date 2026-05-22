@@ -10,11 +10,10 @@ import io.github.aoguai.sesameag.model.ModelConfig
 import io.github.aoguai.sesameag.model.ModelField
 import io.github.aoguai.sesameag.model.ModelFields
 import io.github.aoguai.sesameag.model.Model
-import io.github.aoguai.sesameag.model.modelFieldExt.SelectAndCountModelField
-import io.github.aoguai.sesameag.model.modelFieldExt.SelectModelField
+import io.github.aoguai.sesameag.model.modelFieldExt.FriendSelectionCountModelField
+import io.github.aoguai.sesameag.model.modelFieldExt.FriendSelectionModelField
 import io.github.aoguai.sesameag.task.TaskCommon
 import io.github.aoguai.sesameag.util.Files
-import io.github.aoguai.sesameag.util.FriendGuard
 import io.github.aoguai.sesameag.util.JsonUtil
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.maps.UserMap
@@ -33,6 +32,10 @@ class Config private constructor() {
     @Volatile
     var isInit: Boolean = false
         private set
+
+    @JsonIgnore
+    @Volatile
+    private var loadedUserId: String? = null
 
     /** 存储模型字段的映射 */
     private val modelFieldsMap: MutableMap<String, ModelFields> = ConcurrentHashMap()
@@ -117,34 +120,22 @@ class Config private constructor() {
         legalAcceptedAppVersion = if (accepted) BuildConfig.VERSION_NAME else ""
     }
 
+    private fun sanitizeFriendSelectionFields(userId: String?) {
+        if (userId.isNullOrBlank()) return
+        val modelConfigMap = Model.getModelConfigMap()
+        for ((modelCode, modelFields) in modelFieldsMap) {
+            val capabilityModuleKey = modelConfigMap[modelCode]?.group?.code
+            for (modelField in modelFields.values) {
+                when (modelField) {
+                    is FriendSelectionModelField -> modelField.sanitizeForUser(userId, capabilityModuleKey)
+                    is FriendSelectionCountModelField -> modelField.sanitizeForUser(userId, capabilityModuleKey)
+                }
+            }
+        }
+    }
+
     companion object {
         private const val TAG = "Config"
-        private val FRIEND_SELECTION_FIELD_CODES = setOf(
-            "feedFriendAnimalList",
-            "getFeedlList",
-            "visitFriendList",
-            "hireAnimalList",
-            "dontSendFriendList",
-            "notifyFriendList",
-            "notInviteList",
-            "dontCollectList",
-            "giveEnergyRainList",
-            "waterFriendList",
-            "whoYouWantToGiveTo",
-            "helpFriendCollectList",
-            "cleanOceanList",
-            "stallOpenList",
-            "stallTicketList",
-            "stallThrowManureList",
-            "stallInviteShopList",
-            "stallWhiteList",
-            "stallBlackList",
-            "stallInviteRegisterList",
-            "assistFriendList",
-            "originBossIdList",
-            "collectToFriendList",
-            "sendFriendCard"
-        )
         private const val LEGAL_ACCEPTED_APP_VERSION_FIELD = "legalAcceptedAppVersion"
 
         /** 单例实例 */
@@ -159,6 +150,7 @@ class Config private constructor() {
          */
         @JvmStatic
         fun isModify(userId: String?): Boolean {
+            INSTANCE.sanitizeFriendSelectionFields(userId)
             val configV2File = if (userId.isNullOrEmpty()) {
                 Files.getDefaultConfigV2File()
             } else {
@@ -184,6 +176,7 @@ class Config private constructor() {
         @JvmStatic
         @Synchronized
         fun save(userId: String?, force: Boolean): Boolean {
+            INSTANCE.sanitizeFriendSelectionFields(userId)
             if (!force && !isModify(userId)) {
                 return true
             }
@@ -225,124 +218,6 @@ class Config private constructor() {
         }
 
         /**
-         * 从所有选择型配置中移除失效好友。
-         *
-         * @param invalidUserIds 需要移除的用户ID集合
-         * @param selfUserId     当前用户ID，默认不移除自己
-         * @param autoSave       是否自动保存配置
-         * @return 移除的配置项数量
-         */
-        @JvmStatic
-        @Synchronized
-        fun removeInvalidFriendSelections(
-            invalidUserIds: Set<String>,
-            selfUserId: String? = UserMap.currentUid,
-            autoSave: Boolean = true
-        ): Int {
-            if (!INSTANCE.isInit || invalidUserIds.isEmpty()) {
-                return 0
-            }
-
-            var removedCount = 0
-
-            for ((modelCode, modelFields) in INSTANCE.modelFieldsMap) {
-                for ((fieldCode, modelField) in modelFields) {
-                    if (!FRIEND_SELECTION_FIELD_CODES.contains(fieldCode)) {
-                        continue
-                    }
-                    when (modelField) {
-                        is SelectModelField -> {
-                            val selectedIds = modelField.value ?: continue
-                            val iterator = selectedIds.iterator()
-                            while (iterator.hasNext()) {
-                                val selectedId = iterator.next() ?: continue
-                                if (selectedId == selfUserId || !invalidUserIds.contains(selectedId)) {
-                                    continue
-                                }
-                                iterator.remove()
-                                removedCount++
-                                Log.record(TAG, "移除失效好友配置[$modelCode.$fieldCode][$selectedId]")
-                            }
-                        }
-
-                        is SelectAndCountModelField -> {
-                            val selectedMap = modelField.value ?: continue
-                            val invalidKeys = selectedMap.keys
-                                .filterNotNull()
-                                .filter { it != selfUserId && invalidUserIds.contains(it) }
-                            if (invalidKeys.isEmpty()) {
-                                continue
-                            }
-                            invalidKeys.forEach { invalidKey ->
-                                if (selectedMap.remove(invalidKey) != null) {
-                                    removedCount++
-                                    Log.record(TAG, "移除失效好友配置[$modelCode.$fieldCode][$invalidKey]")
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (removedCount > 0) {
-                Log.record(TAG, "共清理失效好友配置 $removedCount 项")
-                if (autoSave) {
-                    save(selfUserId, true)
-                }
-            }
-            return removedCount
-        }
-
-        /**
-         * 从已知好友配置项中移除当前账号自己，避免误选自己进入好友流程。
-         */
-        @JvmStatic
-        @Synchronized
-        fun removeSelfFriendSelections(
-            selfUserId: String? = UserMap.currentUid,
-            autoSave: Boolean = true
-        ): Int {
-            if (!INSTANCE.isInit || selfUserId.isNullOrBlank()) {
-                return 0
-            }
-
-            var removedCount = 0
-
-            for ((modelCode, modelFields) in INSTANCE.modelFieldsMap) {
-                for ((fieldCode, modelField) in modelFields) {
-                    if (!FRIEND_SELECTION_FIELD_CODES.contains(fieldCode)) {
-                        continue
-                    }
-                    when (modelField) {
-                        is SelectModelField -> {
-                            val selectedIds = modelField.value ?: continue
-                            if (selectedIds.remove(selfUserId)) {
-                                removedCount++
-                                Log.record(TAG, "移除好友配置中的自己[$modelCode.$fieldCode][$selfUserId]")
-                            }
-                        }
-
-                        is SelectAndCountModelField -> {
-                            val selectedMap = modelField.value ?: continue
-                            if (selectedMap.remove(selfUserId) != null) {
-                                removedCount++
-                                Log.record(TAG, "移除好友配置中的自己[$modelCode.$fieldCode][$selfUserId]")
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (removedCount > 0) {
-                Log.record(TAG, "共清理好友配置中的自己 $removedCount 项")
-                if (autoSave) {
-                    save(selfUserId, true)
-                }
-            }
-            return removedCount
-        }
-
-        /**
          * 检查配置是否已加载
          *
          * @return 是否已加载
@@ -356,6 +231,15 @@ class Config private constructor() {
         @JvmStatic
         fun setLegalAcceptedForCurrentVersion(accepted: Boolean) {
             INSTANCE.updateLegalAcceptedForCurrentVersion(accepted)
+        }
+
+        @JvmStatic
+        @Synchronized
+        fun sanitizeFriendSelectionFieldsForUser(userId: String?): Boolean {
+            val safeUserId = userId?.trim().orEmpty()
+            if (safeUserId.isEmpty() || INSTANCE.loadedUserId != safeUserId) return false
+            INSTANCE.sanitizeFriendSelectionFields(userId)
+            return true
         }
 
         @JvmStatic
@@ -398,6 +282,8 @@ class Config private constructor() {
         fun load(userId: String?): Config {
             Log.record(TAG, "开始加载配置")
             var configV2File: File? = null
+            val actualUserId = userId?.trim()?.takeIf { it.isNotEmpty() }
+                ?: UserMap.currentUid?.trim()?.takeIf { it.isNotEmpty() }
 
             try {
                 val userName: String
@@ -445,6 +331,7 @@ class Config private constructor() {
                             }
                         }
                         syncExtraFieldsFromJson(preparedJson)
+                        INSTANCE.sanitizeFriendSelectionFields(actualUserId)
                         Log.record(TAG, "格式化配置成功:$configV2File")
                         val formatted = toSaveStr()
                         if (formatted != null && formatted != json) {
@@ -457,6 +344,7 @@ class Config private constructor() {
                         val preparedJson = json
                         JsonUtil.copyMapper().readerForUpdating(INSTANCE).readValue(preparedJson, Config::class.java)
                         syncExtraFieldsFromJson(preparedJson)
+                        INSTANCE.sanitizeFriendSelectionFields(actualUserId)
                         Log.record(TAG, "复制新配置: $userName")
                         Files.write2File(toSaveStr() ?: preparedJson, configV2File)
                     }
@@ -479,31 +367,9 @@ class Config private constructor() {
                 }
             }
 
+            INSTANCE.sanitizeFriendSelectionFields(actualUserId)
+            INSTANCE.loadedUserId = actualUserId
             INSTANCE.isInit = true
-            val actualUserId = userId?.takeIf { it.isNotEmpty() } ?: UserMap.currentUid
-            val invalidUserIds = UserMap.getUserMap().values
-                .mapNotNull { user ->
-                    val friendUserId = user.userId
-                    if (
-                        friendUserId.isNullOrBlank() ||
-                        friendUserId == actualUserId ||
-                        user.friendStatus == FriendGuard.MUTUAL_FRIEND_STATUS
-                    ) {
-                        null
-                    } else {
-                        friendUserId
-                    }
-                }
-                .toSet()
-            val removedInvalidCount = removeInvalidFriendSelections(
-                invalidUserIds,
-                actualUserId,
-                autoSave = false
-            )
-            val removedSelfCount = removeSelfFriendSelections(actualUserId, autoSave = false)
-            if (removedInvalidCount + removedSelfCount > 0) {
-                save(userId, true)
-            }
             TaskCommon.update()
             return INSTANCE
         }
@@ -520,6 +386,7 @@ class Config private constructor() {
                 }
             }
             INSTANCE.legalAcceptedAppVersion = null
+            INSTANCE.loadedUserId = null
             INSTANCE.isInit = false
         }
 

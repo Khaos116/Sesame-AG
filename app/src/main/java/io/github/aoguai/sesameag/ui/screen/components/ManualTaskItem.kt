@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
@@ -25,7 +24,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -52,10 +50,6 @@ fun ManualTaskItem(
     task: CustomTask,
     onClick: () -> Unit,
     hasSettings: Boolean = false,
-    whackMoleMode: Int = 1,
-    onModeChange: (Int) -> Unit = {},
-    whackMoleGames: String = "5",
-    onGamesChange: (String) -> Unit = {},
     specialFoodCount: String = "0",
     onSpecialFoodCountChange: (String) -> Unit = {},
     selectedTool: String = "BIG_EATER_TOOL",
@@ -115,27 +109,7 @@ fun ManualTaskItem(
                     .fillMaxWidth()
                     .padding(start = 16.dp, end = 16.dp, bottom = 16.dp)
             ) {
-                if (task == CustomTask.FOREST_WHACK_MOLE) {
-                    Text("运行模式选择:", style = MaterialTheme.typography.labelMedium)
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        RadioButton(selected = whackMoleMode == 1, onClick = { onModeChange(1) })
-                        Text("兼容", modifier = Modifier.clickable { onModeChange(1) })
-                        Spacer(Modifier.width(16.dp))
-                        RadioButton(selected = whackMoleMode == 2, onClick = { onModeChange(2) })
-                        Text("激进", modifier = Modifier.clickable { onModeChange(2) })
-                    }
-
-                    Spacer(Modifier.height(8.dp))
-
-                    OutlinedTextField(
-                        value = whackMoleGames,
-                        onValueChange = { onGamesChange(it.filter { c -> c.isDigit() }) },
-                        label = { Text("执行局数") },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true
-                    )
-                } else if (task == CustomTask.FOREST_ENERGY_RAIN) {
+                if (task == CustomTask.FOREST_ENERGY_RAIN) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.clickable { onExchangeEnergyRainCardChange(!exchangeEnergyRainCard) }

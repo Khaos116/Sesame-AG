@@ -46,15 +46,16 @@ object ReadingDada {
             if (questionJson.getString("resultCode") == "200") {
                 val options = questionJson.getJSONArray("options")
                 val question = questionJson.getString("title")
+                val answerList = JsonUtil.jsonArrayToList(options)
 
-                // 使用AI获取答案
+                // 当前新村读书链路没有目标端预告答案缓存；AnswerAI 内部会先查已验证正确缓存，再请求 AI。
                 var answer = AnswerAI.getAnswer(
                     question,
-                    JsonUtil.jsonArrayToList(options),
+                    answerList,
                     LogChannel.STALL.loggerName
                 )
 
-                // 如果AI未返回答案,使用第一个选项
+                // AnswerAI 内部已做最终兜底；这里保留空值兜底，避免异常路径提交空答案。
                 if (answer.isNullOrEmpty()) {
                     answer = options.getString(0)
                 }
@@ -68,11 +69,15 @@ object ReadingDada {
                 )
 
                 val submitJson = JSONObject(submitResponse)
-                return if (submitJson.getString("resultCode") == "200") {
-                    Log.stall(TAG, "答题完成")
+                val submitSuccess = submitJson.optString("resultCode") == "200"
+                val confirmedCorrect = submitJson.optBoolean("correct", !submitJson.has("correct"))
+                return if (submitSuccess && confirmedCorrect) {
+                    AnswerAI.rememberAnswer(question, answerList, answer, LogChannel.STALL.loggerName)
+                    Log.stall("答题完成")
                     true
                 } else {
-                    Log.error(TAG, "答题失败")
+                    AnswerAI.removeCachedAnswer(question, LogChannel.STALL.loggerName)
+                    Log.error(TAG, if (submitSuccess) "答题完成但答案错误" else "答题失败")
                     false
                 }
             } else {

@@ -167,9 +167,9 @@ fun RpcDialogHandler(state: RpcDialogState, viewModel: RpcDebugViewModel) {
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Column(modifier = Modifier.weight(1f)) {
-                                        Text(text = "定时执行", style = MaterialTheme.typography.titleSmall)
+                                        Text(text = "执行配置", style = MaterialTheme.typography.titleSmall)
                                         Text(
-                                            text = "⚠️ 高风险功能，建议只用于查询类 RPC",
+                                            text = "手动运行不受此开关影响；定时执行建议只用于查询类 RPC。",
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.outline
                                         )
@@ -188,11 +188,16 @@ fun RpcDialogHandler(state: RpcDialogState, viewModel: RpcDebugViewModel) {
                                 OutlinedTextField(
                                     value = dailyCountText,
                                     onValueChange = { dailyCountText = it.filter { c -> c.isDigit() } },
-                                    label = { Text("每日次数") },
+                                    label = { Text("每日最多执行/尝试次数") },
                                     enabled = scheduleEnabled,
                                     singleLine = true,
                                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                                     modifier = Modifier.fillMaxWidth()
+                                )
+                                Text(
+                                    text = "触发点：\n每次自动任务调度周期开始、业务模块执行前。\n触发条件：\n本条开启定时、每日次数大于 0，且\n基础配置开关“自定义RPC | 配置文件定时执行(慎用)”已开启。\n失败或返回异常也会消耗一次当日次数，结果写入 capture 日志。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.outline
                                 )
                             }
                         }

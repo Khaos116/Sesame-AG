@@ -22,6 +22,7 @@ import io.github.aoguai.sesameag.data.General
 import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.Status.Companion.load
 import io.github.aoguai.sesameag.data.Status.Companion.save
+import io.github.aoguai.sesameag.data.StatusFlags
 import io.github.aoguai.sesameag.entity.AlipayVersion
 import io.github.aoguai.sesameag.hook.Toast.show
 import io.github.aoguai.sesameag.hook.TokenHooker.start
@@ -71,6 +72,7 @@ import io.github.aoguai.sesameag.util.TimeTriggerEvaluator
 import io.github.aoguai.sesameag.util.TimeTriggerParser
 import io.github.aoguai.sesameag.util.TimeUtil
 import io.github.aoguai.sesameag.util.WorkflowRootGuard
+import io.github.aoguai.sesameag.util.friend.FriendRepository
 import io.github.aoguai.sesameag.util.maps.UserMap
 import io.github.aoguai.sesameag.util.maps.UserMap.currentUid
 import io.github.libxposed.api.XposedInterface
@@ -245,7 +247,7 @@ class ApplicationHook {
                                     show("用户已切换")
                                     return@submitEntry
                                 }
-                                HookUtil.hookUser(classLoader!!)
+                                refreshFriendsFromAlipayIfNeeded(targetUid, force = false, source = "launcher_onResume")
                             }
 
                             val recoveredFromOffline = ApplicationResumeCoordinator.tryRecoverOffline("onResume")
@@ -458,6 +460,49 @@ class ApplicationHook {
 
         internal fun ensureLegalAcceptedForWorkflow(): Boolean = ensureLegalAcceptanceForWorkflow()
 
+        internal fun refreshFriendsFromAlipayIfNeeded(
+            userId: String,
+            force: Boolean,
+            source: String
+        ): HookUtil.FriendRefreshResult {
+            val safeUserId = userId.trim()
+            if (safeUserId.isEmpty()) {
+                return HookUtil.FriendRefreshResult(success = false, message = "刷新好友失败：账号为空")
+            }
+            val loader = classLoader ?: return HookUtil.FriendRefreshResult(
+                success = false,
+                userId = safeUserId,
+                message = "刷新好友失败：Hook classLoader 不可用"
+            )
+
+            UserMap.setCurrentUserId(safeUserId)
+            runCatching { load(safeUserId, false) }.onFailure {
+                Log.printStackTrace(TAG, "刷新好友前加载每日状态失败", it)
+            }
+
+            if (!force && Status.hasFlagToday(StatusFlags.FLAG_FRIEND_CENTER_SYNC_TODAY)) {
+                val config = FriendRepository.current(safeUserId)
+                val message = "好友中心今日已刷新，跳过自动同步[$source]"
+                record(TAG, message)
+                return HookUtil.FriendRefreshResult(
+                    success = true,
+                    userId = safeUserId,
+                    message = message,
+                    profiles = config.profiles.size,
+                    groups = config.groups.size
+                )
+            }
+
+            val result = HookUtil.hookUser(loader)
+            if (result.success) {
+                Status.setFlagToday(StatusFlags.FLAG_FRIEND_CENTER_SYNC_TODAY)
+                record(TAG, "好友中心刷新完成[$source]: ${result.message}")
+            } else {
+                record(TAG, "好友中心刷新未完成[$source]: ${result.message}")
+            }
+            return result
+        }
+
         @Volatile
         var rpcBridge: RpcBridge? = null
         private val rpcBridgeLock = Any()
@@ -632,7 +677,9 @@ class ApplicationHook {
                     return false
                 }
 
-                HookUtil.hookUser(classLoader!!)
+                UserMap.setCurrentUserId(userId)
+                load(userId)
+                refreshFriendsFromAlipayIfNeeded(userId, force = false, source = reason)
                 record(TAG, "Sesame-AG 开始初始化...")
                 if (!ensureRootAccessForWorkflow(reason)) {
                     return false
@@ -676,7 +723,6 @@ class ApplicationHook {
                 checkBatteryPermission()
 
                 Model.bootAllModel(classLoader)
-                load(userId)
                 updateDay()
 
                 val successMsg = "Loaded SesameAG " + BuildConfig.VERSION_NAME + "✨"
@@ -938,6 +984,8 @@ class ApplicationHook {
                 filter.addAction(ApplicationHookConstants.BroadcastActions.RE_LOGIN)
                 filter.addAction(ApplicationHookConstants.BroadcastActions.RPC_TEST)
                 filter.addAction(ApplicationHookConstants.BroadcastActions.MANUAL_TASK)
+                filter.addAction(ApplicationHookConstants.BroadcastActions.HOOK_READY)
+                filter.addAction(ApplicationHookConstants.BroadcastActions.REFRESH_FRIENDS)
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     context.registerReceiver(mBroadcastReceiver, filter, Context.RECEIVER_EXPORTED)

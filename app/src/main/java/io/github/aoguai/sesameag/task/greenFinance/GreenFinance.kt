@@ -42,25 +42,25 @@ class GreenFinance : ModelTask() {
 
     override fun getFields(): ModelFields {
         val modelFields = ModelFields()
-        modelFields.addField(BooleanModelField("greenFinanceLsxd", "打卡 | 绿色行动", false).withDesc(
+        modelFields.addField(BooleanModelField("greenFinanceLsxd", "绿色行动 | 打卡", false).withDesc(
             "执行绿色经营中绿色行动分类的待打卡项。"
         ).also { greenFinanceLsxd = it })
-        modelFields.addField(BooleanModelField("greenFinanceLscg", "打卡 | 绿色采购", false).withDesc(
+        modelFields.addField(BooleanModelField("greenFinanceLscg", "绿色采购 | 打卡", false).withDesc(
             "执行绿色经营中绿色采购分类的待打卡项。"
         ).also { greenFinanceLscg = it })
-        modelFields.addField(BooleanModelField("greenFinanceLsbg", "打卡 | 绿色办公", false).withDesc(
+        modelFields.addField(BooleanModelField("greenFinanceLsbg", "绿色办公 | 打卡", false).withDesc(
             "执行绿色经营中绿色办公分类的待打卡项。"
         ).also { greenFinanceLsbg = it })
-        modelFields.addField(BooleanModelField("greenFinanceWdxd", "打卡 | 绿色销售", false).withDesc(
+        modelFields.addField(BooleanModelField("greenFinanceWdxd", "绿色销售 | 打卡", false).withDesc(
             "执行绿色经营中绿色销售分类的待打卡项。"
         ).also { greenFinanceWdxd = it })
-        modelFields.addField(BooleanModelField("greenFinanceLswl", "打卡 | 绿色物流", false).withDesc(
+        modelFields.addField(BooleanModelField("greenFinanceLswl", "绿色物流 | 打卡", false).withDesc(
             "执行绿色经营中绿色物流分类的待打卡项。"
         ).also { greenFinanceLswl = it })
-        modelFields.addField(BooleanModelField("greenFinancePointFriend", "收取 | 好友金币", false).withDesc(
+        modelFields.addField(BooleanModelField("greenFinancePointFriend", "好友金币 | 收取", false).withDesc(
             "巡查好友排行榜并收取可领取的好友金币，每日仅处理一次。"
         ).also { greenFinancePointFriend = it })
-        modelFields.addField(BooleanModelField("greenFinanceDonation", "捐助 | 快过期金币", false).withDesc(
+        modelFields.addField(BooleanModelField("greenFinanceDonation", "经营金币 | 捐助快过期金币", false).withDesc(
             "检测 1 天内将过期的经营金币并自动分批捐助，避免过期失效。"
         ).also { greenFinanceDonation = it })
         return modelFields
@@ -69,11 +69,11 @@ class GreenFinance : ModelTask() {
     override fun check(): Boolean {
         return when {
             TaskCommon.IS_ENERGY_TIME -> {
-                Log.greenFinance(TAG, "⏸ 当前为只收能量时间【${BaseModel.energyTime.value}】，停止执行${getName()}任务！")
+                Log.greenFinance("⏸ 当前为只收能量时间【${BaseModel.energyTime.value}】，停止执行${getName()}任务！")
                 false
             }
             TaskCommon.IS_MODULE_SLEEP_TIME -> {
-                Log.greenFinance(TAG, "💤 模块休眠时间【${BaseModel.modelSleepTime.value}】停止执行${getName()}任务！")
+                Log.greenFinance("💤 模块休眠时间【${BaseModel.modelSleepTime.value}】停止执行${getName()}任务！")
                 false
             }
             else -> true
@@ -89,7 +89,7 @@ class GreenFinance : ModelTask() {
     @Suppress("ReturnCount")
     override suspend fun runSuspend() {
         try {
-            Log.greenFinance(TAG, "执行开始-${getName()}")
+            Log.greenFinance("执行开始-${getName()}")
             val s = GreenFinanceRpcCall.greenFinanceIndex()
             var jo = JsonUtil.parseJSONObject(s)
             if (!jo.optBoolean("success")) {
@@ -144,7 +144,7 @@ class GreenFinance : ModelTask() {
             Log.runtime(TAG, "index err:")
             Log.printStackTrace(TAG, th)
         } finally {
-            Log.greenFinance(TAG, "执行结束-${getName()}")
+            Log.greenFinance("执行结束-${getName()}")
         }
     }
 

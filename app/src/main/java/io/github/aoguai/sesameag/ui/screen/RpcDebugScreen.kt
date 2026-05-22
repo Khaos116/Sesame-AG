@@ -60,7 +60,7 @@ fun RpcDebugScreen(
                             style = MaterialTheme.typography.titleLarge
                         )
                         Text(
-                            text = "⚠️ 敏感功能，请谨慎操作", // 警告文案
+                            text = "敏感功能请谨慎操作避免风控",
                             style = MaterialTheme.typography.labelMedium, // 使用较小的字号
                             color = MaterialTheme.colorScheme.error // 使用错误色(红色)示警，或者使用 outline 变体
                         )
@@ -80,15 +80,15 @@ fun RpcDebugScreen(
                         onDismissRequest = { showMenu = false }
                     ) {
                         DropdownMenuItem(
-                            text = { Text("备份数据") },
+                            text = { Text("备份数据到剪贴板") },
                             onClick = { viewModel.backupToClipboard(context); showMenu = false }
                         )
                         DropdownMenuItem(
-                            text = { Text("恢复数据") },
+                            text = { Text("从剪贴板恢复并覆盖") },
                             onClick = { viewModel.tryRestoreFromClipboard(context); showMenu = false }
                         )
                         DropdownMenuItem(
-                            text = { Text("加载默认") },
+                            text = { Text("加载默认示例") },
                             onClick = { viewModel.loadDefaultItems(); showMenu = false }
                         )
                     }
@@ -127,6 +127,3 @@ fun RpcDebugScreen(
         RpcDialogHandler(dialogState, viewModel)
     }
 }
-
-
-

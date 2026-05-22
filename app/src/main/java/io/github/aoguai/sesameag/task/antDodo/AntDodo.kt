@@ -3,14 +3,14 @@ package io.github.aoguai.sesameag.task.antDodo
 import org.json.JSONException
 import org.json.JSONArray
 import org.json.JSONObject
-import io.github.aoguai.sesameag.entity.AlipayUser
+import io.github.aoguai.sesameag.entity.friend.FriendCapabilityState
 import io.github.aoguai.sesameag.model.BaseModel
 import io.github.aoguai.sesameag.model.ModelFields
 import io.github.aoguai.sesameag.model.ModelGroup
 import io.github.aoguai.sesameag.model.withDesc
 import io.github.aoguai.sesameag.model.modelFieldExt.BooleanModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.ChoiceModelField
-import io.github.aoguai.sesameag.model.modelFieldExt.SelectModelField
+import io.github.aoguai.sesameag.model.modelFieldExt.FriendSelectionModelField
 import io.github.aoguai.sesameag.task.ModelTask
 import io.github.aoguai.sesameag.task.TaskCommon
 import io.github.aoguai.sesameag.task.TaskStatus
@@ -21,13 +21,14 @@ import io.github.aoguai.sesameag.util.maps.UserMap
 import io.github.aoguai.sesameag.util.ResChecker
 import io.github.aoguai.sesameag.util.TaskBlacklist
 import io.github.aoguai.sesameag.util.TimeUtil
+import io.github.aoguai.sesameag.util.friend.FriendCapabilityRecorder
 
 class AntDodo : ModelTask() {
 
     private var collectToFriend: BooleanModelField? = null
     private var collectToFriendType: ChoiceModelField? = null
-    private var collectToFriendList: SelectModelField? = null
-    private var sendFriendCard: SelectModelField? = null
+    private var collectToFriendList: FriendSelectionModelField? = null
+    private var sendFriendCard: FriendSelectionModelField? = null
     private var useProp: BooleanModelField? = null
     private var usePropCollectTimes7Days: BooleanModelField? = null
     private var usePropCollectHistoryAnimal7Days: BooleanModelField? = null
@@ -38,7 +39,7 @@ class AntDodo : ModelTask() {
 
     override fun getName(): String = "神奇物种"
 
-    override fun getGroup(): ModelGroup = ModelGroup.FOREST
+    override fun getGroup(): ModelGroup = ModelGroup.DODO
 
     override fun getIcon(): String = "AntDodo.png"
 
@@ -46,7 +47,7 @@ class AntDodo : ModelTask() {
         val modelFields = ModelFields()
         modelFields.addField(
             BooleanModelField("collectToFriend", "帮抽卡 | 开启", false).withDesc(
-                "开启后按下面的名单规则帮好友抽神奇物种卡片。"
+                "开启后按“帮抽卡 | 动作”和“帮抽卡 | 好友列表”帮好友抽神奇物种卡片。"
             ).also { collectToFriend = it }
         )
         modelFields.addField(
@@ -60,45 +61,41 @@ class AntDodo : ModelTask() {
             }
         )
         modelFields.addField(
-            SelectModelField(
+            FriendSelectionModelField(
                 "collectToFriendList",
-                "帮抽卡 | 好友列表",
-                LinkedHashSet<String?>(),
-                AlipayUser::getFriendListAsMapperEntity
+                "帮抽卡 | 好友列表"
             ).withDesc("设置帮抽卡规则作用的好友名单。").also { collectToFriendList = it }
         )
         modelFields.addField(
-            SelectModelField(
+            FriendSelectionModelField(
                 "sendFriendCard",
-                "送卡片好友列表(当前图鉴所有卡片)",
-                LinkedHashSet<String?>(),
-                AlipayUser::getFriendListAsMapperEntity
+                "赠送卡片 | 好友列表"
             ).withDesc("列表不为空时，会把当前图鉴可赠送的卡片和新抽到的三星卡送给列表中的首个有效好友。").also {
                 sendFriendCard = it
             }
         )
         modelFields.addField(
-            BooleanModelField("useProp", "使用道具 | 所有", false).withDesc(
+            BooleanModelField("useProp", "道具 | 使用全部", false).withDesc(
                 "自动使用当前可消费的神奇物种道具，对所有支持的道具类型生效。"
             ).also { useProp = it }
         )
         modelFields.addField(
-            BooleanModelField("usePropCollectTimes7Days", "使用道具 | 抽卡道具", false).withDesc(
-                "单独开启后仅使用抽卡类道具；开启“使用道具 | 所有”时也会一起生效。"
+            BooleanModelField("usePropCollectTimes7Days", "道具 | 抽卡道具", false).withDesc(
+                "单独开启后仅使用抽卡类道具；开启“道具 | 使用全部”时也会一起生效。"
             ).also { usePropCollectTimes7Days = it }
         )
         modelFields.addField(
-            BooleanModelField("usePropCollectHistoryAnimal7Days", "使用道具 | 抽历史卡道具", false).withDesc(
-                "单独开启后仅使用历史卡抽卡道具；开启“使用道具 | 所有”时也会一起生效。"
+            BooleanModelField("usePropCollectHistoryAnimal7Days", "道具 | 抽历史卡道具", false).withDesc(
+                "单独开启后仅使用历史卡抽卡道具；开启“道具 | 使用全部”时也会一起生效。"
             ).also { usePropCollectHistoryAnimal7Days = it }
         )
         modelFields.addField(
-            BooleanModelField("usePropCollectToFriendTimes7Days", "使用道具 | 抽好友卡道具", false).withDesc(
-                "单独开启后仅使用好友卡抽卡道具；开启“使用道具 | 所有”时也会一起生效。"
+            BooleanModelField("usePropCollectToFriendTimes7Days", "道具 | 抽好友卡道具", false).withDesc(
+                "单独开启后仅使用好友卡抽卡道具；开启“道具 | 使用全部”时也会一起生效。"
             ).also { usePropCollectToFriendTimes7Days = it }
         )
         modelFields.addField(
-            BooleanModelField("autoGenerateBook", "自动合成图鉴", false).withDesc(
+            BooleanModelField("autoGenerateBook", "图鉴勋章 | 自动合成", false).withDesc(
                 "图鉴显示“已集齐”时自动合成对应勋章。"
             ).also { autoGenerateBook = it }
         )
@@ -108,11 +105,11 @@ class AntDodo : ModelTask() {
     override fun check(): Boolean {
         return when {
             TaskCommon.IS_ENERGY_TIME -> {
-                Log.forest(TAG, "⏸ 当前为只收能量时间【${BaseModel.energyTime.value}】，停止执行${getName()}任务！")
+                Log.dodo("⏸ 当前为只收能量时间【${BaseModel.energyTime.value}】，停止执行${getName()}任务！")
                 false
             }
             TaskCommon.IS_MODULE_SLEEP_TIME -> {
-                Log.forest(TAG, "💤 模块休眠时间【${BaseModel.modelSleepTime.value}】停止执行${getName()}任务！")
+                Log.dodo("💤 模块休眠时间【${BaseModel.modelSleepTime.value}】停止执行${getName()}任务！")
                 false
             }
             else -> true
@@ -121,14 +118,19 @@ class AntDodo : ModelTask() {
 
     override fun runJava() {
         try {
-            Log.forest(TAG, "执行开始-${getName()}")
+            Log.dodo("执行开始-${getName()}")
             handledTaskFinishes.clear()
             handledTaskAwards.clear()
             receiveTaskAward()
             propList()
             collect()
             if (collectToFriend?.value == true) {
-                collectToFriend()
+                var friendCollectPasses = 0
+                while (friendCollectPasses < 2 && collectToFriend()) {
+                    friendCollectPasses++
+                    receiveTaskAward()
+                    propList()
+                }
             }
             if (autoGenerateBook?.value == true) {
                 autoGenerateBook()
@@ -137,7 +139,7 @@ class AntDodo : ModelTask() {
             Log.runtime(TAG, "start.run err:")
             Log.printStackTrace(TAG, t)
         } finally {
-            Log.forest(TAG, "执行结束-${getName()}")
+            Log.dodo("执行结束-${getName()}")
         }
     }
 
@@ -164,7 +166,7 @@ class AntDodo : ModelTask() {
             if (ResChecker.checkRes(TAG, jo)) {
                 val data = jo.getJSONObject("data")
                 if (data.getBoolean("collect")) {
-                    Log.forest(TAG, "神奇物种卡片今日收集完成！")
+                    Log.dodo("神奇物种卡片今日收集完成！")
                 } else {
                     collectAnimalCard()
                 }
@@ -217,7 +219,7 @@ class AntDodo : ModelTask() {
                             val animal = data.getJSONObject("animal")
                             val ecosystem = animal.getString("ecosystem")
                             val name = animal.getString("name")
-                            Log.forest("神奇物种🦕[$ecosystem]#$name")
+                            Log.dodo("神奇物种🦕[$ecosystem]#$name")
                             if (giftTargetUserId != null) {
                                 val fantasticStarQuantity = animal.optInt("fantasticStarQuantity", 0)
                                 if (fantasticStarQuantity == 3) {
@@ -243,7 +245,7 @@ class AntDodo : ModelTask() {
 
     private fun receiveTaskAward() {
         try {
-            val presetBad = LinkedHashSet(listOf("HELP_FRIEND_COLLECT"))
+            val businessDrivenTasks = LinkedHashSet(listOf("HELP_FRIEND_COLLECT"))
             while (!Thread.currentThread().isInterrupted) {
                 var doubleCheck = false
                 val response = AntDodoRpcCall.taskList()
@@ -253,7 +255,7 @@ class AntDodo : ModelTask() {
                 }
                 val jsonResponse = JSONObject(response)
                 if (!ResChecker.checkRes(TAG, jsonResponse)) {
-                    Log.forest(TAG, "查询任务列表失败：${jsonResponse.optString("resultDesc")}")
+                    Log.dodo("查询任务列表失败：${jsonResponse.optString("resultDesc")}")
                     break
                 }
                 val taskGroupInfoList = jsonResponse.optJSONObject("data")?.optJSONArray("taskGroupInfoList") ?: break
@@ -284,17 +286,17 @@ class AntDodo : ModelTask() {
                                 if (isDodoTaskRpcSuccess(joAward)) {
                                     handledTaskAwards.add(taskKey)
                                     doubleCheck = true
-                                    Log.forest("任务奖励🎖️[$taskTitle]#${awardCount}个")
+                                    Log.dodo("任务奖励🎖️[$taskTitle]#${awardCount}个")
                                 } else {
-                                    Log.forest(TAG, "领取失败[$taskTitle]：${joAward.optString("resultDesc", joAward.toString())}")
+                                    Log.dodo("领取失败[$taskTitle]：${joAward.optString("resultDesc", joAward.toString())}")
                                     if (isTaskTerminalFailure(joAward)) {
                                         handledTaskAwards.add(taskKey)
                                     }
                                 }
                             }
                             TaskStatus.TODO.name == taskStatus -> {
-                                if (presetBad.contains(taskType)) {
-                                    TaskBlacklist.addToBlacklist(TASK_BLACKLIST_MODULE, taskType, taskTitle)
+                                if (businessDrivenTasks.contains(taskType)) {
+                                    Log.runtime(TAG, "任务等待业务动作完成[$taskTitle]")
                                     continue
                                 }
                                 if (TaskBlacklist.isTaskInBlacklist(TASK_BLACKLIST_MODULE, taskType) ||
@@ -314,16 +316,14 @@ class AntDodo : ModelTask() {
                                 val joFinishTask = JSONObject(finishResponse)
                                 if (isDodoTaskRpcSuccess(joFinishTask)) {
                                     handledTaskFinishes.add(taskKey)
-                                    Log.forest("物种任务🧾️[$taskTitle]")
+                                    Log.dodo("物种任务🧾️[$taskTitle]")
                                     doubleCheck = true
                                 } else {
                                     val errorCode = joFinishTask.optString("code")
                                         .ifBlank { joFinishTask.optString("resultCode") }
                                     val resultDesc = joFinishTask.optString("desc")
                                         .ifBlank { joFinishTask.optString("resultDesc") }
-                                    Log.forest(
-                                        TAG,
-                                        "完成任务失败[$taskTitle] code=${errorCode.ifBlank { "UNKNOWN" }} msg=$resultDesc"
+                                    Log.dodo("完成任务失败[$taskTitle] code=${errorCode.ifBlank { "UNKNOWN" }} msg=$resultDesc"
                                     )
                                     if (isTaskTerminalFailure(joFinishTask)) {
                                         handledTaskFinishes.add(taskKey)
@@ -417,7 +417,7 @@ class AntDodo : ModelTask() {
                 if (ResChecker.checkRes(TAG, jo)) {
                     val propList = jo.getJSONObject("data").optJSONArray("propList")
                     if (propList == null || propList.length() == 0) {
-                        Log.forest(TAG, "神奇物种道具跳过：未找到可使用的道具")
+                        Log.dodo("神奇物种道具跳过：未找到可使用的道具")
                         return
                     }
                     for (i in 0 until propList.length()) {
@@ -426,7 +426,7 @@ class AntDodo : ModelTask() {
                         val propName = prop.optJSONObject("propConfig")?.optString("propName")
                             ?.takeIf { it.isNotBlank() } ?: propType
                         if (!isUsePropType(propType)) {
-                            Log.forest(TAG, "神奇物种道具跳过[$propName]：配置未开启")
+                            Log.dodo("神奇物种道具跳过[$propName]：配置未开启")
                             continue
                         }
                         val propIdList = prop.optJSONArray("propIdList")
@@ -440,11 +440,11 @@ class AntDodo : ModelTask() {
                         val consumeTarget = consumeTargetResult?.target
                         if (isUniversalCardProp(propType)) {
                             if (consumeTargetResult == null || !consumeTargetResult.querySucceeded) {
-                                Log.forest(TAG, "神奇物种道具跳过[$propName]：目标卡查询失败")
+                                Log.dodo("神奇物种道具跳过[$propName]：目标卡查询失败")
                                 continue
                             }
                             if (consumeTarget == null) {
-                                Log.forest(TAG, "神奇物种道具跳过[$propName]：未找到可兑换的目标卡片")
+                                Log.dodo("神奇物种道具跳过[$propName]：未找到可兑换的目标卡片")
                                 continue
                             }
                         }
@@ -455,7 +455,7 @@ class AntDodo : ModelTask() {
                         }
                         val joConsume = JSONObject(consumeResponse)
                         if (!ResChecker.checkRes(TAG, joConsume)) {
-                            Log.forest(TAG, "神奇物种道具使用失败[$propName]：${joConsume.optString("resultDesc", "未知错误")}")
+                            Log.dodo("神奇物种道具使用失败[$propName]：${joConsume.optString("resultDesc", "未知错误")}")
                             Log.runtime(joConsume.toString())
                             continue
                         }
@@ -464,7 +464,7 @@ class AntDodo : ModelTask() {
                         if (animal != null) {
                             val ecosystem = animal.optString("ecosystem")
                             val name = animal.optString("name")
-                            Log.forest("使用道具🎭[$propName]#${formatAnimalDisplayName(ecosystem, name)}")
+                            Log.dodo("使用道具🎭[$propName]#${formatAnimalDisplayName(ecosystem, name)}")
                             if (giftTargetUserId != null && isUniversalCardProp(propType)) {
                                 val fantasticStarQuantity = animal.optInt("fantasticStarQuantity", 0)
                                 if (fantasticStarQuantity == 3) {
@@ -472,7 +472,7 @@ class AntDodo : ModelTask() {
                                 }
                             }
                         } else {
-                            Log.forest("使用道具🎭[$propName]")
+                            Log.dodo("使用道具🎭[$propName]")
                         }
                         logPropRefreshState(propType, propName, consumeTarget, animal)
                         GlobalThreadPools.sleepCompat(300)
@@ -663,6 +663,14 @@ class AntDodo : ModelTask() {
             collectDetail.optInt("count", 0) > 0
     }
 
+    private fun hasAnimalCardForBookMedal(collectDetail: JSONObject?): Boolean {
+        if (collectDetail == null) {
+            return false
+        }
+        return collectDetail.optBoolean("collect") ||
+            collectDetail.optInt("count", 0) > 0
+    }
+
     private fun logPropRefreshState(
         propType: String,
         propName: String,
@@ -683,7 +691,7 @@ class AntDodo : ModelTask() {
             }
         }
         if (refreshParts.isNotEmpty()) {
-            Log.forest(TAG, "神奇物种道具刷新[$propName]：${refreshParts.joinToString("，")}")
+            Log.dodo("神奇物种道具刷新[$propName]：${refreshParts.joinToString("，")}")
         }
     }
 
@@ -760,7 +768,7 @@ class AntDodo : ModelTask() {
     }
 
     private fun resolveSendFriendCardTarget(): String? {
-        val configuredUsers = sendFriendCard?.value ?: emptySet()
+        val configuredUsers = sendFriendCard?.resolvedIds() ?: emptySet()
         if (configuredUsers.isEmpty()) {
             return null
         }
@@ -768,15 +776,14 @@ class AntDodo : ModelTask() {
         if (availableFriends.isEmpty()) {
             return null
         }
-        for (userId in configuredUsers) {
-            val safeUserId = FriendGuard.normalizeUserId(userId) ?: continue
+        for (safeUserId in configuredUsers) {
             if (FriendGuard.shouldSkipFriend(safeUserId, TAG, "神奇物种送卡")) {
                 continue
             }
             if (availableFriends.contains(safeUserId)) {
                 return safeUserId
             }
-            Log.forest(TAG, "神奇物种送卡跳过[${UserMap.getMaskName(safeUserId) ?: safeUserId}]：对方未开通神奇物种")
+            Log.dodo("神奇物种送卡跳过[${UserMap.getMaskName(safeUserId) ?: safeUserId}]：不在当前可赠送好友列表")
         }
         return null
     }
@@ -797,6 +804,7 @@ class AntDodo : ModelTask() {
                         val userId = friendList.optJSONObject(i)?.optString("userId").orEmpty()
                         if (userId.isNotBlank() && !FriendGuard.shouldSkipFriend(userId, TAG, "神奇物种好友校验")) {
                             availableFriends.add(userId)
+                            FriendCapabilityRecorder.record(userId, "DODO", FriendCapabilityState.OPEN, "AntDodo.queryFriend")
                         }
                     }
                     availableFriends
@@ -851,7 +859,7 @@ class AntDodo : ModelTask() {
             }
             val jo = JSONObject(socialResponse)
             if (ResChecker.checkRes(TAG, jo)) {
-                Log.forest("赠送卡片🦕[${UserMap.getMaskName(targetUser)}]#$ecosystem-$name")
+                Log.dodo("赠送卡片🦕[${UserMap.getMaskName(targetUser)}]#$ecosystem-$name")
             } else {
                 Log.runtime(TAG, jo.getString("resultDesc"))
             }
@@ -861,22 +869,23 @@ class AntDodo : ModelTask() {
         }
     }
 
-    private fun collectToFriend() {
+    private fun collectToFriend(): Boolean {
         try {
             val queryResponse = AntDodoRpcCall.queryFriend()
             if (queryResponse.isNullOrEmpty()) {
                 Log.runtime(TAG, "queryFriend返回空")
-                return
+                return false
             }
             var jo = JSONObject(queryResponse)
             if (ResChecker.checkRes(TAG, jo)) {
+                var handled = false
                 var count = 0
                 val limitList = jo.getJSONObject("data").getJSONObject("extend").getJSONArray("limit")
                 for (i in 0 until limitList.length()) {
                     val limit = limitList.getJSONObject(i)
                     if (limit.getString("actionCode") == "COLLECT_TO_FRIEND") {
                         if (limit.getLong("startTime") > System.currentTimeMillis()) {
-                            return
+                            return false
                         }
                         count = limit.getInt("leftLimit")
                         break
@@ -893,7 +902,7 @@ class AntDodo : ModelTask() {
                     if (FriendGuard.shouldSkipFriend(useId, TAG, "神奇物种帮抽卡")) {
                         continue
                     }
-                    var isCollectToFriend = collectToFriendList?.value?.contains(useId) ?: false
+                    var isCollectToFriend = collectToFriendList?.contains(useId) == true
                     if (collectToFriendType?.value == CollectToFriendType.DONT_COLLECT) {
                         isCollectToFriend = !isCollectToFriend
                     }
@@ -910,8 +919,9 @@ class AntDodo : ModelTask() {
                         val ecosystem = jo.getJSONObject("data").getJSONObject("animal").getString("ecosystem")
                         val name = jo.getJSONObject("data").getJSONObject("animal").getString("name")
                         val userName = UserMap.getMaskName(useId)
-                        Log.forest("神奇物种🦕帮好友[$userName]抽卡[$ecosystem]#$name")
+                        Log.dodo("神奇物种🦕帮好友[$userName]抽卡[$ecosystem]#$name")
                         count--
+                        handled = true
                     } else if (!ResChecker.isSilentFailure(jo)) {
                         val message = jo.optString("resultDesc").ifBlank {
                             jo.optString("desc", "帮好友抽卡失败")
@@ -919,6 +929,7 @@ class AntDodo : ModelTask() {
                         Log.runtime(TAG, message)
                     }
                 }
+                return handled
             } else if (!ResChecker.isSilentFailure(jo)) {
                 val message = jo.optString("resultDesc").ifBlank {
                     jo.optString("desc", "查询神奇物种好友列表失败")
@@ -929,6 +940,7 @@ class AntDodo : ModelTask() {
             Log.runtime(TAG, "AntDodo CollectHelpFriend err:")
             Log.printStackTrace(TAG, t)
         }
+        return false
     }
 
     private fun autoGenerateBook() {
@@ -1078,7 +1090,7 @@ class AntDodo : ModelTask() {
             var hasMedalPending = false
             for (i in 0 until animalForUserList.length()) {
                 val collectDetail = animalForUserList.optJSONObject(i)?.optJSONObject("collectDetail")
-                if (!isCollectedAnimal(collectDetail)) {
+                if (!hasAnimalCardForBookMedal(collectDetail)) {
                     return false
                 }
                 if (collectDetail?.optBoolean("hasGeneratedBookMedal") != true) {
@@ -1100,10 +1112,10 @@ class AntDodo : ModelTask() {
         }
         val jo = JSONObject(medalResponse)
         if (!ResChecker.checkRes(TAG, jo)) {
-            Log.forest(TAG, "合成图鉴失败[${ecosystem.ifBlank { bookId }}]：${jo.optString("resultDesc", jo.toString())}")
+            Log.dodo("合成图鉴失败[${ecosystem.ifBlank { bookId }}]：${jo.optString("resultDesc", jo.toString())}")
             return false
         }
-        Log.forest("神奇物种🦕合成勋章[${ecosystem.ifBlank { bookId }}]")
+        Log.dodo("神奇物种🦕合成勋章[${ecosystem.ifBlank { bookId }}]")
         return true
     }
 

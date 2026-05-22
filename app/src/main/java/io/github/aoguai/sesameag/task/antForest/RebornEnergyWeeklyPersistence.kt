@@ -63,7 +63,7 @@ object RebornEnergyWeeklyPersistence {
                 lastScanLimitReached = false
             )
             DataStore.put(dataStoreKey, newState)
-            Log.forest(TAG, "🔄 复活能量周轮状态已重置(weekStart=$weekStart)")
+            Log.forest("🔄 复活能量周轮状态已重置(weekStart=$weekStart)")
             return newState
         }
         return state

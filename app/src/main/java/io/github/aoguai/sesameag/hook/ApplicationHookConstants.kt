@@ -24,6 +24,10 @@ object ApplicationHookConstants {
         const val RE_LOGIN: String = "com.eg.android.AlipayGphone.sesame.reLogin"
         const val RPC_TEST: String = "com.eg.android.AlipayGphone.sesame.rpctest"
         const val MANUAL_TASK: String = "com.eg.android.AlipayGphone.sesame.manual_task"
+        const val HOOK_READY: String = "com.eg.android.AlipayGphone.sesame.hook_ready"
+        const val HOOK_READY_RESULT: String = "com.eg.android.AlipayGphone.sesame.hook_ready_result"
+        const val REFRESH_FRIENDS: String = "com.eg.android.AlipayGphone.sesame.refresh_friends"
+        const val REFRESH_FRIENDS_RESULT: String = "com.eg.android.AlipayGphone.sesame.refresh_friends_result"
     }
 
     object AlipayClasses {

@@ -226,7 +226,7 @@ object Credit2101 {
     @JvmStatic
     fun doCredit2101(autoOpenChest: Boolean ,creditoptions: SelectAndCountModelField) {
         try {
-            Log.sesame(TAG, "执行开始 信用2101")
+            Log.sesame("执行开始 信用2101")
             this.mCreditOptions = creditoptions
             var account = queryAccountAsset() ?: run {
                 Log.error(TAG, "信用2101❌[账户查询失败] 返回为空或非 SUCCESS")
@@ -249,7 +249,7 @@ object Credit2101 {
             handleGuardMarkAward()        //检查是否有可领取的印记
 
             if (!hasEnabledEventOptions()) {
-                Log.sesame(TAG, "信用2101📋[事件] 未启用任何事件类型，跳过定位、探测与事件处理")
+                Log.sesame("信用2101📋[事件] 未启用任何事件类型，跳过定位、探测与事件处理")
             } else {
                 // 5. 获取经纬度 + cityCode
                 val location = resolveLocation(account.cityCode)
@@ -257,7 +257,7 @@ object Credit2101 {
                 var currentLng: Double
                 val cityCode: String
                 if (location == null) {
-                    Log.sesame(TAG, "信用2101📍[定位失败] 使用北京默认值")
+                    Log.sesame("信用2101📍[定位失败] 使用北京默认值")
                     cityCode = "110000"
                     currentLat = 39.44 + Math.random() * (41.05 - 39.44)
                     currentLng = 115.42 + Math.random() * (117.50 - 115.42)
@@ -268,9 +268,7 @@ object Credit2101 {
                     currentLng = location.longitude
                     cityCode = location.cityCode
                 }
-                Log.sesame(
-                    TAG,
-                    "信用2101📍[定位信息] 城市编码=$cityCode，纬度=$currentLat，经度=$currentLng"
+                Log.sesame("信用2101📍[定位信息] 城市编码=$cityCode，纬度=$currentLat，经度=$currentLng"
                 )
 
                 // ================== 探测控制参数 ==================
@@ -281,7 +279,7 @@ object Credit2101 {
                 var shiftCount = 0
 
                 var failExploreCount = 0
-                Log.sesame(TAG, "信用2101🔍[开始探测循环]")
+                Log.sesame("信用2101🔍[开始探测循环]")
 
                 // ================== 主循环 ==================
                 while (!Thread.currentThread().isInterrupted) {
@@ -290,7 +288,7 @@ object Credit2101 {
                     // 防死循环保护
                     currentLoopCount++
                     if (currentLoopCount > maxLoopCount) {
-                        Log.sesame(TAG, "信用2101🔍[结束] 达到最大循环次数($maxLoopCount)")
+                        Log.sesame("信用2101🔍[结束] 达到最大循环次数($maxLoopCount)")
                         break
                     }
 
@@ -301,14 +299,12 @@ object Credit2101 {
                     }
 
                     if (account.exploreStamina <= 0) {
-                        Log.sesame(TAG, "信用2101🔍[结束] 探索次数已用完")
+                        Log.sesame("信用2101🔍[结束] 探索次数已用完")
                         break
                     }
 
                     if (account.energyStamina < 5) {
-                        Log.sesame(
-                            TAG,
-                            "信用2101🔍[结束] 能量不足，不再执行(${account.energyStamina})"
+                        Log.sesame("信用2101🔍[结束] 能量不足，不再执行(${account.energyStamina})"
                         )
                         break
                     }
@@ -348,16 +344,12 @@ object Credit2101 {
                     currentLng = nLng
                     shiftCount++
 
-                    Log.sesame(
-                        TAG,
-                        "信用2101📍[移动位置] 第$shiftCount 次 lat=$currentLat lng=$currentLng (≈±500m)"
+                    Log.sesame("信用2101📍[移动位置] 第$shiftCount 次 lat=$currentLat lng=$currentLng (≈±500m)"
                     )
 
                     // 位移次数耗尽才真正退出
                     if (shiftCount >= maxShiftCount) {
-                        Log.sesame(
-                            TAG,
-                            "信用2101🔍[结束] 已移动 $shiftCount 次仍未发现事件"
+                        Log.sesame("信用2101🔍[结束] 已移动 $shiftCount 次仍未发现事件"
                         )
                         break
                     }
@@ -368,7 +360,7 @@ object Credit2101 {
             if (!Status.hasFlagToday(StatusFlags.FLAG_CREDIT2101_CHAPTER_TASK_DONE)) {
                 handleChapterTasks()
             }
-            Log.sesame(TAG, "执行结束 信用2101")
+            Log.sesame("执行结束 信用2101")
 
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, t)
@@ -412,13 +404,13 @@ object Credit2101 {
                 GlobalThreadPools.sleepCompat(5000)
                 val resp = Credit2101RpcCall.triggerBenefit()
                 if (!ResChecker.checkRes(TAG, resp)) {
-                    Log.sesame(TAG, "信用2101🎁[开宝箱失败] 第 $i 个返回为空，停止后续宝箱")
+                    Log.sesame("信用2101🎁[开宝箱失败] 第 $i 个返回为空，停止后续宝箱")
                     break
                 }
 
                 val jo = JSONObject(resp)
                 if (!ResChecker.checkRes(TAG, jo)) {
-                    Log.sesame(TAG, "信用2101🎁[开宝箱失败] resp=$resp，停止后续宝箱")//第 $i 个
+                    Log.sesame("信用2101🎁[开宝箱失败] resp=$resp，停止后续宝箱")//第 $i 个
                     break
                 }
 
@@ -459,14 +451,12 @@ object Credit2101 {
                 if (descList.isEmpty()) {
                     Log.sesame("信用2101🎁[开宝箱]第 $i 个")
                 } else {
-                    Log.sesame(
-                        TAG,
-                        "信用2101🎁[开宝箱]#$i[${descList.joinToString("，")}]"
+                    Log.sesame("信用2101🎁[开宝箱]#$i[${descList.joinToString("，")}]"
                     )
                 }
             }
 
-            Log.sesame(TAG, "信用2101🎁[宝箱统计] 共$lotteryNo 个，成功打开$successCount 个")
+            Log.sesame("信用2101🎁[宝箱统计] 共$lotteryNo 个，成功打开$successCount 个")
         } catch (e: Throwable) {
             Log.printStackTrace(TAG, e)
         }
@@ -509,9 +499,9 @@ object Credit2101 {
 
             if (!success) {
                 if (resultCode == "SIGN_DAYS_NOT_ENOUGH") {
-                    Log.sesame(TAG, "信用2101🗓[签到] 已领取签到奖励")
+                    Log.sesame("信用2101🗓[签到] 已领取签到奖励")
                 } else {
-                    Log.sesame(TAG, "信用2101🗓[签到失败] resp=$signResp")
+                    Log.sesame("信用2101🗓[签到失败] resp=$signResp")
                 }
                 return
             }
@@ -548,15 +538,14 @@ object Credit2101 {
 
             val jo = JSONObject(resp)
             if (!ResChecker.checkRes(TAG, jo)) {
-                Log.sesame(
-                    TAG, "信用2101📋[查询任务失败] resp=$resp"
+                Log.sesame("信用2101📋[查询任务失败] resp=$resp"
                 )
                 return
             }
 
             val taskList = jo.optJSONArray("taskList") ?: return
             if (taskList.length() == 0) {
-                Log.sesame(TAG, "信用2101📋[任务] 当前无任务")
+                Log.sesame("信用2101📋[任务] 当前无任务")
                 return
             }
 
@@ -576,7 +565,7 @@ object Credit2101 {
                 if (taskStatus == "INIT") {
                     val claimResp = Credit2101RpcCall.operateTask("TASK_CLAIM", taskConfigId)
                     if (claimResp.isEmpty()) {
-                        Log.sesame(TAG, "信用2101📋[任务领取失败] $taskName 返回为空")
+                        Log.sesame("信用2101📋[任务领取失败] $taskName 返回为空")
                     } else {
                         val cJo = JSONObject(claimResp)
                         val ok = ResChecker.checkRes(TAG, cJo) &&
@@ -585,7 +574,7 @@ object Credit2101 {
                             claimCount++
                             Log.sesame("信用2101📋[任务领取成功] $taskName ($taskConfigId)")
                         } else {
-                            Log.sesame(TAG, "信用2101📋[任务领取失败] $taskName resp=$claimResp")
+                            Log.sesame("信用2101📋[任务领取失败] $taskName resp=$claimResp")
                         }
                     }
                     continue
@@ -606,9 +595,9 @@ object Credit2101 {
 
                     if (!success || !awardSuccess) {
                         if (resultCode == "TASK_HAS_NO_AWARD") {
-                            Log.sesame(TAG, "信用2101📋[任务奖励] $taskName 当前无奖励可领")
+                            Log.sesame("信用2101📋[任务奖励] $taskName 当前无奖励可领")
                         } else {
-                            Log.sesame(TAG, "信用2101📋[任务奖励领取失败] $taskName resp=$awardResp")
+                            Log.sesame("信用2101📋[任务奖励领取失败] $taskName resp=$awardResp")
                         }
                         continue
                     }
@@ -659,7 +648,7 @@ object Credit2101 {
             }
 
             if (claimCount > 0 || awardCount > 0) {
-                Log.sesame(TAG, "信用2101📋[任务统计] 领取任务:$claimCount 领取奖励:$awardCount")
+                Log.sesame("信用2101📋[任务统计] 领取任务:$claimCount 领取奖励:$awardCount")
             }
         } catch (e: Throwable) {
             Log.printStackTrace(TAG, e)
@@ -690,12 +679,12 @@ object Credit2101 {
             // val count = jo.optInt("guardMarkCount", 0)
 
             if (!hasClaim) {
-                // Log.sesame(TAG, "信用2101🛡️[修复奖励] 暂无奖励可领取 (已修复数: $count)")
+                // Log.sesame("信用2101🛡️[修复奖励] 暂无奖励可领取 (已修复数: $count)")
                 return
             }
 
             // 3. 执行领取动作
-            Log.sesame(TAG, "信用2101🛡️[修复奖励] 检测到可领取奖励，正在领取...")
+            Log.sesame("信用2101🛡️[修复奖励] 检测到可领取奖励，正在领取...")
             val claimResp = Credit2101RpcCall.claimGuardMarkAward()
 
 
@@ -786,7 +775,7 @@ object Credit2101 {
                         throw Exception("LocationHelper 定位数据不完整")
                     }
 
-                    Log.sesame(TAG, "信用2101📍[LocationHelper] 使用目标应用定位成功")
+                    Log.sesame("信用2101📍[LocationHelper] 使用目标应用定位成功")
                 } else {
                     Log.error(TAG, "信用2101📍[LocationHelper] 返回为空，尝试使用 API 备用")
                     throw Exception("LocationHelper 返回为空")
@@ -829,7 +818,7 @@ object Credit2101 {
                     return@runCatching null
                 }
 
-                Log.sesame(TAG, "信用2101📍[API定位] 使用 API 定位成功")
+                Log.sesame("信用2101📍[API定位] 使用 API 定位成功")
             }
 
             LocationInfo(cityCode.toString(), lat, lng)
@@ -910,7 +899,7 @@ object Credit2101 {
     ): Boolean {
         val resp = Credit2101RpcCall.queryGridEvent(cityCode, latitude, longitude)
         if (!ResChecker.checkRes(TAG, resp)) {
-            Log.sesame(TAG, "信用2101📋[事件] 查询失败 / 返回为空")
+            Log.sesame("信用2101📋[事件] 查询失败 / 返回为空")
             return false
         }
 
@@ -920,13 +909,13 @@ object Credit2101 {
         }
 
         if (!ResChecker.checkRes(TAG, root)) {
-            Log.sesame(TAG, "信用2101📋[事件] success=false")
+            Log.sesame("信用2101📋[事件] success=false")
             return false
         }
 
         val eventList = root.optJSONArray("gridEventVOList")
         if (eventList == null || eventList.length() == 0) {
-            Log.sesame(TAG, "信用2101📋[事件] 当前无事件")
+            Log.sesame("信用2101📋[事件] 当前无事件")
             return false
         }
 
@@ -1000,19 +989,19 @@ object Credit2101 {
                     val newCount = doneCount + 1
                     Status.setIntFlagToday(flagKey, newCount)
                     val countDesc = if (maxCount == -1) "∞" else maxCount.toString()
-                    Log.sesame(TAG, "信用2101✅[事件完成] type=$eventType (进度: $newCount/$countDesc)")
+                    Log.sesame("信用2101✅[事件完成] type=$eventType (进度: $newCount/$countDesc)")
                 }
                 is EventResult.Skipped -> {
                     // 跳过不计入失败也不计入成功,静默处理
-                    Log.sesame(TAG, "信用2101⏭️[事件跳过] type=$eventType (条件不满足)")
+                    Log.sesame("信用2101⏭️[事件跳过] type=$eventType (条件不满足)")
                 }
                 is EventResult.Failed -> {
-                    Log.sesame(TAG, "信用2101❌[事件失败] type=$eventType")
+                    Log.sesame("信用2101❌[事件失败] type=$eventType")
                 }
             }
         }
 
-        Log.sesame(TAG, "信用2101📋[事件处理结果] 完成=$handledCount / 总数=${eventList.length()}")
+        Log.sesame("信用2101📋[事件处理结果] 完成=$handledCount / 总数=${eventList.length()}")
         return handledCount > 0
     }
     /*
@@ -1025,7 +1014,7 @@ object Credit2101 {
 
         val resp = Credit2101RpcCall.queryGridEvent(cityCode, latitude, longitude)
         if (!ResChecker.checkRes(TAG, resp)) {
-            Log.sesame(TAG, "信用2101📋[事件] 查询失败 / 返回为空")
+            Log.sesame("信用2101📋[事件] 查询失败 / 返回为空")
             return false
         }
 
@@ -1035,13 +1024,13 @@ object Credit2101 {
         }
 
         if (!ResChecker.checkRes(TAG, root)) {
-            Log.sesame(TAG, "信用2101📋[事件] success=false")
+            Log.sesame("信用2101📋[事件] success=false")
             return false
         }
 
         val eventList = root.optJSONArray("gridEventVOList")
         if (eventList == null || eventList.length() == 0) {
-            Log.sesame(TAG, "信用2101📋[事件] 当前无事件")
+            Log.sesame("信用2101📋[事件] 当前无事件")
             return false
         }
 
@@ -1049,12 +1038,12 @@ object Credit2101 {
         // --- 增加配置状态输出 ---
         val config = mCreditOptions!!.value // Map<String?, Int?>
         if (config.isNullOrEmpty()) {
-            Log.sesame(TAG, "⚠️ 信用2101配置为空，将跳过所有任务")
+            Log.sesame("⚠️ 信用2101配置为空，将跳过所有任务")
         } else {
             val summary = config.entries
                 .filter { (it.value ?: 0) != 0 } // 只打印设置了次数的任务
                 .joinToString(", ") { "${it.key ?: "未知"}(${if(it.value == -1) "无限" else it.value})" }
-            Log.sesame(TAG, "配置概览: $summary")
+            Log.sesame("配置概览: $summary")
         }
 
 
@@ -1083,7 +1072,7 @@ object Credit2101 {
 
             // 如果设置了固定次数且已达标，则跳过 (-1 代表不限)
             if (maxCount != -1 && doneCount >= maxCount) {
-                // Log.sesame(TAG, "信用2101⏭️[次数达标] $eventType (今日已完成 $doneCount 次)")
+                // Log.sesame("信用2101⏭️[次数达标] $eventType (今日已完成 $doneCount 次)")
                 continue
             }
             var isSkipped = false // 专门标记“任务满了，根本没做”的情况   主要是黑色印记 进去之后的返回-1
@@ -1125,7 +1114,7 @@ object Credit2101 {
                             }
                         }
                     } else {
-                        Log.sesame(TAG, "信用2101⚫[黑色印记] 能量不足，跳过")
+                        Log.sesame("信用2101⚫[黑色印记] 能量不足，跳过")
                         false
                     }
                 }
@@ -1144,19 +1133,17 @@ object Credit2101 {
                 Status.setIntFlagToday(flagKey, newCount)
 
                 val countDesc = if (maxCount == -1) "∞" else maxCount.toString()
-                Log.sesame(TAG, "信用2101✅[事件完成] type=$eventType (进度: $newCount/$countDesc)")
+                Log.sesame("信用2101✅[事件完成] type=$eventType (进度: $newCount/$countDesc)")
             } else {
                 if (isSkipped) {
-                    Log.sesame(TAG, "信用2101⏭️[黑色印记] 能量已满，暂不处理")
+                    Log.sesame("信用2101⏭️[黑色印记] 能量已满，暂不处理")
                 } else {
-                    Log.sesame(TAG, "信用2101❌[事件失败] type=$eventType")
+                    Log.sesame("信用2101❌[事件失败] type=$eventType")
                 }
             }
         }
 
-        Log.sesame(
-            TAG,
-            "信用2101📋[事件处理结果] 完成=$handledCount / 总数=${eventList.length()}"
+        Log.sesame("信用2101📋[事件处理结果] 完成=$handledCount / 总数=${eventList.length()}"
         )
 
         // ⭐ 核心：只有真的“处理成功过”才返回 true
@@ -1170,20 +1157,18 @@ object Credit2101 {
             val cfg = ev.optJSONObject("eventConfig")
             val stageId = cfg?.optString("id", "") ?: ""
             if (stageId.isEmpty()) {
-                Log.sesame(TAG, "信用2101🎮[小游戏关卡ID为空] resp=$ev")
+                Log.sesame("信用2101🎮[小游戏关卡ID为空] resp=$ev")
                 return
             }
 
             val startResp = Credit2101RpcCall.eventGameStart(batchNo, eventId, stageId)
             val sJo = JSONObject(startResp)
             if (sJo.optString("resultCode") == "ENERGY_STAMINA_IS_ZERO") {
-                Log.sesame(TAG, "信用2101💤 能量已耗尽，停止小游戏M")
+                Log.sesame("信用2101💤 能量已耗尽，停止小游戏M")
                 return
             }
             if (!ResChecker.checkRes(TAG, sJo)) {
-                Log.sesame(
-                    TAG,
-                    "信用2101🎮[小游戏开始接口失败] batchNo=$batchNo eventId=$eventId stageId=$stageId"
+                Log.sesame("信用2101🎮[小游戏开始接口失败] batchNo=$batchNo eventId=$eventId stageId=$stageId"
                 )
                 return
             }
@@ -1192,7 +1177,7 @@ object Credit2101 {
             if (!success) {
                 val resultCode = sJo.optString("resultCode", "UNKNOWN")
                 val resultMsg = sJo.optString("resultMsg", "未知错误")
-                Log.sesame(TAG, "信用2101🎮[小游戏开始失败] 原因: $resultMsg (code=$resultCode) resp=$startResp")
+                Log.sesame("信用2101🎮[小游戏开始失败] 原因: $resultMsg (code=$resultCode) resp=$startResp")
                 return
             }
 
@@ -1200,7 +1185,7 @@ object Credit2101 {
             val completeResp = Credit2101RpcCall.eventGameCompleteSimple(batchNo, eventId, stageId)
             val cJo = JSONObject(completeResp)
             if (cJo.optString("resultCode") == "ENERGY_STAMINA_IS_ZERO") {
-                Log.sesame(TAG, "信用2101💤 能量已耗尽，停止小游戏")
+                Log.sesame("信用2101💤 能量已耗尽，停止小游戏")
                 return
             }
             if (!ResChecker.checkRes(TAG, completeResp)) {
@@ -1236,25 +1221,25 @@ object Credit2101 {
         try {
             val cfg = ev.optJSONObject("eventConfig")
             if (cfg == null) {
-                Log.sesame(TAG, "信用2101🎮[小游戏配置缺失] resp=$ev")
+                Log.sesame("信用2101🎮[小游戏配置缺失] resp=$ev")
                 return
             }
 
             val stageId = cfg.optString("id", "")
             if (stageId.isEmpty()) {
-                Log.sesame(TAG, "信用2101🎮[小游戏关卡ID为空] resp=$ev")
+                Log.sesame("信用2101🎮[小游戏关卡ID为空] resp=$ev")
                 return
             }
 
             val awardArray = cfg.optJSONArray("award")
             if (awardArray == null || awardArray.length() == 0) {
-                Log.sesame(TAG, "信用2101🎮[小游戏奖励信息获取失败] resp=$ev")
+                Log.sesame("信用2101🎮[小游戏奖励信息获取失败] resp=$ev")
                 return
             }
 
             val award = awardArray.optJSONObject(0)
             if (award == null) {
-                Log.sesame(TAG, "信用2101🎮[小游戏奖励信息第一个元素为空] resp=$ev")
+                Log.sesame("信用2101🎮[小游戏奖励信息第一个元素为空] resp=$ev")
                 return
             }
 
@@ -1262,12 +1247,12 @@ object Credit2101 {
             val startResp = Credit2101RpcCall.eventGameStart(batchNo, eventId, stageId)
             val sJo = JSONObject(startResp)
             if (sJo.optString("resultCode") == "ENERGY_STAMINA_IS_ZERO") {
-                Log.sesame(TAG, "信用2101💤 能量已耗尽，无法完成游戏YJ")
+                Log.sesame("信用2101💤 能量已耗尽，无法完成游戏YJ")
                 return
             }
 
             if (!ResChecker.checkRes(TAG, sJo)) {
-                Log.sesame(TAG, "信用2101🎮[小游戏开始失败] type=COLLECTYJ resp=$startResp")
+                Log.sesame("信用2101🎮[小游戏开始失败] type=COLLECTYJ resp=$startResp")
                 return
             }
 
@@ -1294,11 +1279,11 @@ object Credit2101 {
             )
             val cJo = JSONObject(completeResp)
             if (cJo.optString("resultCode") == "ENERGY_STAMINA_IS_ZERO") {
-                Log.sesame(TAG, "信用2101💤 能量已耗尽，无法完成游戏YJ")
+                Log.sesame("信用2101💤 能量已耗尽，无法完成游戏YJ")
                 return
             }
             if (!ResChecker.checkRes(TAG, cJo)) {
-                Log.sesame(TAG, "信用2101🎮[小游戏完成接口返回为空] batchNo=$batchNo eventId=$eventId stageId=$stageId extParams=$extParams")
+                Log.sesame("信用2101🎮[小游戏完成接口返回为空] batchNo=$batchNo eventId=$eventId stageId=$stageId extParams=$extParams")
                 return
             }
 
@@ -1365,7 +1350,7 @@ object Credit2101 {
             val sJo = JSONObject(startResp)
 
             if (sJo.optString("resultCode") == "ENERGY_STAMINA_IS_ZERO") {
-                Log.sesame(TAG, "信用2101💤 能量已耗尽，无法完成游戏M3")
+                Log.sesame("信用2101💤 能量已耗尽，无法完成游戏M3")
                 return
             }
 
@@ -1410,7 +1395,7 @@ object Credit2101 {
             )
             val cJo = JSONObject(completeResp)
             if (cJo.optString("resultCode") == "ENERGY_STAMINA_IS_ZERO") {
-                Log.sesame(TAG, "信用2101💤 能量已耗尽，无法完成游戏M3")
+                Log.sesame("信用2101💤 能量已耗尽，无法完成游戏M3")
                 return
             }
 
@@ -1461,7 +1446,7 @@ object Credit2101 {
 
             // ① 能量不足
             if (jo.optString("resultCode") == "ENERGY_STAMINA_IS_ZERO") {
-                Log.sesame(TAG, "信用2101💤 能量已耗尽，停止领取")
+                Log.sesame("信用2101💤 能量已耗尽，停止领取")
                 return
             }
             if (!ResChecker.checkRes(TAG, jo)) {
@@ -1476,30 +1461,22 @@ object Credit2101 {
             // 成功日志细分
             when {
                 obtained > 0 && gainBox -> {
-                    Log.sesame(
-                        TAG,
-                        "信用2101💰[信用印记] 获得 $obtained 颗信用值 + 🎁 印记宝箱"
+                    Log.sesame("信用2101💰[信用印记] 获得 $obtained 颗信用值 + 🎁 印记宝箱"
                     )
                 }
 
                 obtained > 0 -> {
-                    Log.sesame(
-                        TAG,
-                        "信用2101💰[信用印记] 获得 $obtained 颗信用值"
+                    Log.sesame("信用2101💰[信用印记] 获得 $obtained 颗信用值"
                     )
                 }
 
                 gainBox -> {
-                    Log.sesame(
-                        TAG,
-                        "信用2101💰[信用印记] 🎁 获得印记宝箱"
+                    Log.sesame("信用2101💰[信用印记] 🎁 获得印记宝箱"
                     )
                 }
 
                 else -> {
-                    Log.sesame(
-                        TAG,
-                        "信用2101💰[信用印记领取成功]"
+                    Log.sesame("信用2101💰[信用印记领取成功]"
                     )
                 }
             }
@@ -1522,7 +1499,7 @@ object Credit2101 {
             val queryResp = Credit2101RpcCall.queryEventGate(batchNo, eventId, cityCode, latitude, longitude)
 
             if (!ResChecker.checkRes(TAG, queryResp)) {
-                Log.sesame(TAG, "信用2101📖[故事事件查询失败] resp=$queryResp")
+                Log.sesame("信用2101📖[故事事件查询失败] resp=$queryResp")
                 return
             }
             JSONObject(queryResp)
@@ -1531,7 +1508,7 @@ object Credit2101 {
             //1001043 是沈万三
             //4001018 是郑和
 
-            Log.sesame(TAG, "信用2101📖[故事事件] 开始批量提交")
+            Log.sesame("信用2101📖[故事事件] 开始批量提交")
 
             // 批量完成故事事件
             val results = mutableListOf<String>()
@@ -1542,7 +1519,7 @@ object Credit2101 {
                 // 检查是否已经处理过这个storyId
                 val isProcessed = DataStore.get(dataKey, Boolean::class.java) ?: false
                 if (isProcessed) {
-                    Log.sesame(TAG, "信用2101📖[故事事件${storyId}] 已处理过，跳过")
+                    Log.sesame("信用2101📖[故事事件${storyId}] 已处理过，跳过")
                     continue
                 }
                 try {
@@ -1556,26 +1533,26 @@ object Credit2101 {
                         if (resultJson.optString("resultMsg", "").contains("资产流水重复处理")) {
                             // 标记为已处理（遇到重复错误说明已经处理过了）
                             DataStore.put(dataKey, true)
-                            Log.sesame(TAG, "信用2101📖[故事事件${storyId}] 检测到重复处理，标记为已处理")
+                            Log.sesame("信用2101📖[故事事件${storyId}] 检测到重复处理，标记为已处理")
                             break
                         } else if (ResChecker.checkRes(TAG, result)) {
                             // 处理成功，标记为已处理
                             DataStore.put(dataKey, true)
-                            Log.sesame(TAG, "信用2101📖[故事事件${storyId}] 处理成功，标记为已处理")
+                            Log.sesame("信用2101📖[故事事件${storyId}] 处理成功，标记为已处理")
                         } else {
-                            Log.sesame(TAG, "信用2101📖[故事事件${storyId}] 处理失败: $resultCode")
+                            Log.sesame("信用2101📖[故事事件${storyId}] 处理失败: $resultCode")
                         }
                     } catch (_: Exception) {
                         // JSON解析失败，但也要标记避免重复尝试
                         DataStore.put(dataKey, true)
-                        Log.sesame(TAG, "信用2101📖[故事事件${storyId}] JSON解析失败，标记为已处理避免重试")
+                        Log.sesame("信用2101📖[故事事件${storyId}] JSON解析失败，标记为已处理避免重试")
                     }
 
                 } catch (e: Exception) {
                     // 单个storyId处理失败，也要标记避免重复尝试
                     DataStore.put(dataKey, true)
                     results.add("""{"success":false,"resultMsg":"处理异常: ${e.message}"}""")
-                    Log.sesame(TAG, "信用2101📖[故事事件${storyId}] 处理异常，标记为已处理: ${e.message}")
+                    Log.sesame("信用2101📖[故事事件${storyId}] 处理异常，标记为已处理: ${e.message}")
                 }
                 // 添加适当延迟避免请求过于频繁
                 GlobalThreadPools.sleepCompat(800) // 增加延迟到800ms
@@ -1595,7 +1572,7 @@ object Credit2101 {
                     val respJson = JSONObject(completeResp)
                     if (!ResChecker.checkRes(TAG, completeResp)) {
                         otherErrorCount++
-                        Log.sesame(TAG, "信用2101📖[故事事件${index + 1}完成失败] storyId=$currentStoryId resp=$completeResp")
+                        Log.sesame("信用2101📖[故事事件${index + 1}完成失败] storyId=$currentStoryId resp=$completeResp")
                         continue
                     }
                     val gainBuff = respJson.optJSONObject("gainBuffVO")
@@ -1619,12 +1596,12 @@ object Credit2101 {
 
                 } catch (e: Exception) {
                     otherErrorCount++
-                    Log.sesame(TAG, "信用2101📖[故事事件${index + 1}处理异常] storyId=$currentStoryId error=${e.message}")
+                    Log.sesame("信用2101📖[故事事件${index + 1}处理异常] storyId=$currentStoryId error=${e.message}")
                 }
             }
             // 汇总统计
             val processedCount = successCount + repeatErrorCount + otherErrorCount
-            Log.sesame(TAG, "信用2101📖[故事事件批量完成统计] 成功:$successCount 重复错误:$repeatErrorCount 其他错误:$otherErrorCount 已处理:$processedCount/${STORY_IDS.size}")
+            Log.sesame("信用2101📖[故事事件批量完成统计] 成功:$successCount 重复错误:$repeatErrorCount 其他错误:$otherErrorCount 已处理:$processedCount/${STORY_IDS.size}")
 
             if (successCount > 0) {
                 Log.sesame("信用2101📖[故事事件总增益:+$totalGainAmount")
@@ -1681,18 +1658,18 @@ object Credit2101 {
             if (!hasSelf) {
                 // 2.1 检查前置条件
                 if (userCount >= maxUsers) {
-                    Log.sesame(TAG, "信用2101⚫[黑色印记] 占位已满($userCount/$maxUsers)")
+                    Log.sesame("信用2101⚫[黑色印记] 占位已满($userCount/$maxUsers)")
                     return EventResult.Skipped
                 }
                 if (currentEnergy < joinCost) {
-                    Log.sesame(TAG, "信用2101⚫[黑色印记] 加入需要能量$joinCost, 当前不足")
+                    Log.sesame("信用2101⚫[黑色印记] 加入需要能量$joinCost, 当前不足")
                     return EventResult.Skipped
                 }
 
                 // 2.2 执行加入
                 val joinResp = Credit2101RpcCall.joinBlackMarkEvent(joinCost, eventId)
                 if (!ResChecker.checkRes(TAG, joinResp)) {
-                    Log.sesame(TAG, "信用2101⚫[加入失败] 可能已被填满或过期")
+                    Log.sesame("信用2101⚫[加入失败] 可能已被填满或过期")
                     return EventResult.Skipped
                 }
 
@@ -1725,7 +1702,7 @@ object Credit2101 {
             val remainNeed = total - curr
 
             if (remainNeed <= 0) {
-                Log.sesame(TAG, "信用2101⚫[黑色印记] 能量已满 $curr/$total")
+                Log.sesame("信用2101⚫[黑色印记] 能量已满 $curr/$total")
                 return if (usedEnergy > 0) EventResult.Success(usedEnergy) else EventResult.Skipped
             }
 
@@ -1741,7 +1718,7 @@ object Credit2101 {
                     return if (usedEnergy > 0) EventResult.Success(usedEnergy) else EventResult.Failed
                 }
             } else {
-                Log.sesame(TAG, "信用2101⚫[黑色印记] 剩余需求 $remainNeed, 能量不足")
+                Log.sesame("信用2101⚫[黑色印记] 剩余需求 $remainNeed, 能量不足")
                 // 同上，如果只加入了但不够充能，也算成功消耗了能量
                 return if (usedEnergy > 0) EventResult.Success(usedEnergy) else EventResult.Skipped
             }
@@ -1769,7 +1746,7 @@ object Credit2101 {
         val count = list?.length() ?: 0
 
         if (count <= 0) {
-            Log.sesame(TAG, "信用2101🔍[探测] 本次未发现新事件")
+            Log.sesame("信用2101🔍[探测] 本次未发现新事件")
             return false
         }
 
@@ -1864,7 +1841,7 @@ object Credit2101 {
 
             // 最终检查：只有所有章节都处于 CLAIMED 状态
             if (allFinished) {
-                Log.sesame(TAG, "信用2101🎨[图鉴] 检查完毕：所有图鉴奖励均已领取完毕")
+                Log.sesame("信用2101🎨[图鉴] 检查完毕：所有图鉴奖励均已领取完毕")
                 Status.setFlagToday(StatusFlags.FLAG_CREDIT2101_CHAPTER_TASK_DONE)
             }
 
@@ -1889,7 +1866,7 @@ object Credit2101 {
 
             var availablePoint = jo.optInt("availablePoint", 0)
             if (availablePoint <= 0) {
-                Log.sesame(TAG, "信用2101🎮[天赋] 检查完毕：无可用天赋点")
+                Log.sesame("信用2101🎮[天赋] 检查完毕：无可用天赋点")
                 return
             }
 
@@ -1905,7 +1882,7 @@ object Credit2101 {
             }
 
             if (upgradeableList.isEmpty()) {
-                Log.sesame(TAG, "信用2101🎮[天赋] 所有天赋已满级")
+                Log.sesame("信用2101🎮[天赋] 所有天赋已满级")
                 return
             }
 

@@ -52,6 +52,9 @@
         <activity
             android:name=".ui.WebSettingsActivity"
             android:exported="false" />
+        <activity
+            android:name=".ui.FriendCenterActivity"
+            android:exported="false" />
         <!-- RPC 调试 Activity -->
         <activity
             android:name=".ui.RpcDebugActivity"

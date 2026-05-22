@@ -35,14 +35,14 @@ class EcoProtection : ModelTask() {
     public override fun getFields(): ModelFields {
         val modelFields = ModelFields()
         modelFields.addField(
-            BooleanModelField("ancientTreeOnlyWeek", "仅星期一、三、五运行保护古树", false).withDesc(
-                "开启后仅在周一、周三、周五执行古树保护；关闭后在模块总开关开启且早上 8 点后每天都会尝试执行。"
+            BooleanModelField("ancientTreeOnlyWeek", "古树保护 | 仅周一三五", false).withDesc(
+                "开启后仅在周一、周三、周五执行古树保护；关闭后早上 8 点后每天都会尝试执行。"
             ).also { ancientTreeOnlyWeek = it }
         )
         modelFields.addField(
             SelectModelField(
                 "ancientTreeCityCodeList",
-                "古树区划代码列表",
+                "古树保护 | 城市区划",
                 LinkedHashSet<String?>()
             ) { AreaCode.getList() }.withDesc(
                 "选择需要自动保护古树的城市区划代码；只会处理列表中的城市，留空时不会执行古树保护。"
@@ -68,13 +68,13 @@ class EcoProtection : ModelTask() {
 
     override suspend fun runSuspend() {
         try {
-            Log.forest(TAG, "开始执行${getName() ?: ""}")
+            Log.forest("开始执行${getName() ?: ""}")
             val cityCodes = ancientTreeCityCodeList?.value?.filterNotNull()?.toMutableList() ?: mutableListOf()
             ancientTree(cityCodes)
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "start.run err:",t)
         } finally {
-            Log.forest(TAG, "结束执行${getName() ?: ""}")
+            Log.forest("结束执行${getName() ?: ""}")
         }
     }
 

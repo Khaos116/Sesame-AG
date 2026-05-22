@@ -15,7 +15,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -24,7 +23,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import io.github.aoguai.sesameag.model.Model
 import io.github.aoguai.sesameag.model.modelFieldExt.BooleanModelField
-import io.github.aoguai.sesameag.task.antForest.AntForest
 import io.github.aoguai.sesameag.task.customTasks.CustomTask
 import io.github.aoguai.sesameag.task.customTasks.ManualTaskModel
 import io.github.aoguai.sesameag.ui.screen.components.ManualTaskItem
@@ -37,26 +35,15 @@ fun ManualTaskScreen(
 ) {
     val tasks = CustomTask.entries.toTypedArray()
     // 从模型系统中读取实例（此时 getFields() 返回的字段已被 Config.load 挂载了正确的值）
-    val antForestModel = remember { Model.getModel(AntForest::class.java) }
     val manualTaskModel = remember { Model.getModel(ManualTaskModel::class.java) }
     val title = manualTaskModel?.getName() ?: "手动调度任务"
 
-    // 初始化打地鼠参数
-    val initialMode = remember(antForestModel) {
-        val mode = antForestModel?.whackMoleMode?.value ?: 1
-        if (mode == 0) 1 else mode
-    }
-    val initialGames = remember(antForestModel) {
-        (antForestModel?.whackMoleGames?.value ?: 5).toString()
-    }
     val initialExchangeEnergyRainCard = remember {
         Model.getModelConfigMap()[ManualTaskModel::class.java.simpleName]
             ?.getModelFieldExt<BooleanModelField>("exchangeEnergyRainCard")
             ?.value ?: false
     }
     // 子任务状态
-    var whackMoleMode by remember { mutableIntStateOf(initialMode) }
-    var whackMoleGames by remember { mutableStateOf(initialGames) }
     var specialFoodCount by remember { mutableStateOf("1") }
 
     // 道具使用状态
@@ -85,11 +72,6 @@ fun ManualTaskScreen(
         ) {
             items(tasks) { task ->
                 val params = when (task) {
-                    CustomTask.FOREST_WHACK_MOLE -> mapOf(
-                        "whackMoleMode" to whackMoleMode,
-                        "whackMoleGames" to (whackMoleGames.toIntOrNull() ?: 5)
-                    )
-
                     CustomTask.FOREST_ENERGY_RAIN -> mapOf(
                         "exchangeEnergyRainCard" to exchangeEnergyRainCard
                     )
@@ -110,11 +92,7 @@ fun ManualTaskScreen(
                 ManualTaskItem(
                     task = task,
                     onClick = { onTaskClick(task, params) },
-                    hasSettings = task == CustomTask.FOREST_WHACK_MOLE || task == CustomTask.FOREST_ENERGY_RAIN || task == CustomTask.FARM_SPECIAL_FOOD || task == CustomTask.FARM_USE_TOOL,
-                    whackMoleMode = whackMoleMode,
-                    onModeChange = { whackMoleMode = it },
-                    whackMoleGames = whackMoleGames,
-                    onGamesChange = { whackMoleGames = it },
+                    hasSettings = task == CustomTask.FOREST_ENERGY_RAIN || task == CustomTask.FARM_SPECIAL_FOOD || task == CustomTask.FARM_USE_TOOL,
                     specialFoodCount = specialFoodCount,
                     onSpecialFoodCountChange = { specialFoodCount = it },
                     selectedTool = selectedTool,

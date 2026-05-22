@@ -34,6 +34,6 @@ object General {
     const val MODULE_PACKAGE_NAME: String = "io.github.aoguai.sesameag"
     const val MODULE_PACKAGE_UI_ICON : String = "$MODULE_PACKAGE_NAME.ui.MainActivityAlias"
 
-    const val PROJECT_HOMEPAGE_URL: String = "https://github.com/aoguai/Sesame-AG"
+    const val PROJECT_HOMEPAGE_URL: String = "https://github.com/Sesame-AG/Sesame-AG"
 }
 

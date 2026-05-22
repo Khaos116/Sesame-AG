@@ -13,16 +13,20 @@ private val sesameCreditDefaultBlacklist = setOf(
     "去AQ提问",             // 需要下载APP
     "坚持看直播领福利",      // 需要淘宝直播
     "去淘金币逛一逛",        // 需要淘宝操作
+    "zml_zijie_toutiaozhuduan_sanfang", // 今日头条唤端任务，缺少稳定完成RPC闭环
+    "实时看热点",            // 今日头条唤端任务：promiseActivityExtCheck参数错误
+    "头条刷热点领现金",       // 同一template标题变体，避免领取后再次触发频控
     "坚持攒保障金",          // 参数错误：promiseActivityExtCheck
     "芝麻租赁下单得芝麻粒",   // 需要租赁操作
     "去玩小游戏",            // 参数错误：promiseActivityExtCheck
+    "玩小游戏30秒",          // 参数错误：promiseActivityExtCheck
     "浏览租赁商家小程序",     // 需要小程序操作
     "订阅小组件",            // 参数错误：promiseActivityExtCheck
     "订阅芝麻粒签到提醒",     // 模板失效：PROMISE_TEMPLATE_NOT_EXIST
     "租1笔图书",             // 参数错误：promiseActivityExtCheck
     "去订阅芝麻小组件",       // 参数错误：promiseActivityExtCheck
     "坚持攒保障",            // 参数错误：promiseActivityExtCheck（与"坚持攒保障金"类似，防止匹配遗漏）
-    "逛租赁会场",            // 操作太频繁：OP_REPEAT_CHECK
+    "逛逛淘金币",            // 参数错误：promiseActivityExtCheck
     "去花呗翻卡",            // 操作太频繁：OP_REPEAT_CHECK
     "逛网商福利",            // 操作太频繁：OP_REPEAT_CHECK
     "领视频红包",            // 操作太频繁：OP_REPEAT_CHECK
@@ -44,6 +48,7 @@ private val sesameCreditDefaultBlacklist = setOf(
     "逛网商领福利金",         // 存在进行中的生活记录：PROMISE_HAS_PROCESSING_TEMPLATE
     "去浏览租赁大促会场",      // 存在进行中的生活记录：PROMISE_HAS_PROCESSING_TEMPLATE
     "逛一逛免费领点餐优惠",    // 存在进行中的生活记录：PROMISE_HAS_PROCESSING_TEMPLATE
+    "618去淘金币赢20亿",      // 存在进行中的生活记录：PROMISE_HAS_PROCESSING_TEMPLATE
     "领取任务将芝麻信用添加到首页", // 服务端模板不存在：PROMISE_TEMPLATE_NOT_EXIST
     "领取任务去开通信用额度"    // 服务端模板不存在：PROMISE_TEMPLATE_NOT_EXIST
 )
@@ -60,6 +65,7 @@ private val sesameAlchemyDefaultBlacklist = setOf(
     "芝麻大表鸽",
     "坚持签到",
     "玩游戏完成10个订单",
+    "玩任意游戏30秒",       // 缺少 promiseActivityExtCheck 闭环：ILLEGAL_ARGUMENT
     "坚持去玩休闲小游戏",   // 参数错误：ILLEGAL_ARGUMENT
     "租游戏账号得芝麻粒"    // 参数错误：ILLEGAL_ARGUMENT
 )
@@ -82,6 +88,7 @@ private val orchardDefaultBlacklist = setOf(
     "ORCHARD_NORMAL_NCLY_GLY",          // 新春限时试玩福利
     "ORCHARD_NCLY_GAME_TASK",           // 试玩农场乐园火爆新游
     "ncflzhrw51",                       // 去游戏中心抢金条：不支持rpc调用
+    "babafarm_cjmk_xdujdd15",           // 去游戏中心玩游戏：不支持rpc调用
     "LINGHUOTIAOKONG",                  // 逛一逛新浪微博
     "ORCHARD_NORMAL_XIANYU_DUAN",       // 逛一逛闲鱼
     "ORCHARD_NORMAL_WAIMAIMIANDAN",     // 逛一逛闪购外卖
@@ -192,12 +199,43 @@ private val forestDefaultBlacklist = setOf(
     "SYH_51HLZ_zhuanhua202604", // 【抢金条】完成游戏任务：不支持rpc调用
     "SYH_51HLZ_shichang202604", // 玩任意游戏30s：不支持rpc调用
     "FKSSJ_QDRW_HUOLI",    // 水世界捡海面物资1次：不支持rpc调用
+    "FKSSJ_LJRW_HUOLI",    // 水世界捡海面物资5次：不支持rpc调用
+    "FKSSJ_LJRWdiaoyu_HUOLI", // 水世界手动钓鱼成功10次：不支持rpc调用
+    "YBLB_TASK_QUDONG",    // 玩一步两步通关1次：不支持rpc调用
     "玩游戏得",             // 森林抽抽乐游戏类任务暂无稳定RPC闭环
     "开宝箱",               // 森林抽抽乐宝箱类任务不在本流程处理
     "疯狂水世界",           // 森林抽抽乐游戏类任务暂无稳定RPC闭环
     "玩任意游戏",           // 森林抽抽乐游戏类任务暂无稳定RPC闭环
     "抢金条",               // 森林抽抽乐游戏类任务暂无稳定RPC闭环
     "去会员抢演唱会门票"     // 活动已完结
+)
+
+private val fishPondDefaultBlacklist = setOf(
+    // 福气鱼池：游戏、订阅、分享、翻倍广告等任务缺少稳定自动完成闭环
+    "FISHPOND_NCLY_GAME",
+    "FISHPOND_NCLY_GAME_BWXRK_30S",
+    "FISHPOND_NCLY_GAME_SGBHSD_30S",
+    "FISHPOND_NCLY_GAME_NCDDP_PLAY1",
+    "FISHPOND_NCLY_GAME_CGNNC_PLAY1",
+    "FISHPOND_NCLY_GAME_MSQYJ_PLAY",
+    "NORMAL_RENMENYOUXI",
+    "TASK_SUBSCRIBE",
+    "ANTFISHPOND_WECHAT_SHARE",
+    "LOTTERY_PLUS",
+    "RESCUE_AD",
+    "RESULT_DOUBLE_AD",
+    "FLOAT_GAME_AD",
+    "玩保卫向日葵30s",
+    "玩三国冰河时代30s",
+    "农场对对碰匹配5组",
+    "闯关挪挪车通过1关",
+    "美食奇遇记合成10次",
+    "开启领钓竿提醒",
+    "去玩热门小游戏",
+    "送福袋 我也得福袋",
+    "钓鱼结果页翻倍",
+    "补救广告",
+    "浮球游戏广告"
 )
 
 private val yuebaoDefaultBlacklist = setOf(
@@ -244,13 +282,18 @@ private val memberDefaultBlacklist = setOf(
     "逛一逛抖音极速版",
     "玩向西冲冲冲升5级",
     "去设计签名",
-    "个性签名"
+    "个性签名",
+    "会员浮球广告浏览任务" // 浮球后续广告缺少稳定 adBizId/configId 闭环
 )
+
+private val insuredDefaultBlacklist = emptySet<String>()
 
 private val sportsDefaultBlacklist = setOf(
     // 运动
     "去设计签名",
     "签名设计",
+    "真人手写！定制签名",
+    "高端手写・专属签名",
     "个性签名",
     "玩游戏"
 )
@@ -265,6 +308,8 @@ val DEFAULT_BLACKLIST: Map<String, Set<String>> = mapOf(
     "余额宝" to yuebaoDefaultBlacklist,
     "黄金票" to goldTicketDefaultBlacklist,
     "支付宝会员" to memberDefaultBlacklist,
+    "蚂蚁保" to insuredDefaultBlacklist,
     "运动" to sportsDefaultBlacklist,
-    "神奇物种" to dodoDefaultBlacklist
+    "神奇物种" to dodoDefaultBlacklist,
+    "福气鱼池" to fishPondDefaultBlacklist
 )

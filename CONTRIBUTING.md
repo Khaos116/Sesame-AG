@@ -21,14 +21,43 @@
 
 ---
 
-## 欢迎的贡献类型
+## 可编译环境
 
-以下方向通常更适合当前仓库：
+请优先对齐当前维护环境和 GitHub Actions 中的构建基线，不要自行升级 Gradle、AGP、Kotlin 或 Android SDK 版本。除非你有能力解决编译失败问题。
 
-- 可复现 Bug 的修复与回归说明。
-- 文档完善、注释澄清、结构整理与低风险重构。
-- 调试工具、日志工具、构建流程、模块元数据的改进。
-- 与现有任务模块、Hook 入口、配置模型一致的小步增量改进。
+当前可编译基线：
+
+- CI 环境：`ubuntu-latest`。
+- JDK：Oracle JDK `17.0.1` x64
+- Android SDK：`platform-tools`、`platforms;android-36`、`build-tools;36.0.0`。
+- Gradle： `9.4.0-milestone-3`。
+- Android Gradle Plugin：`9.0.1`。
+- Kotlin：`2.2.10`。
+- 编译配置：`compileSdk = 36`，`targetSdk = 36`，`minSdk = 29`，Java/Kotlin 目标版本均为 17。
+
+Windows 本地 debug 构建命令：
+
+```powershell
+.\gradlew.bat --no-daemon --stacktrace :app:assembleDebug
+```
+
+如需尽量复现 GitHub Actions 的 release 构建路径，可在 PowerShell 中显式开启 `CI` 环境变量后构建：
+
+```powershell
+$env:CI = "true"
+.\gradlew.bat --no-daemon --stacktrace :app:assembleRelease
+```
+
+---
+
+## 🌟 欢迎的贡献类型
+
+我们非常欢迎各种形式的贡献，包括但不限于：
+
+- **代码贡献**：修复 Bug、优化性能、实现新功能或改进现有逻辑。
+- **RPC 分享**：在 [Discussions](https://github.com/Sesame-AG/Sesame-AG/discussions/categories/rpc-%E5%88%86%E4%BA%AB) 分享你发现的实用 RPC 配置。
+- **经验分享**：在讨论区分享你的调试技巧、环境配置经验或使用心得。
+- **社区维护**：帮助回答其他用户的问题，参与讨论，共同维护积极健康的社区氛围。
 
 ---
 

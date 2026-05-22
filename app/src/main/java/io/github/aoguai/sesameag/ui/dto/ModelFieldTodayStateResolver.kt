@@ -4,6 +4,7 @@ import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.StatusFlags
 import io.github.aoguai.sesameag.model.ModelField
 import io.github.aoguai.sesameag.model.ModelFields
+import io.github.aoguai.sesameag.model.modelFieldExt.FriendSelectionCountModelField
 
 /**
  * 配置项在“今日状态”维度上的展示结果。
@@ -58,9 +59,10 @@ object ModelFieldTodayStateResolver {
             "AntForest.pkEnergy" ->
                 flag(StatusFlags.FLAG_ANTFOREST_PK_SKIP_TODAY, "今日 PK 榜无需处理")
 
+            "AntForest.energyPvpChallenge" ->
+                flag(StatusFlags.FLAG_ANTFOREST_ENERGY_PVP_CHALLENGE_DONE, "今日 1V1 能量挑战赛已处理")
+
             "AntForest.whackMoleMode",
-            "AntForest.whackMoleGames",
-            "AntForest.whackMoleMoleCount",
             "AntForest.whackMoleTime" ->
                 whackMoleState(modelFields)
 
@@ -77,6 +79,16 @@ object ModelFieldTodayStateResolver {
             "AntForest.vitalityExchange",
             "AntForest.vitalityExchangeList" ->
                 vitalityExchangeState(modelFields)
+
+            "AntForest.forestChouChouLe" ->
+                allFlags(
+                    StatusFlags.FLAG_ANTFOREST_CHOUCHOULE_NORMAL_COMPLETED,
+                    StatusFlags.FLAG_ANTFOREST_CHOUCHOULE_ACTIVITY_COMPLETED,
+                    reason = "今日森林寻宝任务已处理"
+                )
+
+            "AntForest.userPatrol" ->
+                flag(StatusFlags.FLAG_ANTFOREST_PATROL_CHANCE_EXCHANGE_LIMIT, "今日保护地巡护机会兑换已达上限")
 
             "AntMember.memberSign" ->
                 flag(StatusFlags.FLAG_ANTMEMBER_MEMBER_SIGN_DONE, "今日会员签到已处理")
@@ -102,20 +114,29 @@ object ModelFieldTodayStateResolver {
                     "今日会员积分兑换权益已处理"
                 )
 
-            "AntMember.sesameTask" ->
-                flag(StatusFlags.FLAG_ANTMEMBER_DO_ALL_SESAME_TASK, "今日芝麻信用任务已处理")
+            "AntMember.enableGameCenter" ->
+                flag(StatusFlags.FLAG_ANTMEMBER_GAME_CENTER_DONE, "今日游戏中心已处理")
 
-            "AntMember.collectSesame",
-            "AntMember.collectSesameWithOneClick" ->
-                flag(StatusFlags.FLAG_ANTMEMBER_COLLECT_SESAME_DONE, "今日芝麻奖励已领取")
+            "AntMember.beanSignIn" ->
+                flag(StatusFlags.FLAG_ANTMEMBER_BEAN_SIGN_DONE, "今日安心豆签到已处理")
 
-            "AntMember.sesameGrainExchange" ->
-                flag(StatusFlags.FLAG_ZMXY_GRAIN_EXCHANGE_DONE, "今日芝麻粒兑换已处理")
+            "AntMember.collectInsuredGold" ->
+                flag(StatusFlags.FLAG_ANTMEMBER_INSURED_GOLD_DONE, "今日蚂蚁保保障金已处理")
 
-            "AntMember.sesameGrainExchangeList" ->
+            "AntSesameCredit.sesameTask" ->
+                flag(StatusFlags.FLAG_SESAME_DO_ALL_AVAILABLE_TASK, "今日芝麻信用任务已处理")
+
+            "AntSesameCredit.collectSesame",
+            "AntSesameCredit.collectSesameWithOneClick" ->
+                flag(StatusFlags.FLAG_SESAME_COLLECT_DONE, "今日芝麻奖励已领取")
+
+            "AntSesameCredit.sesameGrainExchange" ->
+                flag(StatusFlags.FLAG_SESAME_GRAIN_EXCHANGE_DONE, "今日芝麻粒兑换已处理")
+
+            "AntSesameCredit.sesameGrainExchangeList" ->
                 selectedSetFlagState(
                     modelField,
-                    StatusFlags.FLAG_ZMXY_GRAIN_EXCHANGE_DONE,
+                    StatusFlags.FLAG_SESAME_GRAIN_EXCHANGE_DONE,
                     "今日芝麻粒兑换已处理"
                 )
 
@@ -161,6 +182,10 @@ object ModelFieldTodayStateResolver {
             "AntSports.neverlandGridStepCount" ->
                 neverlandGridState(modelFields)
 
+            "AntSports.neverlandAutoReward",
+            "AntSports.neverlandPreferMedal" ->
+                neverlandRewardState()
+
             "AntCooperate.teamCooperateWaterNum" ->
                 limitReached(
                     current = Status.getIntFlagToday(StatusFlags.FLAG_TEAM_WATER_DAILY_COUNT),
@@ -193,6 +218,19 @@ object ModelFieldTodayStateResolver {
                     reason = "今日摇钱树施肥已达上限"
                 )
 
+            "AntFishPond.fishPondTask" ->
+                allFlags(
+                    StatusFlags.FLAG_ANTFISHPOND_SIGN_DONE,
+                    StatusFlags.FLAG_ANTFISHPOND_GIFT_BOX_DONE,
+                    StatusFlags.FLAG_ANTFISHPOND_TOMORROW_ROD_DONE,
+                    StatusFlags.FLAG_ANTFISHPOND_TASKS_DONE,
+                    reason = "今日鱼池任务奖励已处理"
+                )
+
+            "AntFishPond.autoFish",
+            "AntFishPond.fishDailyLimit" ->
+                fishPondAutoFishState(modelFields)
+
             "AntStall.stallThrowManure" ->
                 flag(StatusFlags.FLAG_ANTSTALL_THROW_MANURE_LIMIT, "今日丢肥料已达上限")
 
@@ -213,7 +251,7 @@ object ModelFieldTodayStateResolver {
                 flag(StatusFlags.FLAG_FARM_GAME_FINISHED, "今日小游戏改分已处理")
 
             "AntFarm.feedFriendAnimalList" ->
-                if (mapValue(modelField)?.isNotEmpty() == true) {
+                if (friendCountSelectionConfigured(modelField)) {
                     flag(StatusFlags.FLAG_FARM_FEED_FRIEND_LIMIT, "今日帮喂次数已达上限")
                 } else {
                     ModelFieldTodayState()
@@ -231,6 +269,10 @@ object ModelFieldTodayStateResolver {
             "AntFarm.useSpecialFood",
             "AntFarm.useSpecialFoodCount" ->
                 specialFoodLimitState(modelFields)
+
+            "AntFarm.donationCompetitionTrySpecialFood",
+            "AntFarm.donationCompetitionSpecialFoodCount" ->
+                donationCompetitionSpecialFoodLimitState(modelFields)
 
             "AntFarm.signRegardless" ->
                 flag(StatusFlags.FLAG_FARM_SIGNED, "今日庄园签到已处理")
@@ -262,8 +304,16 @@ object ModelFieldTodayStateResolver {
         return limitReached(
             current = Status.getIntFlagToday(StatusFlags.FLAG_NEVERLAND_STEP_COUNT),
             limit = intValue(modelFields["neverlandGridStepCount"]),
-            reason = "今日健康岛走路次数已达上限"
+            reason = "今日健康岛建造次数已达上限"
         )
+    }
+
+    private fun neverlandRewardState(): ModelFieldTodayState {
+        return if (hasFlagTodayWithPrefix(StatusFlags.FLAG_NEVERLAND_REWARD_UNAVAILABLE_PREFIX)) {
+            inactive("今日健康岛奖励已明确不可领取")
+        } else {
+            ModelFieldTodayState()
+        }
     }
 
     private fun specialFoodLimitState(modelFields: ModelFields): ModelFieldTodayState {
@@ -275,6 +325,33 @@ object ModelFieldTodayStateResolver {
             limit = intValue(modelFields["useSpecialFoodCount"]),
             reason = "今日特殊食品使用已达上限"
         )
+    }
+
+    private fun donationCompetitionSpecialFoodLimitState(modelFields: ModelFields): ModelFieldTodayState {
+        if (Status.hasFlagToday(StatusFlags.FLAG_FARM_SPECIAL_FOOD_DONATION_COMPETITION_LIMIT)) {
+            return inactive("今日排位赛特殊食品使用已达上限")
+        }
+        return limitReached(
+            current = Status.getIntFlagToday(StatusFlags.FLAG_FARM_SPECIAL_FOOD_DONATION_COMPETITION_DAILY_COUNT),
+            limit = intValue(modelFields["donationCompetitionSpecialFoodCount"]),
+            reason = "今日排位赛特殊食品使用已达上限"
+        )
+    }
+
+    private fun fishPondAutoFishState(modelFields: ModelFields): ModelFieldTodayState {
+        return when {
+            Status.hasFlagToday(StatusFlags.FLAG_ANTFISHPOND_EXCHANGE_REACHED) ->
+                inactive("福气鱼池已达到兑换条件，等待补抓兑换 RPC")
+
+            Status.hasFlagToday(StatusFlags.FLAG_ANTFISHPOND_RISK_TOKEN_MISSING) ->
+                inactive("缺少 fishpondAngle riskToken，今日已跳过自动钓鱼")
+
+            else -> limitReached(
+                current = Status.getIntFlagToday(StatusFlags.FLAG_ANTFISHPOND_FISH_COUNT),
+                limit = intValue(modelFields["fishDailyLimit"]),
+                reason = "今日自动钓鱼已达每日上限"
+            )
+        }
     }
 
     private fun paradiseCoinExchangeState(modelFields: ModelFields): ModelFieldTodayState {
@@ -337,6 +414,13 @@ object ModelFieldTodayStateResolver {
         return StatusFlags.FLAG_CREDIT2101_EVENT_COUNT_PREFIX +
             eventType +
             StatusFlags.FLAG_CREDIT2101_EVENT_COUNT_SUFFIX
+    }
+
+    private fun hasFlagTodayWithPrefix(flagPrefix: String): Boolean {
+        val index = flagPrefix.indexOf("::")
+        val module = if (index > 0) flagPrefix.substring(0, index) else "general"
+        val namePrefix = if (index > 0) flagPrefix.substring(index + 2) else flagPrefix
+        return Status.INSTANCE.moduleFlags[module]?.keys?.any { it.startsWith(namePrefix) } == true
     }
 
     private fun whackMoleState(modelFields: ModelFields): ModelFieldTodayState {
@@ -428,6 +512,11 @@ object ModelFieldTodayStateResolver {
             }
             ?.toMap()
             ?: emptyMap()
+    }
+
+    private fun friendCountSelectionConfigured(modelField: ModelField<*>?): Boolean {
+        val field = modelField as? FriendSelectionCountModelField ?: return mapValue(modelField)?.isNotEmpty() == true
+        return field.resolvedCountMap().isNotEmpty()
     }
 
     private fun stringSetValue(modelField: ModelField<*>?): Set<String> {

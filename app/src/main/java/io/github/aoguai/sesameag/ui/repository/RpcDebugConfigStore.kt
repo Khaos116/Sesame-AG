@@ -1,15 +1,11 @@
 package io.github.aoguai.sesameag.ui.repository
 
-import android.app.Application
-import android.content.Context
 import com.fasterxml.jackson.core.type.TypeReference
 import com.fasterxml.jackson.databind.MapperFeature
 import com.fasterxml.jackson.databind.json.JsonMapper
-import io.github.aoguai.sesameag.SesameApplication.Companion.PREFERENCES_KEY
 import io.github.aoguai.sesameag.entity.RpcDebugEntity
 import io.github.aoguai.sesameag.util.Files
 import io.github.aoguai.sesameag.util.Log
-import io.github.aoguai.sesameag.util.SesameAgUtil
 import java.io.File
 import java.security.MessageDigest
 
@@ -18,9 +14,8 @@ internal data class RpcDebugLoadResult(
     val hasConfigSource: Boolean
 )
 
-internal class RpcDebugConfigStore(application: Application) {
+internal class RpcDebugConfigStore {
 
-    private val prefs = application.getSharedPreferences(PREFERENCES_KEY, Context.MODE_PRIVATE)
     private val configFile = File(Files.MAIN_DIR, ROOT_CONFIG_FILE_NAME)
     private val objectMapper = JsonMapper.builder()
         .enable(MapperFeature.ACCEPT_CASE_INSENSITIVE_PROPERTIES)
@@ -28,14 +23,7 @@ internal class RpcDebugConfigStore(application: Application) {
 
     fun loadItems(): RpcDebugLoadResult {
         return try {
-            loadFromRootConfig()?.let { return it }
-            loadFromLegacyPrefs()?.let { items ->
-                saveItems(items)
-                RpcDebugLoadResult(items, true)
-            } ?: migrateFromUserConfigFiles()?.let { items ->
-                saveItems(items)
-                RpcDebugLoadResult(items, true)
-            } ?: RpcDebugLoadResult(emptyList(), false)
+            loadFromRootConfig() ?: RpcDebugLoadResult(emptyList(), false)
         } catch (e: Exception) {
             Log.e(TAG, "Load failed", e)
             RpcDebugLoadResult(emptyList(), false)
@@ -53,16 +41,20 @@ internal class RpcDebugConfigStore(application: Application) {
     }
 
     fun normalizeItems(items: List<RpcDebugEntity>): List<RpcDebugEntity> {
-        return items.map(::normalizeItem)
+        return items
+            .filter { it.method.isNotBlank() }
+            .map(::normalizeItem)
     }
 
     fun normalizeItem(item: RpcDebugEntity): RpcDebugEntity {
-        val normalizedId = item.id.ifBlank { stableId(item.method, item.requestData) }
-        val normalizedName = item.name.ifBlank { item.method }
+        val normalizedMethod = item.method.trim()
+        val normalizedId = stableId(normalizedMethod, item.requestData)
+        val normalizedName = item.name.ifBlank { normalizedMethod }
         val normalizedDailyCount = if (item.scheduleEnabled) item.dailyCount.coerceAtLeast(0) else 0
         return item.copy(
             id = normalizedId,
             name = normalizedName,
+            method = normalizedMethod,
             dailyCount = normalizedDailyCount
         )
     }
@@ -96,100 +88,22 @@ internal class RpcDebugConfigStore(application: Application) {
             return RpcDebugLoadResult(emptyList(), true)
         }
 
-        return RpcDebugLoadResult(normalizeItems(parseRpcListCompat(text)), true)
-    }
-
-    private fun loadFromLegacyPrefs(): List<RpcDebugEntity>? {
-        val legacyText = prefs.getString(LEGACY_PREFS_KEY, null)?.trim().orEmpty()
-        if (legacyText.isBlank()) {
-            return null
-        }
-        val legacyList = objectMapper.readValue(legacyText, object : TypeReference<List<RpcDebugEntity>>() {})
-        return normalizeItems(legacyList)
-    }
-
-    private fun migrateFromUserConfigFiles(): List<RpcDebugEntity>? {
-        if (configFile.exists()) {
-            return null
+        if (!text.startsWith("[")) {
+            Log.e(TAG, "$ROOT_CONFIG_FILE_NAME 仅支持数组格式，已忽略旧格式内容")
+            return RpcDebugLoadResult(emptyList(), true)
         }
 
-        val uids = SesameAgUtil.getFolderList(Files.CONFIG_DIR.absolutePath)
-        if (uids.isEmpty()) {
-            return null
+        return try {
+            val items = objectMapper.readValue(text, object : TypeReference<List<RpcDebugEntity>>() {})
+            RpcDebugLoadResult(normalizeItems(items), true)
+        } catch (e: Exception) {
+            Log.e(TAG, "Parse $ROOT_CONFIG_FILE_NAME failed", e)
+            RpcDebugLoadResult(emptyList(), true)
         }
-
-        for (uid in uids) {
-            val userDir = File(Files.CONFIG_DIR, uid)
-            val text = readUserConfigText(userDir) ?: continue
-            try {
-                val parsedItems = parseRpcListCompat(text)
-                if (parsedItems.isNotEmpty()) {
-                    return normalizeItems(parsedItems)
-                }
-            } catch (e: Exception) {
-                Log.printStackTrace(TAG, "Failed to migrate rpc config from ${userDir.absolutePath}", e)
-            }
-        }
-
-        return null
-    }
-
-    private fun readUserConfigText(userDir: File): String? {
-        val candidates = arrayOf(
-            File(userDir, ROOT_CONFIG_FILE_NAME),
-            File(userDir, LEGACY_FILE_NAME)
-        )
-        return candidates.firstNotNullOfOrNull { file ->
-            if (!file.exists()) {
-                return@firstNotNullOfOrNull null
-            }
-            Files.readFromFile(file).trim().takeIf { it.isNotBlank() }
-        }
-    }
-
-    private fun parseRpcListCompat(text: String): List<RpcDebugEntity> {
-        val trimmed = text.trim()
-        if (trimmed.startsWith("[")) {
-            return objectMapper.readValue(trimmed, object : TypeReference<List<RpcDebugEntity>>() {})
-        }
-
-        if (trimmed.startsWith("{")) {
-            val map = objectMapper.readValue(trimmed, object : TypeReference<Map<String, Any?>>() {})
-            val result = ArrayList<RpcDebugEntity>()
-            for ((key, value) in map) {
-                val displayName = value?.toString()?.trim().orEmpty()
-                val keyObj = try {
-                    objectMapper.readValue(key, object : TypeReference<Map<String, Any?>>() {})
-                } catch (_: Exception) {
-                    null
-                } ?: continue
-
-                val method = (keyObj["methodName"] ?: keyObj["method"] ?: keyObj["Method"])?.toString()?.trim().orEmpty()
-                if (method.isBlank()) {
-                    continue
-                }
-
-                val requestData = keyObj["requestData"] ?: keyObj["RequestData"]
-                result.add(
-                    RpcDebugEntity(
-                        id = stableId(method, requestData),
-                        name = displayName.ifBlank { method },
-                        method = method,
-                        requestData = requestData,
-                        description = ""
-                    )
-                )
-            }
-            return result
-        }
-
-        return emptyList()
     }
 
     private companion object {
         private const val TAG = "RpcDebugConfigStore"
-        private const val LEGACY_PREFS_KEY = "rpc_debug_items"
         private const val ROOT_CONFIG_FILE_NAME = "rpcRequest.json"
-        private const val LEGACY_FILE_NAME = "rpcResquest.json"
     }
 }

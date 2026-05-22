@@ -3,6 +3,7 @@ package io.github.aoguai.sesameag.ui.screen.content
 import SettingsSwitchItem
 import android.content.Intent
 import android.os.Build
+import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
@@ -14,6 +15,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.outlined.Warning
+import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material.icons.rounded.BugReport
 import androidx.compose.material.icons.rounded.DeleteForever
 import androidx.compose.material.icons.rounded.Extension
@@ -32,12 +34,14 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.dp
 import io.github.aoguai.sesameag.data.General
 import io.github.aoguai.sesameag.entity.UserEntity
+import io.github.aoguai.sesameag.ui.FriendCenterActivity
 import io.github.aoguai.sesameag.ui.MainActivity
 import io.github.aoguai.sesameag.ui.ManualTaskActivity
 import io.github.aoguai.sesameag.ui.RpcDebugActivity
 import io.github.aoguai.sesameag.ui.compose.CommonAlertDialog
 import io.github.aoguai.sesameag.ui.screen.components.SettingsItem
 import io.github.aoguai.sesameag.ui.screen.components.UserItemCard
+import io.github.aoguai.sesameag.ui.screen.components.UserSelectionDialog
 
 
 @Composable
@@ -50,8 +54,21 @@ fun SettingsContent(
 ) {
     // 状态定义在最外层
     var showClearConfigDialog by remember { mutableStateOf(false) }
+    var showFriendCenterUserDialog by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
+
+    fun openFriendCenter(user: UserEntity) {
+        val selectedUserId = user.userId?.trim().orEmpty()
+        if (selectedUserId.isEmpty()) {
+            Toast.makeText(context, "账号 ID 为空，无法打开好友中心", Toast.LENGTH_SHORT).show()
+            return
+        }
+        context.startActivity(Intent(context, FriendCenterActivity::class.java).apply {
+            putExtra("userId", selectedUserId)
+            putExtra("userName", user.showName.ifBlank { user.account ?: selectedUserId })
+        })
+    }
 
     // 使用 Box 或 Column 包裹，或者直接平铺
     Box(modifier = Modifier.fillMaxSize()) {
@@ -99,6 +116,21 @@ fun SettingsContent(
                     title = "扩展功能",
                     icon = Icons.Rounded.Extension,
                     onClick = { onEvent(MainActivity.MainUiEvent.OpenExtend) }
+                )
+            }
+
+            item {
+                SettingsItem(
+                    title = "好友中心",
+                    subtitle = "查看好友、分组与全局黑名单",
+                    icon = Icons.Rounded.AccountCircle,
+                    onClick = {
+                        when (userList.size) {
+                            0 -> Toast.makeText(context, "暂无已载入账号", Toast.LENGTH_SHORT).show()
+                            1 -> openFriendCenter(userList.first())
+                            else -> showFriendCenterUserDialog = true
+                        }
+                    }
                 )
             }
 
@@ -184,6 +216,14 @@ fun SettingsContent(
                 iconTint = MaterialTheme.colorScheme.error,
                 confirmText = "确认清除",
                 confirmButtonColor = MaterialTheme.colorScheme.error
+            )
+        }
+
+        if (showFriendCenterUserDialog) {
+            UserSelectionDialog(
+                userList = userList,
+                onDismissRequest = { showFriendCenterUserDialog = false },
+                onUserSelected = { user -> openFriendCenter(user) }
             )
         }
     }

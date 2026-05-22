@@ -47,34 +47,34 @@ class AntCooperate : ModelTask() {
         return "AntCooperate.png"
     }
 
-    private val cooperateWater = BooleanModelField("cooperateWater", "合种浇水|开启", false).withDesc(
-        "按下面的合种列表自动浇水；未配置浇水克数的合种会跳过。"
+    private val cooperateWater = BooleanModelField("cooperateWater", "合种浇水 | 开启", false).withDesc(
+        "按“合种浇水 | 列表与单次克数”自动浇水；未配置浇水克数的合种会跳过。"
     )
     private val cooperateWaterList = SelectAndCountModelField(
         "cooperateWaterList",
-        "合种浇水列表",
+        "合种浇水 | 列表与单次克数",
         LinkedHashMap<String?, Int?>(),
         { getList() },
         "设置每个合种单次最多浇多少克；首次开启并执行一次后，返回设置页可刷新出合种列表。"
     )
     private val cooperateWaterTotalLimitList = SelectAndCountModelField(
         "cooperateWaterTotalLimitList",
-        "浇水总量限制列表",
+        "合种浇水 | 总量限制",
         LinkedHashMap<String?, Int?>(),
         { getList() },
         "限制每个合种的累计总浇水量；达到后即使当天还有额度也不再浇。"
     )
     private val cooperateSendCooperateBeckon =
-        BooleanModelField("cooperateSendCooperateBeckon", "合种 | 召唤队友浇水| 仅队长 ", false).withDesc(
-            "仅队长可用，18:00 后自动召唤还能浇水的队友；可单独开启，不依赖“合种浇水|开启”。"
+        BooleanModelField("cooperateSendCooperateBeckon", "合种 | 召唤队友浇水", false).withDesc(
+            "仅队长可用，18:00 后自动召唤还能浇水的队友；可单独开启，不依赖“合种浇水 | 开启”。"
         )
-    private val loveCooperateWater = BooleanModelField("loveCooperateWater", "真爱合种 | 浇水", false).withDesc(
+    private val loveCooperateWater = BooleanModelField("loveCooperateWater", "真爱合种 | 开启浇水", false).withDesc(
         "自动给真爱合种浇水一次。"
     )
-    private val loveCooperateWaterNum = IntegerModelField("loveCooperateWaterNum", "真爱合种 | 浇水克数(默认20g)", 20).withDesc(
-        "真爱合种每次浇水克数，需开启“真爱合种 | 浇水”。"
+    private val loveCooperateWaterNum = IntegerModelField("loveCooperateWaterNum", "真爱合种 | 单次浇水克数", 20).withDesc(
+        "真爱合种每次浇水克数，需开启“真爱合种 | 开启浇水”。"
     )
-    private val teamCooperateWaterNum = IntegerModelField("teamCooperateWaterNum", "组队合种 | 浇水克数(0为关闭，10-5000)", 0).withDesc(
+    private val teamCooperateWaterNum = IntegerModelField("teamCooperateWaterNum", "组队合种 | 每日浇水总量(0关闭)", 0, 0, 5000).withDesc(
         "组队合种每天目标浇水总量；填 0 关闭，实际会受官方剩余额度和当前能量限制。"
     )
     override fun getFields(): ModelFields {
@@ -96,7 +96,7 @@ class AntCooperate : ModelTask() {
      */
     override suspend fun runSuspend() {
         try {
-            Log.forest(TAG, "执行开始-${getName() ?: ""}")
+            Log.forest("执行开始-${getName() ?: ""}")
 
             // 1. 真爱合种
             if (loveCooperateWater.value == true) {
@@ -117,7 +117,7 @@ class AntCooperate : ModelTask() {
                     // 1. 获取当前能量，设为 var，因为浇水后本地需要扣减，否则下一个合种会误判能量充足
                     var userCurrentEnergy = queryUserCooperatePlantList.getInt("userCurrentEnergy")
                     val cooperatePlants = queryUserCooperatePlantList.getJSONArray("cooperatePlants")
-                    Log.forest(TAG, "获取合种列表成功: ${cooperatePlants.length()} 颗合种")
+                    Log.forest("获取合种列表成功: ${cooperatePlants.length()} 颗合种")
                     for (i in 0 until cooperatePlants.length()) {
                         var plant = cooperatePlants.getJSONObject(i)
                         val cooperationId = plant.getString("cooperationId")
@@ -152,14 +152,14 @@ class AntCooperate : ModelTask() {
                         val waterDayLimit = plant.getInt("waterDayLimit") // 今日剩余可浇水量
                         val waterLimit = plant.getJSONObject("cooperateTemplate").getInt("waterLimit") // 每日总上限
                         // val watered = waterLimit - waterDayLimit
-                        Log.forest(TAG, "获取合种[$name] 浇水信息: 剩余可浇 $waterDayLimit g / 总限制 $waterLimit g")
+                        Log.forest("获取合种[$name] 浇水信息: 剩余可浇 $waterDayLimit g / 总限制 $waterLimit g")
 
                         // 5. 获取配置
                         val configPerRound = cooperateWaterList.value?.get(cooperationId) // 本轮配置浇水量
                         val configTotalLimit = cooperateWaterTotalLimitList.value?.get(cooperationId) // 配置的总浇水上限(累计)
 
                         if (configPerRound == null) {
-                            Log.forest(TAG, "浇水列表中没有为[$name]配置，跳过")
+                            Log.forest("浇水列表中没有为[$name]配置，跳过")
                             continue
                         }
 
@@ -168,14 +168,14 @@ class AntCooperate : ModelTask() {
 
                         if (configTotalLimit == null) {
                             // 逻辑保持原意：如果没有配置总限制，则直接把今日剩余额度拉满
-                            Log.forest(TAG, "未配置 $name 限制总浇水，目标为填满今日可浇水量（服务端或本地限制）")
+                            Log.forest("未配置 $name 限制总浇水，目标为填满今日可浇水量（服务端或本地限制）")
                             planToWater = waterDayLimit
                         } else {
-                            Log.forest(TAG, "载入配置 $name 限制总浇水[$configTotalLimit]g")
+                            Log.forest("载入配置 $name 限制总浇水[$configTotalLimit]g")
                             val totalWatered = getTotalWatering(cooperationId) // 获取已累计浇水
 
                             if (totalWatered < 0) {
-                                Log.forest(TAG, "无法获取用户[${UserMap.currentUid}]的累计浇水数据，跳过 $name")
+                                Log.forest("无法获取用户[${UserMap.currentUid}]的累计浇水数据，跳过 $name")
                                 continue
                             }
 
@@ -196,7 +196,7 @@ class AntCooperate : ModelTask() {
                         if (actualWater > configPerRound) actualWater = configPerRound
                         if (actualWater > userCurrentEnergy) actualWater = userCurrentEnergy
 
-                        Log.forest(TAG, "[$name] 结算: 计划 $planToWater, 剩余限额 $waterDayLimit, 背包 $userCurrentEnergy -> 实际: $actualWater")
+                        Log.forest("[$name] 结算: 计划 $planToWater, 剩余限额 $waterDayLimit, 背包 $userCurrentEnergy -> 实际: $actualWater")
 
                         // 8. 执行浇水
                         if (actualWater > 0) {
@@ -204,7 +204,7 @@ class AntCooperate : ModelTask() {
                             // !!! 关键修正：本地扣除能量，供下一次循环判断使用 !!!
                             userCurrentEnergy -= actualWater
                         } else {
-                            Log.forest(TAG, "浇水列表中没有为[$name]配置")
+                            Log.forest("浇水列表中没有为[$name]配置")
                         }
                     }
                 }
@@ -213,7 +213,7 @@ class AntCooperate : ModelTask() {
             Log.printStackTrace(TAG, t)
         } finally {
             io.github.aoguai.sesameag.util.maps.IdMapManager.getInstance(CooperateMap::class.java).save(UserMap.currentUid)
-            Log.forest(TAG, "执行结束-${getName() ?: ""}")
+            Log.forest("执行结束-${getName() ?: ""}")
         }
     }
 
@@ -222,7 +222,7 @@ class AntCooperate : ModelTask() {
         try {
             // 1. 本地状态检查 (快速失败)
             if (Status.hasFlagToday(StatusFlags.FLAG_ANTCOOPERATE_LOVE_TEAM_WATER)) {
-                Log.forest(TAG, "真爱合种今日已浇过水")
+                Log.forest("真爱合种今日已浇过水")
                 return
             }
 
@@ -267,7 +267,7 @@ class AntCooperate : ModelTask() {
 
             // 5. 校验队伍状态是否允许浇水
             if (teamId.isEmpty() || "ACTIVATED" != teamStatus) {
-                Log.forest(TAG, "真爱合种队伍不可用 (状态: $teamStatus, ID: $teamId)")
+                Log.forest("真爱合种队伍不可用 (状态: $teamStatus, ID: $teamId)")
                 return
             }
 
@@ -308,7 +308,7 @@ class AntCooperate : ModelTask() {
 
             // 如果剩余额度小于最小浇水单位(10g)，直接结束
             if (userRemainingQuota < 10) {
-                Log.forest(TAG, "组队合种今日已达标 (已浇${todayUsed}g / 目标${userDailyTarget}g)，跳过")
+                Log.forest("组队合种今日已达标 (已浇${todayUsed}g / 目标${userDailyTarget}g)，跳过")
                 return
             }
 
@@ -316,7 +316,7 @@ class AntCooperate : ModelTask() {
             val homePageStr = AntCooperateRpcCall.queryHomePage()
             val homeJo = JSONObject(homePageStr)
             if (!ResChecker.checkRes(TAG, homeJo)) {
-                Log.forest(TAG, "queryHomePage 返回异常")
+                Log.forest("queryHomePage 返回异常")
                 return
             }
 
@@ -326,13 +326,13 @@ class AntCooperate : ModelTask() {
                 ?.takeIf { it.isNotBlank() }
 
             if (teamId == null) {
-                Log.forest(TAG, "未获取到组队合种 TeamID")
+                Log.forest("未获取到组队合种 TeamID")
                 return
             }
 
             val currentEnergy = homeJo.optJSONObject("userBaseInfo")?.optInt("currentEnergy") ?: 0
             if (currentEnergy < 10) {
-                Log.forest(TAG, "当前能量不足10g (${currentEnergy}g)，无法浇水")
+                Log.forest("当前能量不足10g (${currentEnergy}g)，无法浇水")
                 return
             }
 
@@ -342,11 +342,11 @@ class AntCooperate : ModelTask() {
                 val updateUserConfigStr = AntCooperateRpcCall.updateUserConfig(true)
                 val userConfigJo = JSONObject(updateUserConfigStr)
                 if (!ResChecker.checkRes(TAG, userConfigJo)) {
-                    Log.forest(TAG, "updateUserConfig 返回异常")
+                    Log.forest("updateUserConfig 返回异常")
                     return
                 }
                 needReturn = true
-                Log.forest(TAG, "不在队伍模式,已为您切换至组队浇水")
+                Log.forest("不在队伍模式,已为您切换至组队浇水")
 
             }
 
@@ -354,7 +354,7 @@ class AntCooperate : ModelTask() {
             val miscInfoStr = AntCooperateRpcCall.queryMiscInfo("teamCanWaterCount", teamId)
             val miscJo = JSONObject(miscInfoStr)
             if (!ResChecker.checkRes(TAG, miscJo)) {
-                Log.forest(TAG, "queryMiscInfo 查询失败")
+                Log.forest("queryMiscInfo 查询失败")
                 return
             }
 
@@ -363,10 +363,10 @@ class AntCooperate : ModelTask() {
                 ?.optJSONObject("teamCanWaterCount")
                 ?.optInt("waterCount", 0) ?: 0
 
-            Log.forest(TAG, "组队状态检查: 目标剩余${userRemainingQuota}g | 官方剩余${serverRemaining}g | 背包能量${currentEnergy}g")
+            Log.forest("组队状态检查: 目标剩余${userRemainingQuota}g | 官方剩余${serverRemaining}g | 背包能量${currentEnergy}g")
 
             if (serverRemaining < 10) {
-                Log.forest(TAG, "官方限制今日无可浇水额度，跳过")
+                Log.forest("官方限制今日无可浇水额度，跳过")
                 return
             }
 
@@ -378,11 +378,11 @@ class AntCooperate : ModelTask() {
 
             // --- 5. 最终校验与执行 ---
             if (finalWaterAmount < 10) {
-                Log.forest(TAG, "计算后浇水量(${finalWaterAmount}g)低于最小限制10g，不执行")
+                Log.forest("计算后浇水量(${finalWaterAmount}g)低于最小限制10g，不执行")
                 return
             }
 
-            Log.forest(TAG, "执行浇水: ${finalWaterAmount}g")
+            Log.forest("执行浇水: ${finalWaterAmount}g")
             val waterResStr = AntCooperateRpcCall.teamWater(teamId, finalWaterAmount)
             val waterJo = JSONObject(waterResStr)
 
@@ -391,7 +391,7 @@ class AntCooperate : ModelTask() {
                 // 更新本地统计
                 val newTotal = todayUsed + finalWaterAmount
                 Status.setIntFlagToday(StatusFlags.FLAG_TEAM_WATER_DAILY_COUNT, newTotal)
-                Log.forest(TAG, "今日累计: ${newTotal}g / ${userDailyTarget}g")
+                Log.forest("今日累计: ${newTotal}g / ${userDailyTarget}g")
             }
             //如果从个人来的就回到个人
             if (needReturn) {
@@ -399,10 +399,10 @@ class AntCooperate : ModelTask() {
                 val updateUserConfigStr = AntCooperateRpcCall.updateUserConfig(false)
                 val userConfigJo = JSONObject(updateUserConfigStr)
                 if (!ResChecker.checkRes(TAG, userConfigJo)) {
-                    Log.forest(TAG, "updateUserConfig 返回异常")
+                    Log.forest("updateUserConfig 返回异常")
                     return
                 }
-                Log.forest(TAG, "已返回个人模式")
+                Log.forest("已返回个人模式")
 
             }
 
@@ -460,7 +460,7 @@ class AntCooperate : ModelTask() {
                             // 未获取到累计浇水量 返回 -1 不执行浇水
                             val energySummation = joItem.optInt("energySummation", -1)
                             if (energySummation >= 0) {
-                                Log.forest(TAG, "当前用户[$userId]的累计浇水能量: $energySummation")
+                                Log.forest("当前用户[$userId]的累计浇水能量: $energySummation")
                             }
                             return energySummation
                         }

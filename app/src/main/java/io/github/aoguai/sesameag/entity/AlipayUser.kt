@@ -1,6 +1,7 @@
 package io.github.aoguai.sesameag.entity
 
 import io.github.aoguai.sesameag.util.Log
+import io.github.aoguai.sesameag.util.friend.FriendSelectionResolver
 import io.github.aoguai.sesameag.util.maps.UserMap
 
 /**
@@ -22,8 +23,6 @@ class AlipayUser(id: String, name: String) : MapperEntity() {
     }
 
     companion object {
-        private const val MUTUAL_FRIEND_STATUS = 1
-
         /**
          * 获取所有用户列表（无过滤）
          */
@@ -37,13 +36,7 @@ class AlipayUser(id: String, name: String) : MapperEntity() {
          */
         @JvmStatic
         fun getFriendList(): List<AlipayUser> {
-            val currentUid = UserMap.currentUid
-            return getList { user ->
-                val userId = user.userId
-                !userId.isNullOrBlank() &&
-                    userId != currentUid &&
-                    user.friendStatus == MUTUAL_FRIEND_STATUS
-            }
+            return FriendSelectionResolver.availableFriendOptions()
         }
 
         /**

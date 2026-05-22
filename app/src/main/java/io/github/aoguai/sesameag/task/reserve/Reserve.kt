@@ -32,7 +32,7 @@ class Reserve : ModelTask() {
         modelFields.addField(
             SelectAndCountModelField(
                 "reserveList",
-                "保护地列表",
+                "保护地 | 申请列表",
                 LinkedHashMap(),
                 ReserveEntity::getListAsMapperEntity
             ).withDesc("选择要自动申请的保护地及每日申请次数；数量大于 0 才会执行，对应条目填 0 或不选则跳过。").also {
@@ -45,11 +45,11 @@ class Reserve : ModelTask() {
     override fun check(): Boolean {
         return when {
             TaskCommon.IS_ENERGY_TIME -> {
-                Log.forest(TAG, "⏸ 当前为只收能量时间【${BaseModel.energyTime.value}】，停止执行${getName()}任务！")
+                Log.forest("⏸ 当前为只收能量时间【${BaseModel.energyTime.value}】，停止执行${getName()}任务！")
                 false
             }
             TaskCommon.IS_MODULE_SLEEP_TIME -> {
-                Log.forest(TAG, "💤 模块休眠时间【${BaseModel.modelSleepTime.value}】停止执行${getName()}任务！")
+                Log.forest("💤 模块休眠时间【${BaseModel.modelSleepTime.value}】停止执行${getName()}任务！")
                 false
             }
             else -> true
@@ -64,23 +64,23 @@ class Reserve : ModelTask() {
 
     override suspend fun runSuspend() {
         try {
-            Log.forest(TAG, "开始保护地任务")
+            Log.forest("开始保护地任务")
             initReserve()
             animalReserve()
         } catch (t: Throwable) {
             Log.runtime(TAG, "start.run err:")
             Log.printStackTrace(TAG, t)
         } finally {
-            Log.forest(TAG, "保护地任务")
+            Log.forest("保护地任务")
         }
     }
 
     private suspend fun animalReserve() {
         try {
-            Log.forest(TAG, "开始执行-${getName()}")
+            Log.forest("开始执行-${getName()}")
             val configuredReserveMap = getConfiguredReserveMap()
             if (configuredReserveMap.isEmpty()) {
-                Log.forest(TAG, "保护地列表未配置有效申请项，跳过执行")
+                Log.forest("保护地列表未配置有效申请项，跳过执行")
                 return
             }
             var s: String? = ReserveRpcCall.queryTreeItemsForExchange()
@@ -115,7 +115,7 @@ class Reserve : ModelTask() {
             Log.runtime(TAG, "animalReserve err:")
             Log.printStackTrace(TAG, t)
         } finally {
-            Log.forest(TAG, "结束执行-${getName()}")
+            Log.forest("结束执行-${getName()}")
         }
     }
 

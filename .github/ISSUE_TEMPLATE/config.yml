@@ -1,17 +1,20 @@
 blank_issues_enabled: false
 contact_links:
-  - name: 一般讨论 / Discussions
-    url: https://github.com/aoguai/Sesame-AG/discussions
+  - name: 🚀 RPC 分享 / RPC Sharing
+    url: https://github.com/Sesame-AG/Sesame-AG/discussions/categories/rpc-%E5%88%86%E4%BA%AB
+    about: 乐于分享你的 RPC 调试配置？请在这里发布，共同完善研究库！
+  - name: 💬 一般讨论 / Discussions
+    url: https://github.com/Sesame-AG/Sesame-AG/discussions
     about: 一般讨论、使用交流、提问、想法碰撞请优先发到 Discussions，而不是 Issue。
-  - name: 使用说明 / README
-    url: https://github.com/aoguai/Sesame-AG/blob/dev/README.md
+  - name: 📖 使用说明 / README
+    url: https://github.com/Sesame-AG/Sesame-AG/blob/dev/README.md
     about: 提交 Issue 前先阅读项目定位、兼容性、安装与构建说明。
   - name: 法律与风险 / LEGAL
-    url: https://github.com/aoguai/Sesame-AG/blob/dev/LEGAL.md
+    url: https://github.com/Sesame-AG/Sesame-AG/blob/dev/LEGAL.md
     about: 先确认你能接受项目的许可边界、非商业限制与免责声明。
   - name: 贡献规范 / CONTRIBUTING
-    url: https://github.com/aoguai/Sesame-AG/blob/dev/CONTRIBUTING.md
+    url: https://github.com/Sesame-AG/Sesame-AG/blob/dev/CONTRIBUTING.md
     about: 请按这里的规则准备 Issue / Pull Request 所需的信息。
   - name: 项目仓库主页
-    url: https://github.com/aoguai/Sesame-AG
+    url: https://github.com/Sesame-AG/Sesame-AG
     about: 浏览源码、Releases 与模块元数据。

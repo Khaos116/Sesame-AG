@@ -5,20 +5,14 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import io.github.aoguai.sesameag.util.Files
 import io.github.aoguai.sesameag.util.JsonUtil
 import io.github.aoguai.sesameag.util.Log
-import io.github.aoguai.sesameag.util.maps.UserMap
 import java.io.File
 import java.security.MessageDigest
 
 /**
- * 自定义 RPC 配置项（用于“配置文件 + 定时执行”功能）
+ * 自定义 RPC 配置项（用于“RPC 调试配置库 + 定时执行”功能）。
  *
- * 支持在账号配置目录放置文件：
- * - `config/<uid>/rpcRequest.json`
- * - 兼容历史拼写：`config/<uid>/rpcResquest.json`
- *
- * 文件内容支持两种格式：
- *
- * 1) 数组格式（推荐）
+ * 数据源固定为模块主目录 `rpcRequest.json`，由 RPC 调试页面保存。
+ * 文件内容只支持数组格式：
  * ```json
  * [
  *   {
@@ -27,13 +21,6 @@ import java.security.MessageDigest
  *     "requestData": [{"queryBizType":"usingProp","source":"SELF_HOME","version":"20240201"}]
  *   }
  * ]
- * ```
- *
- * 2) Map 格式（兼容 Sesame-GR 的 rpcRequestMap 思路）
- * ```json
- * {
- *   "{\"methodName\":\"xxx\",\"requestData\":[{}]}": "示例名称"
- * }
  * ```
  */
 class CustomRpcRequestEntity : MapperEntity() {
@@ -62,29 +49,11 @@ class CustomRpcRequestEntity : MapperEntity() {
 
         @JvmStatic
         fun getList(): List<CustomRpcRequestEntity> {
-            val uid = UserMap.currentUid
-            if (uid.isNullOrBlank()) return emptyList()
-            return loadListForUid(uid)
+            return loadList()
         }
 
-        /**
-         * 供 UI/工具类按指定账号读取（例如：RPC 调试界面“同步/导入”）。
-         */
-        @JvmStatic
-        fun getListForUid(uid: String): List<CustomRpcRequestEntity> {
-            if (uid.isBlank()) return emptyList()
-            return loadListForUid(uid)
-        }
-
-        @JvmStatic
-        fun getMap(): Map<String, CustomRpcRequestEntity> {
-            val list = getList()
-            if (list.isEmpty()) return emptyMap()
-            return list.associateBy { it.id }
-        }
-
-        private fun loadListForUid(uid: String): List<CustomRpcRequestEntity> {
-            val text = readConfigText(uid)
+        private fun loadList(): List<CustomRpcRequestEntity> {
+            val text = readConfigText()
             if (text.isBlank()) return emptyList()
 
             val root: JsonNode = try {
@@ -94,30 +63,17 @@ class CustomRpcRequestEntity : MapperEntity() {
                 return emptyList()
             }
 
-            val items = when {
-                root.isArray -> root.toList()
-                root.isObject -> listOf(root)
-                else -> emptyList()
+            if (!root.isArray) {
+                Log.runtime(TAG, "rpcRequest.json 仅支持数组格式，已忽略旧格式内容")
+                return emptyList()
             }
 
             val result = ArrayList<CustomRpcRequestEntity>()
-            for (node in items) {
+            for (node in root.toList()) {
                 try {
                     if (node.isObject) {
-                        // Map 兼容：{ "<json>": "name", ... }
-                        // 只有当它“像 map”时才走这条分支：字段值都是文本
-                        val fields = node.properties().asSequence().toList()
-                        val looksLikeMap = fields.isNotEmpty() && fields.all { it.value.isTextual }
-                        if (looksLikeMap) {
-                            for ((key, valueNode) in fields) {
-                                val displayName = valueNode.asText("").trim()
-                                val parsed = parseKeyAsRequest(key, displayName)
-                                if (parsed != null) result.add(parsed)
-                            }
-                        } else {
-                            val parsed = parseNodeAsRequest(node)
-                            if (parsed != null) result.add(parsed)
-                        }
+                        val parsed = parseNodeAsRequest(node)
+                        if (parsed != null) result.add(parsed)
                     }
                 } catch (t: Throwable) {
                     Log.printStackTrace(TAG, "解析 RPC 条目失败", t)
@@ -127,56 +83,14 @@ class CustomRpcRequestEntity : MapperEntity() {
             return result.sortedWith { a, b -> a.compareTo(b) }
         }
 
-        private fun readConfigText(uid: String): String {
-            // 统一数据源：优先读取主目录（RPC 调试工具也会写入这个文件）
+        private fun readConfigText(): String {
             val rootFile = File(Files.MAIN_DIR, "rpcRequest.json")
             if (rootFile.exists()) {
                 val rootText = Files.readFromFile(rootFile).trim()
                 if (rootText.isNotBlank()) return rootText
             }
 
-            val userDir = Files.getUserConfigDir(uid)
-
-            val newFile = File(userDir, "rpcRequest.json")
-            if (!newFile.exists()) {
-                // 仅创建新文件（避免用户找不到路径），不写入默认内容
-                Files.createFile(newFile)
-            }
-            val newText = Files.readFromFile(newFile).trim()
-            if (newText.isNotBlank()) return newText
-
-            // 兼容历史拼写（不强制创建）
-            val oldFile = File(userDir, "rpcResquest.json")
-            if (oldFile.exists()) {
-                val oldText = Files.readFromFile(oldFile).trim()
-                if (oldText.isNotBlank()) return oldText
-            }
-
             return ""
-        }
-
-        private fun parseKeyAsRequest(keyJson: String, displayName: String): CustomRpcRequestEntity? {
-            // keyJson 形如 {"methodName":"...","requestData":[...]}
-            val node = try {
-                mapper.readTree(keyJson)
-            } catch (_: Throwable) {
-                return null
-            }
-            if (!node.isObject) return null
-
-            val methodName = pickText(node, "methodName", "method", "Method").trim()
-            if (methodName.isBlank()) return null
-
-            val requestDataNode = pickNode(node, "requestData", "RequestData")
-            val requestDataStr = toRequestDataString(requestDataNode)
-
-            val id = stableId(methodName, requestDataStr)
-            return CustomRpcRequestEntity().apply {
-                this.id = id
-                this.name = (displayName.ifBlank { methodName }).trim()
-                this.methodName = methodName
-                this.requestData = requestDataStr
-            }
         }
 
         private fun parseNodeAsRequest(node: JsonNode): CustomRpcRequestEntity? {
@@ -188,15 +102,12 @@ class CustomRpcRequestEntity : MapperEntity() {
             val requestDataNode = pickNode(node, "requestData", "RequestData")
             val requestDataStr = toRequestDataString(requestDataNode)
 
-            val explicitId = pickText(node, "id", "Id").trim()
-            val id = if (explicitId.isNotBlank()) explicitId else stableId(methodName, requestDataStr)
-
             val scheduleEnabled = pickBoolean(node, "scheduleEnabled", "scheduleEnable", "enableSchedule", "EnableSchedule")
             val dailyCount = pickInt(node, "dailyCount", "dayCount", "DailyCount")
             val normalizedDailyCount = if (scheduleEnabled) dailyCount.coerceAtLeast(0) else 0
 
             return CustomRpcRequestEntity().apply {
-                this.id = id
+                this.id = stableId(methodName, requestDataStr)
                 this.name = (displayName.ifBlank { methodName }).trim()
                 this.methodName = methodName
                 this.requestData = requestDataStr

@@ -41,13 +41,13 @@ object ForestUtil {
         if (currentTime < info.cooldownUntil) {
             val remainingMinutes = (info.cooldownUntil - currentTime) / 60000
             val remainingSeconds = ((info.cooldownUntil - currentTime) % 60000) / 1000
-            Log.forest(TAG, "[${UserMap.getMaskName(userId)}] 手速太快冷却中，还需等待 ${remainingMinutes}分${remainingSeconds}秒")
+            Log.forest("[${UserMap.getMaskName(userId)}] 手速太快冷却中，还需等待 ${remainingMinutes}分${remainingSeconds}秒")
             return true
         }
         // 冷却期结束，清除记录
         if (info.cooldownUntil > 0) {
             userFrequencyMap.remove(userId)
-            Log.forest(TAG, "[${UserMap.getMaskName(userId)}] 冷却期结束，恢复正常处理")
+            Log.forest("[${UserMap.getMaskName(userId)}] 冷却期结束，恢复正常处理")
         }
         return false
     }
@@ -110,7 +110,7 @@ object ForestUtil {
             }
         }
 
-        Log.forest(TAG, "⚠️ [$userName] 手速太快！第${info.failCount}次异常，休息${cooldownMinutes}分钟，下次暂不处理")
+        Log.forest("⚠️ [$userName] 手速太快！第${info.failCount}次异常，休息${cooldownMinutes}分钟，下次暂不处理")
 
         return true
     }
@@ -138,7 +138,7 @@ object ForestUtil {
         val count = userFrequencyMap.size
         if (count > 0) {
             userFrequencyMap.clear()
-            Log.forest(TAG, "已清除${count}个用户的频率限制记录")
+            Log.forest("已清除${count}个用户的频率限制记录")
         }
     }
 
@@ -149,7 +149,7 @@ object ForestUtil {
     @JvmStatic
     fun clearUserFrequencyLimit(userId: String?) {
         if (userId != null && userFrequencyMap.remove(userId) != null) {
-            Log.forest(TAG, "[${UserMap.getMaskName(userId)}] 频率限制已清除")
+            Log.forest("[${UserMap.getMaskName(userId)}] 频率限制已清除")
         }
     }
 

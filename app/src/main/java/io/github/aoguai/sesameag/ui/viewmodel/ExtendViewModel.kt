@@ -10,6 +10,7 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import com.fasterxml.jackson.core.type.TypeReference
 import io.github.aoguai.sesameag.R
+import io.github.aoguai.sesameag.data.General
 import io.github.aoguai.sesameag.entity.UserEntity
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.model.CustomSettings
@@ -168,6 +169,7 @@ class ExtendViewModel : ViewModel() {
 
     private fun sendItemsBroadcast(context: Context, type: String) {
         val intent = Intent(ApplicationHookConstants.BroadcastActions.RPC_TEST).apply {
+            setPackage(General.PACKAGE_NAME)
             putExtra("method", "")
             putExtra("data", "")
             putExtra("type", type)

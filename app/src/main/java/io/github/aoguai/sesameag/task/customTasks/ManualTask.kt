@@ -81,9 +81,7 @@ object ManualTask {
                             CustomTask.FOREST_WHACK_MOLE -> {
                                 val instance = getForestInstance()
                                 if (instance != null) {
-                                    val mode = extraParams["whackMoleMode"] as? Int ?: 1
-                                    val games = extraParams["whackMoleGames"] as? Int ?: 5
-                                    instance.manualWhackMole(mode, games)
+                                    instance.manualWhackMole()
                                 } else {
                                     Log.record("ManualTask", "❌ 无法加载森林模块")
                                 }

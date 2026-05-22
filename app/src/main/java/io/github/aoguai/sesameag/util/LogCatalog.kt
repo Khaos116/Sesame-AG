@@ -7,7 +7,9 @@ enum class LogModuleDomain(val displayName: String) {
     FARM("蚂蚁庄园"),
     STALL("蚂蚁新村"),
     OCEAN("神奇海洋"),
+    DODO("神奇物种"),
     MEMBER("会员"),
+    FISHPOND("福气鱼池"),
     SPORTS("运动"),
     GREEN_FINANCE("绿色经营"),
     SESAME_CREDIT("芝麻信用"),
@@ -44,7 +46,8 @@ enum class LogChannel(
     val description: String,
     val viewerGroup: LogViewerGroup? = null,
     val mirrorToRecord: Boolean = false,
-    val visibleInViewer: Boolean = false
+    val visibleInViewer: Boolean = false,
+    val logTag: String? = null
 ) {
     SYSTEM(
         loggerName = "system",
@@ -70,7 +73,7 @@ enum class LogChannel(
         description = "任务调度与执行统计摘要",
         viewerGroup = LogViewerGroup.OVERVIEW,
         mirrorToRecord = true,
-        visibleInViewer = true,
+        visibleInViewer = true
     ),
     COMMON(
         loggerName = "common",
@@ -91,6 +94,7 @@ enum class LogChannel(
         viewerGroup = LogViewerGroup.MODULES,
         mirrorToRecord = true,
         visibleInViewer = true,
+        logTag = "森林"
     ),
     ORCHARD(
         loggerName = "orchard",
@@ -101,6 +105,7 @@ enum class LogChannel(
         viewerGroup = LogViewerGroup.MODULES,
         mirrorToRecord = true,
         visibleInViewer = true,
+        logTag = "农场"
     ),
     FARM(
         loggerName = "farm",
@@ -111,6 +116,7 @@ enum class LogChannel(
         viewerGroup = LogViewerGroup.MODULES,
         mirrorToRecord = true,
         visibleInViewer = true,
+        logTag = "庄园"
     ),
     STALL(
         loggerName = "stall",
@@ -121,6 +127,7 @@ enum class LogChannel(
         viewerGroup = LogViewerGroup.MODULES,
         mirrorToRecord = true,
         visibleInViewer = true,
+        logTag = "新村"
     ),
     OCEAN(
         loggerName = "ocean",
@@ -131,16 +138,40 @@ enum class LogChannel(
         viewerGroup = LogViewerGroup.MODULES,
         mirrorToRecord = true,
         visibleInViewer = true,
+        logTag = "海洋"
+    ),
+    DODO(
+        loggerName = "dodo",
+        displayName = "神奇物种日志",
+        moduleDomain = LogModuleDomain.DODO,
+        techKind = LogTechKind.BUSINESS,
+        description = "神奇物种抽卡、道具、任务奖励与图鉴合成相关日志",
+        viewerGroup = LogViewerGroup.MODULES,
+        mirrorToRecord = true,
+        visibleInViewer = true,
+        logTag = "神奇物种"
     ),
     MEMBER(
         loggerName = "member",
         displayName = "会员日志",
         moduleDomain = LogModuleDomain.MEMBER,
         techKind = LogTechKind.BUSINESS,
-        description = "会员积分、黄金票与会员任务相关日志",
+        description = "会员积分、余额宝体验金、黄金票与会员任务相关日志",
         viewerGroup = LogViewerGroup.MODULES,
         mirrorToRecord = true,
         visibleInViewer = true,
+        logTag = "会员"
+    ),
+    FISHPOND(
+        loggerName = "fishpond",
+        displayName = "福气鱼池日志",
+        moduleDomain = LogModuleDomain.FISHPOND,
+        techKind = LogTechKind.BUSINESS,
+        description = "福气鱼池钓竿、任务、钓鱼与兑换进度相关日志",
+        viewerGroup = LogViewerGroup.MODULES,
+        mirrorToRecord = true,
+        visibleInViewer = true,
+        logTag = "福气鱼池"
     ),
     SPORTS(
         loggerName = "sports",
@@ -151,6 +182,7 @@ enum class LogChannel(
         viewerGroup = LogViewerGroup.MODULES,
         mirrorToRecord = true,
         visibleInViewer = true,
+        logTag = "运动"
     ),
     GREEN_FINANCE(
         loggerName = "green_finance",
@@ -161,6 +193,7 @@ enum class LogChannel(
         viewerGroup = LogViewerGroup.MODULES,
         mirrorToRecord = true,
         visibleInViewer = true,
+        logTag = "经营"
     ),
     SESAME_CREDIT(
         loggerName = "sesame_credit",
@@ -171,6 +204,7 @@ enum class LogChannel(
         viewerGroup = LogViewerGroup.MODULES,
         mirrorToRecord = true,
         visibleInViewer = true,
+        logTag = "芝麻信用"
     ),
     RUNTIME(
         loggerName = "runtime",
@@ -198,7 +232,7 @@ enum class LogChannel(
         description = "异常、失败、风控与错误堆栈日志",
         viewerGroup = LogViewerGroup.TECHNICAL,
         mirrorToRecord = true,
-        visibleInViewer = true,
+        visibleInViewer = true
     ),
     CAPTURE(
         loggerName = "capture",
@@ -222,14 +256,14 @@ enum class LogChannel(
 }
 
 object LogCatalog {
-    val channels: List<LogChannel> = LogChannel.values().toList()
+    val channels: List<LogChannel> = LogChannel.entries
 
     @JvmStatic
     fun loggerNames(): List<String> = channels.map { it.loggerName }.distinct()
 
     @JvmStatic
     fun viewerSections(): List<LogViewerSection> {
-        return LogViewerGroup.values().mapNotNull { group ->
+        return LogViewerGroup.entries.mapNotNull { group ->
             val groupChannels = channels.filter { it.visibleInViewer && it.viewerGroup == group }
             if (groupChannels.isEmpty()) {
                 null

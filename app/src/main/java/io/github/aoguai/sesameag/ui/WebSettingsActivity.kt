@@ -30,19 +30,20 @@ import io.github.aoguai.sesameag.BuildConfig
 import io.github.aoguai.sesameag.R
 import io.github.aoguai.sesameag.data.Config
 import io.github.aoguai.sesameag.data.Status
-import io.github.aoguai.sesameag.entity.AlipayUser
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.model.Model
 import io.github.aoguai.sesameag.model.ModelConfig
 import io.github.aoguai.sesameag.model.ModelField
 import io.github.aoguai.sesameag.model.ModelGroup
 import io.github.aoguai.sesameag.model.ModelFields
-import io.github.aoguai.sesameag.model.SelectModelFieldFunc
+import io.github.aoguai.sesameag.model.modelFieldExt.FriendSelectionCountModelField
+import io.github.aoguai.sesameag.model.modelFieldExt.FriendSelectionModelField
+import io.github.aoguai.sesameag.entity.friend.FriendRelation
+import io.github.aoguai.sesameag.task.AnswerAI.AnswerAI
 import io.github.aoguai.sesameag.ui.dto.ModelDto
 import io.github.aoguai.sesameag.ui.dto.ModelFieldInfoDto
 import io.github.aoguai.sesameag.ui.dto.ModelFieldShowDto
 import io.github.aoguai.sesameag.ui.dto.ModelGroupDto
-import io.github.aoguai.sesameag.ui.widget.ListDialog
 import io.github.aoguai.sesameag.task.customTasks.ManualTaskModel
 import io.github.aoguai.sesameag.util.Files
 import io.github.aoguai.sesameag.util.GlobalThreadPools
@@ -50,6 +51,8 @@ import io.github.aoguai.sesameag.util.JsonUtil
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.PortUtil
 import io.github.aoguai.sesameag.util.ToastUtil
+import io.github.aoguai.sesameag.util.friend.FriendRepository
+import io.github.aoguai.sesameag.util.friend.FriendSelectionResolver
 import io.github.aoguai.sesameag.util.maps.BeachMap
 import io.github.aoguai.sesameag.util.maps.CooperateMap
 import io.github.aoguai.sesameag.util.maps.IdMapManager
@@ -62,6 +65,7 @@ import io.github.aoguai.sesameag.util.maps.VitalityRewardsMap
 import java.io.File
 import java.nio.charset.StandardCharsets
 import kotlinx.coroutines.Dispatchers
+import org.json.JSONObject
 
 class WebSettingsActivity : AppCompatActivity() {
 
@@ -74,6 +78,10 @@ class WebSettingsActivity : AppCompatActivity() {
     private var userName: String? = null
     private val tabList = ArrayList<ModelDto>()
     private val groupList = ArrayList<ModelGroupDto>()
+    @Volatile
+    private var cachedFriendMapModifiedAt: Long = Long.MIN_VALUE
+    @Volatile
+    private var cachedFriendMapLength: Long = Long.MIN_VALUE
 
     @SuppressLint("MissingInflatedId", "SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -125,7 +133,7 @@ class WebSettingsActivity : AppCompatActivity() {
             try {
                 Model.initAllModel()
                 UserMap.setCurrentUserId(userId)
-                UserMap.load(userId)
+                syncFriendCenterFromUserMapIfNeeded(force = true)
 
                 IdMapManager.getInstance(CooperateMap::class.java).load(userId)
                 IdMapManager.getInstance(VitalityRewardsMap::class.java).load(userId)
@@ -166,6 +174,35 @@ class WebSettingsActivity : AppCompatActivity() {
         toolbar.setContentInsetsAbsolute(0, 0)
         toolbar.title = null
         toolbar.subtitle = userName?.let { "${getString(R.string.settings)}: $it" } ?: getString(R.string.settings)
+    }
+
+    private fun ensureSettingsUserContext() {
+        val currentUserId = userId?.trim().orEmpty()
+        if (currentUserId.isEmpty()) return
+        if (UserMap.currentUid != currentUserId) {
+            UserMap.setCurrentUserId(currentUserId)
+            cachedFriendMapModifiedAt = Long.MIN_VALUE
+            cachedFriendMapLength = Long.MIN_VALUE
+        }
+        syncFriendCenterFromUserMapIfNeeded()
+    }
+
+    private fun syncFriendCenterFromUserMapIfNeeded(force: Boolean = false) {
+        val currentUserId = userId?.trim().orEmpty()
+        if (currentUserId.isEmpty()) {
+            return
+        }
+        val friendMapFile = Files.getFriendIdMapFile(currentUserId)
+        val modifiedAt = friendMapFile?.lastModified() ?: Long.MIN_VALUE
+        val length = friendMapFile?.length() ?: Long.MIN_VALUE
+        if (!force && modifiedAt == cachedFriendMapModifiedAt && length == cachedFriendMapLength) {
+            return
+        }
+        UserMap.load(currentUserId)
+        // friend.json 由 Hook 写入完整好友快照；这里允许把快照中缺失的历史好友标记为失效。
+        FriendRepository.mergeFromUserMap(currentUserId, allowPruneMissing = true)
+        cachedFriendMapModifiedAt = modifiedAt
+        cachedFriendMapLength = length
     }
 
     private fun initializeWebView() {
@@ -278,6 +315,7 @@ class WebSettingsActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun getModelByGroup(groupCode: String): String {
+            ensureSettingsUserContext()
             val modelGroup = ModelGroup.getByCode(groupCode) ?: return "[]"
             val modelConfigCollection = Model.getGroupModelConfig(modelGroup).values
             val modelDtoList = ArrayList<ModelDto>()
@@ -294,6 +332,7 @@ class WebSettingsActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun setModelByGroup(groupCode: String, modelsValue: String): String {
+            ensureSettingsUserContext()
             val modelDtoList = JsonUtil.parseObject(modelsValue, object : TypeReference<List<ModelDto>>() {})
             val modelGroup = ModelGroup.getByCode(groupCode) ?: return "FAILED"
             val modelConfigSet = Model.getGroupModelConfig(modelGroup)
@@ -306,11 +345,13 @@ class WebSettingsActivity : AppCompatActivity() {
                     modelField.setConfigValue(newModelField.configValue as String?)
                 }
             }
+            Config.sanitizeFriendSelectionFieldsForUser(userId)
             return "SUCCESS"
         }
 
         @JavascriptInterface
         fun getModel(modelCode: String): String {
+            ensureSettingsUserContext()
             val modelConfig = Model.getModelConfigMap()[modelCode] ?: return "[]"
 
             val modelFields: ModelFields = modelConfig.fields
@@ -325,6 +366,7 @@ class WebSettingsActivity : AppCompatActivity() {
         fun setModel(modelCode: String, fieldsValue: String): String {
             val modelConfig = Model.getModelConfigMap()[modelCode] ?: return "FAILED"
             try {
+                ensureSettingsUserContext()
                 val modelFields: ModelFields = modelConfig.fields
                 val map: Map<String, ModelFieldShowDto> = JsonUtil.parseObject(
                     fieldsValue,
@@ -334,6 +376,7 @@ class WebSettingsActivity : AppCompatActivity() {
                     val modelField = modelFields[fieldCode] ?: continue
                     modelField.setConfigValue(newModelField.configValue)
                 }
+                Config.sanitizeFriendSelectionFieldsForUser(userId)
                 return "SUCCESS"
             } catch (e: Exception) {
                 Log.printStackTrace("WebSettingsActivity", e)
@@ -343,21 +386,92 @@ class WebSettingsActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun getField(modelCode: String, fieldCode: String): String? {
+            ensureSettingsUserContext()
             val modelConfig = Model.getModelConfigMap()[modelCode] ?: return null
             val modelField = modelConfig.getModelField(fieldCode) ?: return null
             return JsonUtil.formatJson(ModelFieldInfoDto.toInfoDto(modelField), false)
         }
 
         @JavascriptInterface
+        fun getFriendSelectionData(modelCode: String, fieldCode: String): String {
+            ensureSettingsUserContext()
+            Config.sanitizeFriendSelectionFieldsForUser(userId)
+            val modelConfig = Model.getModelConfigMap()[modelCode] ?: return "{}"
+            val modelField = modelConfig.getModelField(fieldCode) ?: return "{}"
+            val friendConfig = FriendRepository.current(userId)
+            val friends = friendConfig.profiles.values.map { profile ->
+                if (profile.userId.isBlank() || profile.relation == FriendRelation.SELF) {
+                    null
+                } else {
+                    linkedMapOf(
+                        "id" to profile.userId,
+                        "name" to profile.displayName.ifBlank { profile.userId },
+                        "relation" to profile.relation.name,
+                        "globalBlocked" to profile.globalBlocked,
+                        "removed" to profile.removed,
+                        "capabilities" to profile.capabilities
+                    )
+                }
+            }.filterNotNull()
+            val preview = when (modelField) {
+                is FriendSelectionCountModelField -> FriendSelectionResolver.previewCount(modelField.value, userId)
+                is FriendSelectionModelField -> FriendSelectionResolver.preview(modelField.value, userId)
+                else -> FriendSelectionResolver.preview(null, userId)
+            }
+            val payload = linkedMapOf(
+                "friends" to friends,
+                "groups" to friendConfig.groups,
+                "field" to ModelFieldInfoDto.toInfoDto(modelField),
+                "preview" to preview.items,
+                "summary" to preview.summary
+            )
+            return JsonUtil.formatJson(payload, false)
+        }
+
+        @JavascriptInterface
+        fun getFriendSelectionSummary(modelCode: String, fieldCode: String): String {
+            ensureSettingsUserContext()
+            Config.sanitizeFriendSelectionFieldsForUser(userId)
+            val modelConfig = Model.getModelConfigMap()[modelCode] ?: return "{}"
+            val modelField = modelConfig.getModelField(fieldCode) ?: return "{}"
+            val preview = when (modelField) {
+                is FriendSelectionCountModelField -> FriendSelectionResolver.previewCount(modelField.value, userId)
+                is FriendSelectionModelField -> FriendSelectionResolver.preview(modelField.value, userId)
+                else -> FriendSelectionResolver.preview(null, userId)
+            }
+            return JsonUtil.formatJson(preview.summary, false)
+        }
+
+        @JavascriptInterface
         fun setField(modelCode: String, fieldCode: String, fieldValue: String): String {
             val modelConfig = Model.getModelConfigMap()[modelCode] ?: return "FAILED"
             return try {
+                ensureSettingsUserContext()
                 val modelField = modelConfig.getModelField(fieldCode) ?: return "FAILED"
                 modelField.setConfigValue(fieldValue)
+                Config.sanitizeFriendSelectionFieldsForUser(userId)
                 "SUCCESS"
             } catch (e: Exception) {
                 Log.printStackTrace(e)
                 "FAILED"
+            }
+        }
+
+        @JavascriptInterface
+        fun runFieldAction(modelCode: String, fieldCode: String): String {
+            return try {
+                ensureSettingsUserContext()
+                when {
+                    modelCode == AnswerAI::class.java.simpleName && fieldCode == AnswerAI.FIELD_AI_TEST -> {
+                        val result = Model.getModel(AnswerAI::class.java)?.testAnswerService()
+                            ?: return actionResult(false, "AI答题模块未初始化")
+                        actionResult(result.success, result.message)
+                    }
+                    else -> actionResult(false, "不支持的配置操作：$modelCode.$fieldCode")
+                }
+            } catch (t: Throwable) {
+                Log.printStackTrace(TAG, "runFieldAction failed", t)
+                actionResult(false, "执行失败：${t.message ?: t.javaClass.simpleName}")
             }
         }
 
@@ -379,13 +493,20 @@ class WebSettingsActivity : AppCompatActivity() {
         fun Log(log: String) {
             Log.record(TAG, "设置：$log")
         }
+
+        private fun actionResult(success: Boolean, message: String): String {
+            return JSONObject()
+                .put("success", success)
+                .put("message", message)
+                .toString()
+        }
     }
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
         menu.add(0, 1, 1, "导出配置")
         menu.add(0, 2, 2, "导入配置")
         menu.add(0, 3, 3, "删除配置")
-        menu.add(0, 4, 4, "单向好友")
+        menu.add(0, 5, 5, "好友中心")
         menu.add(0, 6, 6, "保存")
         menu.add(0, 7, 7, "复制ID")
         return super.onCreateOptionsMenu(menu)
@@ -431,15 +552,11 @@ class WebSettingsActivity : AppCompatActivity() {
                     .create()
                     .show()
             }
-            4 -> {
-                ListDialog.show(
-                    this,
-                    "单向好友列表",
-                    AlipayUser.getList { user -> user.friendStatus != 1 },
-                    SelectModelFieldFunc.newMapInstance(),
-                    false,
-                    ListDialog.ListType.SHOW
-                )
+            5 -> {
+                startActivity(Intent(this, FriendCenterActivity::class.java).apply {
+                    putExtra("userId", userId)
+                    putExtra("userName", userName)
+                })
             }
             6 -> {
                 save()

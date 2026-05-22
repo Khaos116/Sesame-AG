@@ -42,15 +42,15 @@ class OtherTask : ModelTask() {
         val fields = ModelFields()
         fields.addField(
             BooleanModelField(
-                "credit2101", "信用2101", false
-            ).withDesc("开启后执行信用2101的签到、任务领奖、天赋升级，并按下方配置处理探测事件。").also {
+                "credit2101", "信用2101 | 开启", false
+            ).withDesc("开启后执行信用2101的签到、任务领奖、天赋升级，并按“信用2101 | 地图事件次数”处理探测事件。").also {
                 credit2101 = it
             })
 
         fields.addField(
             BooleanModelField(
                 "AutoOpenChest", "信用2101 | 自动开宝箱", false
-            ).withDesc("自动打开信用2101中的印记宝箱。需开启“信用2101”主开关。").also {
+            ).withDesc("自动打开信用2101中的印记宝箱。需开启“信用2101 | 开启”。").also {
                 autoOpenChest = it
             })
 
@@ -58,10 +58,10 @@ class OtherTask : ModelTask() {
         fields.addField(
             SelectAndCountModelField(
                 "CreditOptions",
-                "信用2101 | 事件类型",
+                "信用2101 | 地图事件次数",
                 LinkedHashMap<String?, Int?>(),
                 listCreditOptions(),
-                "设置各事件每日运行次数，0为不执行，-1为不限。"
+                "设置各地图事件每日运行次数，0 为不执行，-1 为不限。需开启“信用2101 | 开启”。"
             ).also {
                 creditOptions = it
             })
@@ -81,7 +81,7 @@ class OtherTask : ModelTask() {
         try {
             if (credit2101?.value == true) {
                 val optionField = creditOptions ?: run {
-                    Log.sesame(TAG, "信用2101配置未初始化，跳过执行")
+                    Log.sesame("信用2101配置未初始化，跳过执行")
                     return
                 }
                 Credit2101.doCredit2101(autoOpenChest?.value == true, optionField)

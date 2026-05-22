@@ -1,5 +1,6 @@
 package io.github.aoguai.sesameag.entity
 
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -29,6 +30,9 @@ data class CollectEnergyEntity(
     
     /** 是否需要重试 */
     var needRetry: Boolean = false
+
+    /** 本次 RPC 返回的失败能量球 ID，仅用于收取结果诊断 */
+    val failedBubbleIds: MutableSet<Long> = linkedSetOf()
 
     /**
      * 增加尝试次数
@@ -73,6 +77,18 @@ data class CollectEnergyEntity(
      */
     fun unsetNeedRetry() {
         needRetry = false
+    }
+
+    fun recordFailedBubbleIds(failedBubbleIdsJson: JSONArray?) {
+        if (failedBubbleIdsJson == null) return
+        for (i in 0 until failedBubbleIdsJson.length()) {
+            val id = when (val raw = failedBubbleIdsJson.opt(i)) {
+                is Number -> raw.toLong()
+                is String -> raw.toLongOrNull()
+                else -> raw?.toString()?.toLongOrNull()
+            } ?: continue
+            failedBubbleIds.add(id)
+        }
     }
 }
 

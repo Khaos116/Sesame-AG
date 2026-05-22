@@ -30,6 +30,8 @@ internal object ApplicationBroadcastDispatcher {
             ApplicationHookConstants.BroadcastActions.RE_LOGIN -> ApplicationHook.reOpenApp()
             ApplicationHookConstants.BroadcastActions.RPC_TEST -> handleRpcTest(safeIntent)
             ApplicationHookConstants.BroadcastActions.MANUAL_TASK -> handleManualTaskBroadcast(safeIntent)
+            ApplicationHookConstants.BroadcastActions.HOOK_READY -> handleHookReadyBroadcast(context, safeIntent)
+            ApplicationHookConstants.BroadcastActions.REFRESH_FRIENDS -> handleRefreshFriendsBroadcast(context, safeIntent)
         }
     }
 
@@ -113,6 +115,136 @@ internal object ApplicationBroadcastDispatcher {
         ApplicationHookCore.requestExecution(triggerAtExecTime)
     }
 
+    private fun handleHookReadyBroadcast(context: Context?, intent: Intent) {
+        val ctx = context?.applicationContext ?: context ?: ApplicationHook.appContext
+        val targetUserId = intent.getStringExtra("userId")?.trim().orEmpty()
+        val loader = ApplicationHook.classLoader
+        if (loader == null) {
+            sendHookReadyResult(
+                ctx,
+                targetUserId,
+                ready = false,
+                message = "目标应用 Hook 尚未就绪"
+            )
+            return
+        }
+
+        val currentUserId = HookUtil.getUserId(loader)?.trim().orEmpty()
+        when {
+            currentUserId.isEmpty() -> sendHookReadyResult(
+                ctx,
+                targetUserId,
+                ready = false,
+                message = "当前支付宝账号未登录"
+            )
+
+            targetUserId.isNotEmpty() && targetUserId != currentUserId -> sendHookReadyResult(
+                ctx,
+                targetUserId,
+                ready = false,
+                message = "当前支付宝账号与好友中心账号不一致: target=$targetUserId, current=$currentUserId",
+                currentUserId = currentUserId
+            )
+
+            else -> sendHookReadyResult(
+                ctx,
+                targetUserId.ifBlank { currentUserId },
+                ready = true,
+                message = "目标应用已就绪",
+                currentUserId = currentUserId
+            )
+        }
+    }
+
+    private fun sendHookReadyResult(
+        context: Context?,
+        userId: String,
+        ready: Boolean,
+        message: String,
+        currentUserId: String = ""
+    ) {
+        val ctx = context ?: ApplicationHook.appContext ?: return
+        ctx.sendBroadcast(Intent(ApplicationHookConstants.BroadcastActions.HOOK_READY_RESULT).apply {
+            putExtra("userId", userId)
+            putExtra("ready", ready)
+            putExtra("message", message)
+            putExtra("currentUserId", currentUserId)
+            putExtra("timestamp", System.currentTimeMillis())
+        })
+    }
+
+    private fun handleRefreshFriendsBroadcast(context: Context?, intent: Intent) {
+        val ctx = context?.applicationContext ?: context ?: ApplicationHook.appContext
+        val safeIntent = Intent(intent)
+        ApplicationHookConstants.submitEntry("refresh_friends") {
+            val targetUserId = safeIntent.getStringExtra("userId")?.trim().orEmpty()
+            val force = safeIntent.getBooleanExtra("manual", true)
+            val loader = ApplicationHook.classLoader
+            if (loader == null) {
+                sendRefreshFriendsResult(
+                    ctx,
+                    targetUserId,
+                    success = false,
+                    message = "刷新好友失败：Hook classLoader 不可用"
+                )
+                return@submitEntry
+            }
+
+            val currentUserId = HookUtil.getUserId(loader)?.trim().orEmpty()
+            if (currentUserId.isEmpty()) {
+                sendRefreshFriendsResult(
+                    ctx,
+                    targetUserId,
+                    success = false,
+                    message = "刷新好友失败：当前支付宝账号未登录"
+                )
+                return@submitEntry
+            }
+            if (targetUserId.isNotEmpty() && targetUserId != currentUserId) {
+                sendRefreshFriendsResult(
+                    ctx,
+                    targetUserId,
+                    success = false,
+                    message = "忽略非当前账号的好友刷新请求: target=$targetUserId, current=$currentUserId"
+                )
+                return@submitEntry
+            }
+
+            val result = ApplicationHook.refreshFriendsFromAlipayIfNeeded(
+                userId = currentUserId,
+                force = force,
+                source = if (force) "manual_refresh" else "broadcast_refresh"
+            )
+            sendRefreshFriendsResult(
+                ctx,
+                result.userId.ifBlank { currentUserId },
+                success = result.success,
+                message = result.message,
+                profiles = result.profiles,
+                groups = result.groups
+            )
+        }
+    }
+
+    private fun sendRefreshFriendsResult(
+        context: Context?,
+        userId: String,
+        success: Boolean,
+        message: String,
+        profiles: Int = 0,
+        groups: Int = 0
+    ) {
+        val ctx = context ?: ApplicationHook.appContext ?: return
+        ctx.sendBroadcast(Intent(ApplicationHookConstants.BroadcastActions.REFRESH_FRIENDS_RESULT).apply {
+            putExtra("userId", userId)
+            putExtra("success", success)
+            putExtra("message", message)
+            putExtra("profiles", profiles)
+            putExtra("groups", groups)
+            putExtra("timestamp", System.currentTimeMillis())
+        })
+    }
+
     private fun handleManualTaskBroadcast(intent: Intent) {
         record(TAG, "🚀 收到手动庄园任务指令")
         execute {
@@ -123,10 +255,7 @@ internal object ApplicationBroadcastDispatcher {
                     val task = CustomTask.valueOf(normalizedTaskName)
                     val extraParams = HashMap<String, Any>()
                     when (task) {
-                        CustomTask.FOREST_WHACK_MOLE -> {
-                            extraParams["whackMoleMode"] = intent.getIntExtra("whackMoleMode", 1)
-                            extraParams["whackMoleGames"] = intent.getIntExtra("whackMoleGames", 5)
-                        }
+                        CustomTask.FOREST_WHACK_MOLE -> Unit
 
                         CustomTask.FOREST_ENERGY_RAIN -> {
                             extraParams["exchangeEnergyRainCard"] = intent.getBooleanExtra("exchangeEnergyRainCard", false)

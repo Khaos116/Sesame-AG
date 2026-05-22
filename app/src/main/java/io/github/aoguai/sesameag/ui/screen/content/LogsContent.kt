@@ -95,8 +95,9 @@ fun LogsContent(
 private fun iconFor(channel: LogChannel): ImageVector {
     return when (channel) {
         LogChannel.FOREST -> Icons.Rounded.Forest
-        LogChannel.ORCHARD, LogChannel.FARM, LogChannel.STALL -> Icons.Rounded.Agriculture
-        LogChannel.MEMBER -> Icons.Rounded.CardMembership
+        LogChannel.DODO -> Icons.Rounded.Description
+        LogChannel.ORCHARD, LogChannel.FISHPOND, LogChannel.FARM, LogChannel.STALL -> Icons.Rounded.Agriculture
+        LogChannel.MEMBER, LogChannel.SESAME_CREDIT -> Icons.Rounded.CardMembership
         LogChannel.SPORTS -> Icons.AutoMirrored.Rounded.DirectionsRun
         LogChannel.DEBUG, LogChannel.RUNTIME -> Icons.Rounded.BugReport
         LogChannel.ERROR -> Icons.Rounded.ErrorOutline

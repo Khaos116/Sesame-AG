@@ -37,7 +37,7 @@ object GreenLife {
                 return true
             }
             if (index < candidates.lastIndex) {
-                Log.forest(TAG, "森林集市[$sourceType] 未获得能量，继续尝试备用来源")
+                Log.forest("森林集市[$sourceType] 未获得能量，继续尝试备用来源")
             }
         }
         return false
@@ -55,7 +55,7 @@ object GreenLife {
             val consultData = response.optJSONObject("data")
             val canSend = consultData?.optBoolean("canSendEnergy", false) == true
             if (!canSend) {
-                Log.forest(TAG, "森林集市[$sourceType] 当前无可领取能量")
+                Log.forest("森林集市[$sourceType] 当前无可领取能量")
                 return false
             }
             response = JSONObject(AntForestRpcCall.sendEnergyByAction(sourceType))
@@ -73,7 +73,7 @@ object GreenLife {
                 return true
             }
 
-            Log.forest(TAG, "森林集市[$sourceType] 请求成功，但未获得能量")
+            Log.forest("森林集市[$sourceType] 请求成功，但未获得能量")
             return false
         } catch (t: Throwable) {
             Log.runtime(TAG, "sendEnergyByAction err: sourceType=$sourceType")

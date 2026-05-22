@@ -9,10 +9,12 @@ body:
       value: |
         感谢你花时间提交问题。
 
+        **注意**：如果你要分享 RPC 配置，请前往 [RPC 分享讨论区](https://github.com/Sesame-AG/Sesame-AG/discussions/categories/rpc-%E5%88%86%E4%BA%AB)。
+
         提交前请先阅读：
-        - [README](https://github.com/aoguai/Sesame-AG/blob/dev/README.md)
-        - [LEGAL](https://github.com/aoguai/Sesame-AG/blob/dev/LEGAL.md)
-        - [CONTRIBUTING](https://github.com/aoguai/Sesame-AG/blob/dev/CONTRIBUTING.md)
+        - [README](https://github.com/Sesame-AG/Sesame-AG/blob/dev/README.md)
+        - [LEGAL](https://github.com/Sesame-AG/Sesame-AG/blob/dev/LEGAL.md)
+        - [CONTRIBUTING](https://github.com/Sesame-AG/Sesame-AG/blob/dev/CONTRIBUTING.md)
 
         请尽量让每个回答都基于你实际观察到的现象来填写。没有复现步骤、环境信息和日志的 Issue，通常没有足够上下文被处理。
 

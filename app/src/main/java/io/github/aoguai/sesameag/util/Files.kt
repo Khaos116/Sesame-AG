@@ -193,6 +193,11 @@ object Files {
     }
 
     @JvmStatic
+    fun getFriendCenterFile(userId: String): File {
+        return getTargetFileofUser(userId, "friendCenter.json")!!
+    }
+
+    @JvmStatic
     fun runtimeInfoFile(userId: String?): File? {
         return getTargetFileofUser(userId, "runtime.json")
     }

@@ -50,7 +50,7 @@ fun HomeContent(
     var isServiceCardExpanded by remember { mutableStateOf(false) }
 
     var isStatusCardExpanded by remember { mutableStateOf(false) }
-    val legalNoticeUrl = "https://github.com/aoguai/Sesame-AG/blob/dev/LEGAL.md"
+    val legalNoticeUrl = "https://github.com/Sesame-AG/Sesame-AG/blob/dev/LEGAL.md"
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()

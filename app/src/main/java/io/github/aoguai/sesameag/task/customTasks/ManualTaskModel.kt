@@ -2,6 +2,7 @@ package io.github.aoguai.sesameag.task.customTasks
 
 import io.github.aoguai.sesameag.model.ModelFields
 import io.github.aoguai.sesameag.model.ModelGroup
+import io.github.aoguai.sesameag.model.withDesc
 import io.github.aoguai.sesameag.model.modelFieldExt.BooleanModelField
 import io.github.aoguai.sesameag.task.ModelTask
 import io.github.aoguai.sesameag.util.GlobalThreadPools
@@ -24,12 +25,24 @@ class ManualTaskModel : ModelTask() {
 
     override fun getFields(): ModelFields {
         val fields = ModelFields()
-        fields.addField(BooleanModelField("forestWhackMole", "森林打地鼠", false).also { forestWhackMole = it })
-        fields.addField(BooleanModelField("forestEnergyRain", "能量雨", false).also { forestEnergyRain = it })
-        fields.addField(BooleanModelField("exchangeEnergyRainCard", " ↪ 兑换使用能量雨卡", false).also { exchangeEnergyRainCard = it })
-        fields.addField(BooleanModelField("farmSendBackAnimal", "遣返小鸡", false).also { farmSendBackAnimal = it })
-        fields.addField(BooleanModelField("farmGameLogic", "庄园游戏改分", false).also { farmGameLogic = it })
-        fields.addField(BooleanModelField("farmChouChouLe", "庄园抽抽乐", false).also { farmChouChouLe = it })
+        fields.addField(BooleanModelField("forestWhackMole", "蚂蚁森林 | 6秒拼手速", false).withDesc(
+            "手动运行森林 6 秒拼手速流程。"
+        ).also { forestWhackMole = it })
+        fields.addField(BooleanModelField("forestEnergyRain", "蚂蚁森林 | 能量雨", false).withDesc(
+            "手动运行能量雨收集流程。"
+        ).also { forestEnergyRain = it })
+        fields.addField(BooleanModelField("exchangeEnergyRainCard", "能量雨 | 使用机会道具", false).withDesc(
+            "手动能量雨前尝试使用能量雨机会道具。需选择“蚂蚁森林 | 能量雨”。"
+        ).also { exchangeEnergyRainCard = it })
+        fields.addField(BooleanModelField("farmSendBackAnimal", "蚂蚁庄园 | 遣返小鸡", false).withDesc(
+            "手动运行庄园遣返小鸡流程。"
+        ).also { farmSendBackAnimal = it })
+        fields.addField(BooleanModelField("farmGameLogic", "蚂蚁庄园 | 游戏改分", false).withDesc(
+            "手动运行庄园小游戏改分流程。"
+        ).also { farmGameLogic = it })
+        fields.addField(BooleanModelField("farmChouChouLe", "蚂蚁庄园 | 装扮抽抽乐", false).withDesc(
+            "手动运行庄园装扮抽抽乐流程。"
+        ).also { farmChouChouLe = it })
         return fields
     }
 

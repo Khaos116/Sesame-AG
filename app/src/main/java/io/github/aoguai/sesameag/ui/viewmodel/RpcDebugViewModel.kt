@@ -11,6 +11,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.fasterxml.jackson.core.type.TypeReference
 import com.fasterxml.jackson.databind.json.JsonMapper
+import io.github.aoguai.sesameag.data.General
 import io.github.aoguai.sesameag.entity.RpcDebugEntity
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.ui.repository.RpcDebugConfigStore
@@ -49,7 +50,7 @@ class RpcDebugViewModel(application: Application) : AndroidViewModel(application
     data class RpcDebugItemRaw(val name: String, val method: String, val requestData: Any?, val description: String)
 
 
-    private val configStore = RpcDebugConfigStore(application)
+    private val configStore = RpcDebugConfigStore()
 
     private val objectMapper = JsonMapper.builder()
         .enable(com.fasterxml.jackson.databind.MapperFeature.ACCEPT_CASE_INSENSITIVE_PROPERTIES)
@@ -66,7 +67,7 @@ class RpcDebugViewModel(application: Application) : AndroidViewModel(application
         val loadResult = configStore.loadItems()
         _items.value = loadResult.items
         if (!loadResult.hasConfigSource && loadResult.items.isEmpty()) {
-            loadDefaultItems()
+            loadDefaultItems(showToast = false)
         }
     }
 
@@ -210,12 +211,13 @@ class RpcDebugViewModel(application: Application) : AndroidViewModel(application
                 val logFile = Files.getLogFile(LogChannel.DEBUG)
                 Files.clearFile(logFile)
                 val intent = Intent(ApplicationHookConstants.BroadcastActions.RPC_TEST).apply {
+                    setPackage(General.PACKAGE_NAME)
                     putExtra("method", item.method)
                     putExtra("data", item.getRequestDataString())
                     putExtra("type", "Rpc")
                 }
                 activityContext.sendBroadcast(intent)
-                ToastUtil.makeText("已发送: ${item.getDisplayName()}", Toast.LENGTH_SHORT).show()
+                ToastUtil.makeText("已发送到目标应用 Hook 进程: ${item.getDisplayName()}", Toast.LENGTH_SHORT).show()
                 // 轮询等待日志写入（Logback 是异步写入的，需要等待）
                 var waitCount = 0
                 val maxWait = 30 // 最多等待 3 秒（30 * 100ms）
@@ -250,7 +252,7 @@ class RpcDebugViewModel(application: Application) : AndroidViewModel(application
         try {
             val json = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(_items.value)
             copyToClipboard("RPC Backup", json, context)
-            ToastUtil.makeText("已备份到剪贴板", Toast.LENGTH_SHORT).show()
+            ToastUtil.makeText("已复制到剪贴板", Toast.LENGTH_SHORT).show()
         } catch (_: Exception) {
             ToastUtil.makeText("备份失败", Toast.LENGTH_SHORT).show()
         }
@@ -275,10 +277,10 @@ class RpcDebugViewModel(application: Application) : AndroidViewModel(application
         _items.value = configStore.normalizeItems(newItems)
         saveItems()
         dismissDialog()
-        ToastUtil.makeText("恢复成功", Toast.LENGTH_SHORT).show()
+        ToastUtil.makeText("恢复成功，当前列表已被剪贴板数据覆盖", Toast.LENGTH_SHORT).show()
     }
 
-    fun loadDefaultItems() {
+    fun loadDefaultItems(showToast: Boolean = true) {
         val defaultList = listOf(
             RpcDebugEntity(
                 name = "雇佣黄金鸡",
@@ -290,6 +292,9 @@ class RpcDebugViewModel(application: Application) : AndroidViewModel(application
         // 简单合并逻辑：略
         _items.value = configStore.normalizeItems(defaultList)
         saveItems()
+        if (showToast) {
+            ToastUtil.makeText("已加载默认示例，当前列表已被覆盖", Toast.LENGTH_SHORT).show()
+        }
     }
 
     fun shareItem(item: RpcDebugEntity, context: Context) {
@@ -302,7 +307,7 @@ class RpcDebugViewModel(application: Application) : AndroidViewModel(application
             )
             val json = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(map)
             copyToClipboard("RPC Item", json, context)
-            ToastUtil.makeText("已复制完整配置", 0).show()
+            ToastUtil.makeText("已复制单个调试项，可在新建/编辑中导入", 0).show()
         } catch (_: Exception) {
         }
     }
