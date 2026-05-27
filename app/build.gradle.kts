@@ -79,6 +79,14 @@ android {
 
     signingConfigs {
         getByName("debug") {
+          storeFile = File("${rootDir}/xqe.jks")
+          storePassword = "xqe123456"
+          keyAlias = "xqe"
+          keyPassword = "xqe123456"
+          enableV1Signing = true
+          enableV2Signing = true
+          enableV3Signing = true
+          enableV4Signing = true
         }
     }
 
@@ -136,6 +144,25 @@ tasks.configureEach {
         enabled = false
     }
 }
+
+//打包完成后将 arm64-v8a release 包复制到项目根目录 APK/Release 并改名
+afterEvaluate {
+    tasks.named("assembleRelease") {
+        val srcFile = project.layout.buildDirectory.file("outputs/apk/release/app-arm64-v8a-release.apk")
+        val destDir = File(project.rootDir, "APK/Release")
+        val appVersionName: String = providers.gradleProperty("appVersion").orElse("0.0.1").get()
+        doLast {
+            val src = srcFile.get().asFile
+            if (!src.exists()) return@doLast
+            destDir.mkdirs()
+            val timestamp = SimpleDateFormat("yyyyMMdd_HHmm", Locale.CHINA).apply {
+                timeZone = TimeZone.getTimeZone("GMT+8")
+            }.format(Date())
+            src.copyTo(File(destDir, "XQE_AG_${appVersionName}_$timestamp.apk"), overwrite = true)
+        }
+    }
+}
+
 
 dependencies {
     // Shizuku 相关依赖 - 用于获取系统级权限
