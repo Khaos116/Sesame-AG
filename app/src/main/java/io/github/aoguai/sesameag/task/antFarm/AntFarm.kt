@@ -13,6 +13,8 @@ import io.github.aoguai.sesameag.entity.friend.FriendCapabilityState
 import io.github.aoguai.sesameag.entity.MapperEntity
 import io.github.aoguai.sesameag.entity.OtherEntityProvider.farmFamilyOption
 import io.github.aoguai.sesameag.entity.ParadiseCoinBenefit
+import io.github.aoguai.sesameag.hook.ExchangeOptionsRefreshBridge
+import io.github.aoguai.sesameag.hook.HookReadyChecker
 import io.github.aoguai.sesameag.hook.Toast
 import io.github.aoguai.sesameag.hook.rpc.intervallimit.RpcIntervalLimit.addIntervalLimit
 import io.github.aoguai.sesameag.model.BaseModel
@@ -34,6 +36,19 @@ import io.github.aoguai.sesameag.task.ModelTask
 import io.github.aoguai.sesameag.task.TaskStatus
 import io.github.aoguai.sesameag.task.antFarm.AntFarmFamily.familyClaimRewardList
 import io.github.aoguai.sesameag.task.antFarm.AntFarmFamily.familySign
+import io.github.aoguai.sesameag.task.common.TaskFlowAction
+import io.github.aoguai.sesameag.task.common.TaskFlowActionResult
+import io.github.aoguai.sesameag.task.common.TaskFlowAdapter
+import io.github.aoguai.sesameag.task.common.TaskFlowDecision
+import io.github.aoguai.sesameag.task.common.TaskFlowEngine
+import io.github.aoguai.sesameag.task.common.TaskFlowItem
+import io.github.aoguai.sesameag.task.common.TaskFlowPhase
+import io.github.aoguai.sesameag.task.common.TaskFlowSnapshot
+import io.github.aoguai.sesameag.task.common.TaskRpcFailureType
+import io.github.aoguai.sesameag.task.exchange.ExchangeCost
+import io.github.aoguai.sesameag.task.exchange.ExchangeItem
+import io.github.aoguai.sesameag.task.exchange.ExchangeLimit
+import io.github.aoguai.sesameag.task.exchange.ExchangeSafety
 import io.github.aoguai.sesameag.util.CoroutineUtils
 import io.github.aoguai.sesameag.util.DataStore
 import io.github.aoguai.sesameag.util.FriendGuard
@@ -72,15 +87,6 @@ import kotlin.math.min
 class AntFarm : ModelTask() {
     internal var ownerFarmId: String? = null
     private val farmTaskBlacklistModule = "蚂蚁庄园"
-
-    private enum class FarmRpcFailureType {
-        TERMINAL_DONE,
-        BUSINESS_LIMIT,
-        UNSUPPORTED_NO_CLOSURE,
-        NON_RETRYABLE_INVALID,
-        RETRYABLE_RPC,
-        UNKNOWN_NEEDS_REVIEW
-    }
 
     private var animals: Array<Animal>? = null
     private var ownerAnimal = Animal()
@@ -842,7 +848,10 @@ class AntFarm : ModelTask() {
                 "paradiseCoinExchangeBenefitList",
                 "小鸡乐园 | 权益列表",
                 LinkedHashSet<String?>()
-            ) { ParadiseCoinBenefit.getList() }.withDesc("仅兑换列表中的小鸡乐园权益。需开启“小鸡乐园 | 兑换权益”。").also {
+            ) {
+                refreshParadiseCoinExchangeOptionsForSettings()
+                ParadiseCoinBenefit.getList()
+            }.withDesc("仅兑换列表中的小鸡乐园权益。需开启“小鸡乐园 | 兑换权益”。").also {
                 paradiseCoinExchangeBenefitList = it
             })
         modelFields.addField(
@@ -1142,6 +1151,61 @@ class AntFarm : ModelTask() {
     }
 
 
+    private fun refreshParadiseCoinExchangeOptionsForSettings() {
+        if (!HookReadyChecker.isCurrentProcessReadyForRpc(UserMap.currentUid)) {
+            if (!HookReadyChecker.isTargetAppReadyForRpc(UserMap.currentUid) ||
+                !ExchangeOptionsRefreshBridge.requestRefresh(
+                    ExchangeOptionsRefreshBridge.TARGET_FARM_PARADISE,
+                    UserMap.currentUid
+                )
+            ) {
+                Log.farm("小鸡乐园币💸目标应用未就绪，设置页使用缓存列表")
+                return
+            }
+            val benefitMap = IdMapManager.getInstance(ParadiseCoinBenefitIdMap::class.java)
+            benefitMap.load(UserMap.currentUid)
+            Log.farm("小鸡乐园币💸设置页加载目标应用刷新列表#${benefitMap.map.size}")
+            return
+        }
+        try {
+            val jo = JSONObject(AntFarmRpcCall.getMallHome())
+            if (!ResChecker.checkRes(TAG, jo)) {
+                Log.error(TAG, "小鸡乐园币💸[设置页刷新权益列表失败]")
+                return
+            }
+            val mallItemSimpleList = jo.optJSONArray("mallItemSimpleList") ?: return
+            val benefitMap = IdMapManager.getInstance(ParadiseCoinBenefitIdMap::class.java)
+            for (i in 0..<mallItemSimpleList.length()) {
+                val mallItemInfo = mallItemSimpleList.optJSONObject(i) ?: continue
+                val spuName = mallItemInfo.optString("spuName")
+                val minPrice = mallItemInfo.optInt("minPrice")
+                val controlTag = mallItemInfo.optString("controlTag")
+                val spuId = mallItemInfo.optString("spuId")
+                if (spuId.isBlank()) {
+                    continue
+                }
+                val itemStatusList = mallItemInfo.optJSONArray("itemStatusList")
+                val statusText = formatFarmPropStatusList(itemStatusList)
+                val exchangeItem = ExchangeItem(
+                    id = spuId,
+                    name = spuName.ifBlank { spuId },
+                    cost = ExchangeCost(pointText = "${minPrice}乐园币"),
+                    limit = ExchangeLimit(statusText = listOf(controlTag, statusText).filter { it.isNotBlank() }.joinToString("、")),
+                    safety = if (hasBlockingFarmPropStatus(itemStatusList)) ExchangeSafety.UNAVAILABLE else ExchangeSafety.AUTO,
+                    safetyReason = if (hasBlockingFarmPropStatus(itemStatusList)) statusText else ""
+                )
+                benefitMap.add(spuId, exchangeItem.displayName())
+            }
+            benefitMap.save(UserMap.currentUid)
+        } catch (t: Throwable) {
+            Log.printStackTrace(TAG, "refreshParadiseCoinExchangeOptionsForSettings err:", t)
+        }
+    }
+
+    internal fun refreshParadiseCoinExchangeOptionsForRemote() {
+        refreshParadiseCoinExchangeOptionsForSettings()
+    }
+
     internal suspend fun paradiseCoinExchangeBenefit() {
         try {
             val jo = JSONObject(AntFarmRpcCall.getMallHome())
@@ -1158,13 +1222,22 @@ class AntFarm : ModelTask() {
                 val minPrice = mallItemInfo.getInt("minPrice")
                 val controlTag = mallItemInfo.getString("controlTag")
                 val spuId = mallItemInfo.getString("spuId")
-                oderInfo = spuName + "\n价格" + minPrice + "乐园币\n" + controlTag
+                val itemStatusList = mallItemInfo.optJSONArray("itemStatusList")
+                val statusText = formatFarmPropStatusList(itemStatusList)
+                val exchangeItem = ExchangeItem(
+                    id = spuId,
+                    name = spuName,
+                    cost = ExchangeCost(pointText = "${minPrice}乐园币"),
+                    limit = ExchangeLimit(statusText = listOf(controlTag, statusText).filter { it.isNotBlank() }.joinToString("、")),
+                    safety = if (hasBlockingFarmPropStatus(itemStatusList)) ExchangeSafety.UNAVAILABLE else ExchangeSafety.AUTO,
+                    safetyReason = if (hasBlockingFarmPropStatus(itemStatusList)) statusText else ""
+                )
+                oderInfo = exchangeItem.displayName()
                 IdMapManager.getInstance(ParadiseCoinBenefitIdMap::class.java)
                     .add(spuId, oderInfo)
-                val itemStatusList = mallItemInfo.getJSONArray("itemStatusList")
                 if (!Status.canParadiseCoinExchangeBenefitToday(spuId) ||
                     paradiseCoinExchangeBenefitList?.value?.contains(spuId) != true ||
-                    isExchange(itemStatusList, spuId, spuName)
+                    isExchange(itemStatusList ?: JSONArray(), spuId, spuName)
                 ) {
                     continue
                 }
@@ -1219,6 +1292,38 @@ class AntFarm : ModelTask() {
             return ResChecker.checkRes(TAG, jo)
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "exchangeBenefit err:",t)
+        }
+        return false
+    }
+
+    private fun formatFarmPropStatusList(itemStatusList: JSONArray?): String {
+        if (itemStatusList == null || itemStatusList.length() == 0) {
+            return ""
+        }
+        val statuses = mutableListOf<String>()
+        for (j in 0..<itemStatusList.length()) {
+            val itemStatus = itemStatusList.optString(j)
+            if (itemStatus.isBlank()) {
+                continue
+            }
+            val statusName = runCatching { PropStatus.valueOf(itemStatus).nickName()?.toString() }
+                .getOrNull()
+                ?: itemStatus
+            statuses.add(statusName)
+        }
+        return statuses.joinToString("、")
+    }
+
+    private fun hasBlockingFarmPropStatus(itemStatusList: JSONArray?): Boolean {
+        if (itemStatusList == null || itemStatusList.length() == 0) {
+            return false
+        }
+        for (j in 0..<itemStatusList.length()) {
+            when (itemStatusList.optString(j)) {
+                PropStatus.REACH_LIMIT.name,
+                PropStatus.REACH_USER_HOLD_LIMIT.name,
+                PropStatus.NO_ENOUGH_POINT.name -> return true
+            }
         }
         return false
     }
@@ -2358,68 +2463,7 @@ class AntFarm : ModelTask() {
      */
     private suspend fun doFarmTasks(): Status.TodayFlagState {
         try {
-            val jo = JSONObject(AntFarmRpcCall.listFarmTask())
-            if (!ResChecker.checkRes(TAG, jo)) {
-                return Status.TodayFlagState.RETRY_LATER
-            }
-            val farmTaskList = jo.getJSONArray("farmTaskList")
-            for (i in 0 until farmTaskList.length()) {
-                val task = farmTaskList.getJSONObject(i)
-                val title = task.optString("title", "未知任务")
-                val taskStatus = task.getString("taskStatus")
-                val bizKey = task.getString("bizKey")
-
-                // 1. 预检查：每日上限与黑名单
-                if (Status.hasFlagToday(StatusFlags.FLAG_FARM_TASK_LIMIT_PREFIX + bizKey)) continue
-
-                // 检查任务标题和业务键是否在黑名单中
-                val titleInBlacklist = TaskBlacklist.isTaskInBlacklist(farmTaskBlacklistModule, title)
-                val bizKeyInBlacklist = TaskBlacklist.isTaskInBlacklist(farmTaskBlacklistModule, bizKey)
-
-                if (titleInBlacklist || bizKeyInBlacklist) {
-                    Log.farm("跳过黑名单任务: $title ($bizKey)")
-                    continue
-                }
-                // 2. 执行 TODO 任务
-                when (taskStatus) {
-                    TaskStatus.TODO.name -> {
-                        when (bizKey) {
-                            "VIDEO_TASK" -> {
-                                // --- 视频任务专项逻辑 ---
-                                Log.farm("开始处理视频任务: $title ($bizKey)")
-                                handleVideoTask(bizKey, title)
-                            }
-                            "ANSWER" -> {
-                                // --- 答题任务专项逻辑 ---
-                                if (!Status.hasFlagToday(StatusFlags.FLAG_FARM_QUESTION_CACHE)) {
-                                    answerQuestion("100")
-                                }
-                            }
-                            "tab3_gyg" -> {
-                                continue
-                            }
-                            else -> {
-                                // --- 普通任务通用逻辑 ---
-                                Log.farm("开始处理庄园任务: $title ($bizKey)")
-                                handleGeneralTask(bizKey, title)
-                            }
-                        }
-                    }
-                    TaskStatus.FINISHED.name, TaskStatus.RECEIVED.name -> {
-                        if (bizKey == "ANSWER") {
-                            if (!Status.hasFlagToday(StatusFlags.FLAG_FARM_QUESTION_ANSWERED)) Status.setFlagToday(StatusFlags.FLAG_FARM_QUESTION_ANSWERED)
-                            if (!Status.hasFlagToday(StatusFlags.FLAG_FARM_QUESTION_CACHE)) {
-                                Log.farm("答题已完成，尝试预取明日答案...")
-                                answerQuestion("100")
-                            }
-                        }
-                        continue
-                    }
-                    else -> {
-                        Log.farm("跳过非TODO任务: $title ($bizKey) 状态: $taskStatus")
-                    }
-                }
-            }
+            TaskFlowEngine(FarmDailyTaskFlowAdapter(), roundSleepMs = 800L).run()
             syncAnimalStatus(ownerFarmId)
             return resolveFarmTaskFlagState()
         } catch (e: CancellationException) {
@@ -2427,6 +2471,158 @@ class AntFarm : ModelTask() {
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "doFarmTasks 错误:", t)
             return Status.TodayFlagState.RETRY_LATER
+        }
+    }
+
+    private inner class FarmDailyTaskFlowAdapter : TaskFlowAdapter {
+        private val loggedSkipKeys = mutableSetOf<String>()
+        private val handledCompleteKeys = mutableSetOf<String>()
+
+        override val moduleName: String = farmTaskBlacklistModule
+        override val flowName: String = "庄园饲料任务"
+
+        override fun query(): JSONObject {
+            val response = AntFarmRpcCall.listFarmTask()
+            if (response.isEmpty()) {
+                return JSONObject()
+                    .put("success", false)
+                    .put("resultDesc", "listFarmTask返回空")
+            }
+            return JSONObject(response)
+        }
+
+        override fun isQuerySuccess(response: JSONObject): Boolean {
+            return ResChecker.checkRes(TAG, "查询庄园任务失败:", response)
+        }
+
+        override fun extractItems(response: JSONObject): List<TaskFlowItem> {
+            val farmTaskList = response.optJSONArray("farmTaskList") ?: return emptyList()
+            val items = mutableListOf<TaskFlowItem>()
+            for (i in 0 until farmTaskList.length()) {
+                val task = farmTaskList.optJSONObject(i) ?: continue
+                val bizKey = task.optString("bizKey").trim()
+                val taskId = task.optString("taskId").trim()
+                val title = task.optString("title", bizKey.ifBlank { taskId }).trim()
+                    .ifBlank { bizKey.ifBlank { taskId.ifBlank { "未知任务" } } }
+                val status = task.optString("taskStatus").trim()
+                syncFarmAnswerTaskState(bizKey, status)
+
+                val rightsTimes = task.optInt("rightsTimes", 0)
+                val rightsTimesLimit = task.optInt("rightsTimesLimit", rightsTimes + 1)
+                items.add(
+                    TaskFlowItem(
+                        id = bizKey.ifBlank { taskId },
+                        title = title,
+                        status = status,
+                        type = bizKey,
+                        sceneCode = task.optString("sceneCode"),
+                        actionType = task.optString("actionType"),
+                        blacklistKeys = listOf(bizKey, taskId, title).filter { it.isNotBlank() },
+                        raw = task,
+                        progress = "rights=$rightsTimes/$rightsTimesLimit award=${task.optInt("awardCount", 0)}",
+                        current = rightsTimes,
+                        limit = rightsTimesLimit
+                    )
+                )
+            }
+            return items
+        }
+
+        override fun mapPhase(item: TaskFlowItem): TaskFlowPhase {
+            return when (item.status) {
+                TaskStatus.TODO.name,
+                "WAIT_COMPLETE" -> when {
+                    item.type == "tab3_gyg" -> TaskFlowPhase.BUSINESS_ACTION
+                    item.type.isBlank() -> TaskFlowPhase.UNKNOWN
+                    else -> TaskFlowPhase.READY_TO_COMPLETE
+                }
+
+                TaskStatus.FINISHED.name,
+                TaskStatus.RECEIVED.name,
+                "COMPLETE",
+                "HAS_RECEIVED",
+                "DONE",
+                "COMPLETED" -> TaskFlowPhase.TERMINAL
+
+                else -> TaskFlowPhase.UNKNOWN
+            }
+        }
+
+        override fun shouldSkip(item: TaskFlowItem): Boolean {
+            if (Thread.currentThread().isInterrupted) {
+                return true
+            }
+            if (item.type == "tab3_gyg" && enableChouchoule?.value != true) {
+                logFarmTaskSkipOnce(item, "抽抽乐未开启，跳过饲料任务收敛检查")
+                return true
+            }
+            if (Status.hasFlagToday(StatusFlags.FLAG_FARM_TASK_LIMIT_PREFIX + item.type)) {
+                logFarmTaskSkipOnce(item, "今日已达该任务上限，跳过")
+                return true
+            }
+            if (mapPhase(item) == TaskFlowPhase.READY_TO_COMPLETE &&
+                actionKey(item, TaskFlowAction.COMPLETE) in handledCompleteKeys
+            ) {
+                logFarmTaskSkipOnce(item, "本轮已推进，等待刷新后再处理")
+                return true
+            }
+            return false
+        }
+
+        override fun isBlacklisted(item: TaskFlowItem): Boolean {
+            val blacklisted = super<TaskFlowAdapter>.isBlacklisted(item)
+            if (blacklisted) {
+                logFarmTaskSkipOnce(item, "已在黑名单中，跳过处理")
+            }
+            return blacklisted
+        }
+
+        override fun complete(item: TaskFlowItem): TaskFlowActionResult {
+            return when (item.type) {
+                "VIDEO_TASK" -> handleVideoTask(item.type, item.title)
+                "ANSWER" -> completeFarmAnswerTask(item.title)
+                else -> handleGeneralTask(item.type, item.title, blacklistOnTerminalFailure = false)
+            }
+        }
+
+        override fun actionKey(item: TaskFlowItem, action: TaskFlowAction): String {
+            return "${action.logName}:${item.type.ifBlank { item.id }}:${item.progress.ifBlank { "NO_PROGRESS" }}"
+        }
+
+        override fun afterSuccess(item: TaskFlowItem, action: TaskFlowAction, result: TaskFlowActionResult) {
+            if (action == TaskFlowAction.COMPLETE) {
+                handledCompleteKeys.add(actionKey(item, action))
+            }
+        }
+
+        override fun afterFailure(
+            item: TaskFlowItem,
+            action: TaskFlowAction,
+            result: TaskFlowActionResult,
+            decision: TaskFlowDecision
+        ) {
+            if (action == TaskFlowAction.COMPLETE && decision == TaskFlowDecision.MARK_HANDLED) {
+                handledCompleteKeys.add(actionKey(item, action))
+            }
+        }
+
+        override fun onQueryFailed(response: JSONObject) {
+            Log.error(TAG, "庄园饲料任务查询失败 raw=$response")
+        }
+
+        override fun logInfo(message: String) {
+            Log.farm(message)
+        }
+
+        override fun logError(message: String) {
+            Log.error(TAG, message)
+        }
+
+        private fun logFarmTaskSkipOnce(item: TaskFlowItem, reason: String) {
+            val key = "${item.type.ifBlank { item.id }}:$reason"
+            if (loggedSkipKeys.add(key)) {
+                Log.farm("庄园饲料任务[${item.title}]$reason")
+            }
         }
     }
 
@@ -2495,173 +2691,280 @@ class AntFarm : ModelTask() {
     }
 
     /**
-     * 🚀 优化版：多阶段任务专项循环处理器
-     * 策略：批量领奖 -> 批量完成 -> 再次循环，减少 RPC 请求次数。
-     * 限制：仅处理多阶段任务，饲料满则停止领取后续奖励，但即便满也执行 TODO 以推进进度。
+     * 多阶段任务专项循环处理器。
+     * 策略：使用公共任务流单次推进后刷新；领奖保留饲料容量和游戏改分预留 guard。
      */
     internal suspend fun handleMultiStageTasksLoop(isManual: Boolean = false) {
-
         if (!isManual && Status.hasFlagToday(StatusFlags.FLAG_FARM_MULTI_STAGE_TASK_FINISHED)) {
             return
         }
-
         try {
-            syncAnimalStatus(ownerFarmId)
-            val startStock = foodStock
-            JSONObject(AntFarmRpcCall.listFarmTask()).optJSONArray("farmTaskList")?.let { ja ->
-                for (i in 0 until ja.length()) {
-                    val task = ja.getJSONObject(i)
-                    val bizKey = task.optString("bizKey")
-                    if (bizKey == "tab3_gyg" &&
-                        task.optString("taskStatus") == TaskStatus.TODO.name
-                    ) {
-                        val title = task.optString("title", "未知任务")
-                        Log.farm("开始处理任务: $title ($bizKey)")
-                        handleGeneralTask(bizKey, title)
-                        break
-                    }
-                }
-            }
-            syncAnimalStatus(ownerFarmId)
-            val silentGained = foodStock - startStock
-            if (silentGained > 0) {
-                Log.farm("庄园任务处理完毕，静默获得饲料(直接领取了奖励): ${silentGained}g")
-            }
-
+            triggerMultiStageSeedTask()
             Log.record(TAG, "${if (isManual) "手动" else "自动"}多阶段任务补全循环开始...")
-            var loopCount = 0
-            var continuousNoAction = 0
-            while (loopCount < 15) {
-                loopCount++
-
-                val listRes = AntFarmRpcCall.listFarmTask()
-                if (listRes.isEmpty()) break
-                val jo = JSONObject(listRes)
-                if (!ResChecker.checkRes(TAG, jo)) break
-
-                val farmTaskList = jo.getJSONArray("farmTaskList")
-                val isGameFinished = Status.hasFlagToday(StatusFlags.FLAG_FARM_GAME_FINISHED)
-                this.syncAnimalStatus(this.ownerFarmId)
-                val foodSpace = foodStockLimit - foodStock
-
-                val multiStageTasks = mutableListOf<JSONObject>()
-                var totalAvailableAwards = 0
-                var anyTaskFullyDone = false
-
-                // 1. 预扫描：识别多阶段任务并统计可用奖励
-                var hasIncompleteMultiStage = false
-                for (i in 0 until farmTaskList.length()) {
-                    val task = farmTaskList.getJSONObject(i)
-                    val limit = task.optInt("rightsTimesLimit", 1)
-                    if (limit <= 1) continue
-
-                    val title = task.optString("title")
-                    val bizKey = task.getString("bizKey")
-
-                    if (Status.hasFlagToday(StatusFlags.FLAG_FARM_TASK_LIMIT_PREFIX + bizKey)) continue
-                    if (TaskBlacklist.isTaskInBlacklist(farmTaskBlacklistModule, title) ||
-                        TaskBlacklist.isTaskInBlacklist(farmTaskBlacklistModule, bizKey)) continue
-
-                    multiStageTasks.add(task)
-                    val status = task.getString("taskStatus")
-                    val rightsTimes = task.optInt("rightsTimes", 0)
-
-                    val currentTotalAward = task.optInt("awardCount", 0)
-                    val alreadyReceived = task.optInt("alreadyReceiveStageAwardCount", 0)
-                    val accumulatedAward = currentTotalAward - alreadyReceived
-
-                    if (rightsTimes < limit) {
-                        hasIncompleteMultiStage = true
-                    }
-
-                    if (status == TaskStatus.FINISHED.name || accumulatedAward > 0) {
-                        totalAvailableAwards += accumulatedAward
-                        if (rightsTimes >= limit) {
-                            anyTaskFullyDone = true
-                        }
-                    }
-
-                    if (rightsTimes < limit || accumulatedAward > 0) {
-                        val awardInfo = if (accumulatedAward > 0) ", 待领奖励: ${accumulatedAward}g" else ""
-                        Log.record(TAG, "任务[$title] 进度: $rightsTimes/$limit$awardInfo")
-                    }
-                }
-
-                if (!hasIncompleteMultiStage) {
-                    if (!isManual) {
-                        Status.setFlagToday(StatusFlags.FLAG_FARM_MULTI_STAGE_TASK_FINISHED)
-                    }
-                    break
-                }
-
-                var anyActionTaken = false
-
-                // 2. 领取奖励
-                val shouldReceiveGlobal = if (!isGameFinished) {
-                    foodStock < 180
-                } else {
-                    // 饲料空间充足且总奖励量足够，或所有任务已满
-                    (foodSpace > 0 && totalAvailableAwards >= foodSpace) || anyTaskFullyDone
-                }
-
-                if (shouldReceiveGlobal) {
-                    for (task in multiStageTasks) {
-                        if (foodStock >= foodStockLimit) {
-                            Log.record(TAG, "饲料已满 ($foodStock g)，停止后续多阶段领奖请求")
-                            break
-                        }
-                        // 游戏未完成时
-                        if (!isGameFinished && foodStock >= 180) break
-
-                        val status = task.getString("taskStatus")
-                        val currentTotalAward = task.optInt("awardCount", 0)
-                        val alreadyReceived = task.optInt("alreadyReceiveStageAwardCount", 0)
-                        val accumulatedAward = currentTotalAward - alreadyReceived
-
-                        if (status == TaskStatus.FINISHED.name || accumulatedAward > 0) {
-                            val taskId = task.getString("taskId")
-                            val title = task.optString("title")
-
-                            val receiveRes = JSONObject(AntFarmRpcCall.receiveFarmTaskAward(taskId))
-                            if (ResChecker.checkRes(TAG, receiveRes)) {
-                                add2FoodStock(accumulatedAward)
-                                Log.farm("领取多阶段奖励[$title] 🍪${accumulatedAward}g (当前饲料: ${foodStock}g)")
-                                anyActionTaken = true
-                            }
-                        }
-                    }
-                }
-
-                // 3. 执行任务阶段
-                for (task in multiStageTasks) {
-                    val limit = task.optInt("rightsTimesLimit", 1)
-                    val rightsTimes = task.optInt("rightsTimes", 0)
-
-                    if (rightsTimes < limit) {
-                        val bizKey = task.getString("bizKey")
-                        val title = task.optString("title")
-
-                        handleGeneralTask(bizKey, title, silent = true)
-                        anyActionTaken = true
-                    }
-                }
-
-                if (anyActionTaken) {
-                    continuousNoAction = 0
-                } else {
-                    continuousNoAction++
-                }
-
-                // 退出条件：如果连续 2 轮没有任何进度，则停止尝试
-                if (continuousNoAction >= 2) {
-                    break
-                }
-            }
+            TaskFlowEngine(FarmMultiStageTaskFlowAdapter(isManual), roundSleepMs = 800L).run()
         } catch (e: CancellationException) {
             throw e
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "handleMultiStageTasksLoop 异常:", t)
         }
+    }
+
+    private fun triggerMultiStageSeedTask() {
+        syncAnimalStatus(ownerFarmId)
+        val startStock = foodStock
+        val response = AntFarmRpcCall.listFarmTask()
+        if (response.isEmpty()) {
+            return
+        }
+        JSONObject(response).optJSONArray("farmTaskList")?.let { taskList ->
+            for (i in 0 until taskList.length()) {
+                val task = taskList.optJSONObject(i) ?: continue
+                val bizKey = task.optString("bizKey")
+                if (bizKey == "tab3_gyg" && task.optString("taskStatus") == TaskStatus.TODO.name) {
+                    val title = task.optString("title", "未知任务")
+                    Log.farm("开始处理任务: $title ($bizKey)")
+                    handleGeneralTask(bizKey, title)
+                    break
+                }
+            }
+        }
+        syncAnimalStatus(ownerFarmId)
+        val silentGained = foodStock - startStock
+        if (silentGained > 0) {
+            Log.farm("庄园任务处理完毕，静默获得饲料(直接领取了奖励): ${silentGained}g")
+        }
+    }
+
+    private inner class FarmMultiStageTaskFlowAdapter(
+        private val isManual: Boolean
+    ) : TaskFlowAdapter {
+        private val handledActionKeys = mutableSetOf<String>()
+        private var gameFinished = false
+        private var shouldReceiveAwards = false
+        private var hasIncompleteMultiStage = false
+
+        override val moduleName: String = farmTaskBlacklistModule
+        override val flowName: String = "庄园多阶段任务"
+
+        override fun query(): JSONObject {
+            val response = AntFarmRpcCall.listFarmTask()
+            if (response.isEmpty()) {
+                return JSONObject()
+                    .put("success", false)
+                    .put("resultDesc", "listFarmTask返回空")
+            }
+            return JSONObject(response)
+        }
+
+        override fun isQuerySuccess(response: JSONObject): Boolean {
+            return ResChecker.checkRes(TAG, "查询庄园多阶段任务失败:", response)
+        }
+
+        override fun extractItems(response: JSONObject): List<TaskFlowItem> {
+            val farmTaskList = response.optJSONArray("farmTaskList") ?: return emptyList()
+            gameFinished = Status.hasFlagToday(StatusFlags.FLAG_FARM_GAME_FINISHED)
+            syncAnimalStatus(ownerFarmId)
+
+            val items = mutableListOf<TaskFlowItem>()
+            var totalAvailableAwards = 0
+            var anyTaskFullyDone = false
+            hasIncompleteMultiStage = false
+
+            for (i in 0 until farmTaskList.length()) {
+                val task = farmTaskList.optJSONObject(i) ?: continue
+                val limit = task.optInt("rightsTimesLimit", 1)
+                if (limit <= 1) {
+                    continue
+                }
+
+                val bizKey = task.optString("bizKey").trim()
+                val taskId = task.optString("taskId").trim()
+                val title = task.optString("title", bizKey.ifBlank { taskId }).trim()
+                    .ifBlank { bizKey.ifBlank { taskId.ifBlank { "未知任务" } } }
+                val status = task.optString("taskStatus")
+                val rightsTimes = task.optInt("rightsTimes", 0)
+                val accumulatedAward = getMultiStageAccumulatedAward(task)
+                val hasAward = status == TaskStatus.FINISHED.name || accumulatedAward > 0
+                val isBlacklisted = TaskBlacklist.isTaskInBlacklist(farmTaskBlacklistModule, title) ||
+                    TaskBlacklist.isTaskInBlacklist(farmTaskBlacklistModule, bizKey)
+                val limitReached = Status.hasFlagToday(StatusFlags.FLAG_FARM_TASK_LIMIT_PREFIX + bizKey)
+
+                if ((isBlacklisted || limitReached) && !hasAward) {
+                    continue
+                }
+
+                if (!isBlacklisted && !limitReached && rightsTimes < limit) {
+                    hasIncompleteMultiStage = true
+                }
+                if (hasAward) {
+                    totalAvailableAwards += accumulatedAward
+                    if (rightsTimes >= limit) {
+                        anyTaskFullyDone = true
+                    }
+                }
+                if (rightsTimes < limit || accumulatedAward > 0) {
+                    val awardInfo = if (accumulatedAward > 0) ", 待领奖励: ${accumulatedAward}g" else ""
+                    Log.record(TAG, "任务[$title] 进度: $rightsTimes/$limit$awardInfo")
+                }
+
+                items.add(
+                    TaskFlowItem(
+                        id = bizKey.ifBlank { taskId },
+                        title = title,
+                        status = status,
+                        type = bizKey,
+                        blacklistKeys = listOf(bizKey, taskId, title).filter { it.isNotBlank() },
+                        raw = task,
+                        progress = "rights=$rightsTimes/$limit award=$accumulatedAward",
+                        current = rightsTimes,
+                        limit = limit
+                    )
+                )
+            }
+
+            val foodSpace = foodStockLimit - foodStock
+            shouldReceiveAwards = if (!gameFinished) {
+                foodStock < 180
+            } else {
+                (foodSpace > 0 && totalAvailableAwards >= foodSpace) || anyTaskFullyDone
+            }
+            if (!hasIncompleteMultiStage && !isManual) {
+                Status.setFlagToday(StatusFlags.FLAG_FARM_MULTI_STAGE_TASK_FINISHED)
+            }
+            return items
+        }
+
+        override fun mapPhase(item: TaskFlowItem): TaskFlowPhase {
+            val task = item.raw ?: return TaskFlowPhase.UNKNOWN
+            val rightsTimes = task.optInt("rightsTimes", item.current ?: 0)
+            val limit = task.optInt("rightsTimesLimit", item.limit ?: 1)
+            val hasAward = item.status == TaskStatus.FINISHED.name || getMultiStageAccumulatedAward(task) > 0
+            return when {
+                hasAward && canReceiveMultiStageAward(task) -> TaskFlowPhase.REWARD_READY
+                rightsTimes < limit -> TaskFlowPhase.READY_TO_COMPLETE
+                hasAward -> TaskFlowPhase.BUSINESS_ACTION
+                else -> TaskFlowPhase.TERMINAL
+            }
+        }
+
+        override fun shouldSkip(item: TaskFlowItem): Boolean {
+            if (Thread.currentThread().isInterrupted) {
+                return true
+            }
+            val phase = mapPhase(item)
+            return when {
+                phase == TaskFlowPhase.REWARD_READY &&
+                    actionKey(item, TaskFlowAction.RECEIVE) in handledActionKeys -> true
+                phase == TaskFlowPhase.READY_TO_COMPLETE &&
+                    actionKey(item, TaskFlowAction.COMPLETE) in handledActionKeys -> true
+                else -> false
+            }
+        }
+
+        override fun receive(item: TaskFlowItem): TaskFlowActionResult {
+            val task = item.raw ?: return missingMultiStageRawResult(item, "receive")
+            if (!canReceiveMultiStageAward(task)) {
+                return TaskFlowActionResult.failure(
+                    failureType = TaskRpcFailureType.BUSINESS_LIMIT,
+                    message = "容量策略暂不领取多阶段奖励",
+                    rpc = "AntFarmRpcCall.receiveFarmTaskAward",
+                    detail = "taskId=${item.id} taskName=${item.title}"
+                )
+            }
+
+            val taskId = task.optString("taskId")
+            if (taskId.isBlank()) {
+                return TaskFlowActionResult.failure(
+                    failureType = TaskRpcFailureType.NON_RETRYABLE_INVALID,
+                    message = "多阶段任务缺少taskId",
+                    rpc = "AntFarmRpcCall.receiveFarmTaskAward",
+                    detail = "taskName=${item.title}"
+                )
+            }
+            val accumulatedAward = getMultiStageAccumulatedAward(task)
+            val receiveRes = JSONObject(AntFarmRpcCall.receiveFarmTaskAward(taskId))
+            return if (ResChecker.checkRes(TAG, receiveRes)) {
+                add2FoodStock(accumulatedAward)
+                Log.farm("领取多阶段奖励[${item.title}] 🍪${accumulatedAward}g (当前饲料: ${foodStock}g)")
+                TaskFlowActionResult.success()
+            } else {
+                buildFarmTaskFailureResult(
+                    receiveRes,
+                    taskId,
+                    item.title,
+                    "receiveMultiStageAward",
+                    "AntFarmRpcCall.receiveFarmTaskAward"
+                )
+            }
+        }
+
+        override fun complete(item: TaskFlowItem): TaskFlowActionResult {
+            return handleGeneralTask(item.type, item.title, silent = true, blacklistOnTerminalFailure = false)
+        }
+
+        override fun actionKey(item: TaskFlowItem, action: TaskFlowAction): String {
+            return "${action.logName}:${item.type.ifBlank { item.id }}:${item.progress.ifBlank { "NO_PROGRESS" }}"
+        }
+
+        override fun afterSuccess(item: TaskFlowItem, action: TaskFlowAction, result: TaskFlowActionResult) {
+            if (action == TaskFlowAction.RECEIVE || action == TaskFlowAction.COMPLETE) {
+                handledActionKeys.add(actionKey(item, action))
+            }
+        }
+
+        override fun afterFailure(
+            item: TaskFlowItem,
+            action: TaskFlowAction,
+            result: TaskFlowActionResult,
+            decision: TaskFlowDecision
+        ) {
+            if (decision == TaskFlowDecision.MARK_HANDLED) {
+                handledActionKeys.add(actionKey(item, action))
+            }
+        }
+
+        override fun onAllTasksDone(snapshot: TaskFlowSnapshot) {
+            if (!isManual) {
+                Status.setFlagToday(StatusFlags.FLAG_FARM_MULTI_STAGE_TASK_FINISHED)
+            }
+        }
+
+        override fun logInfo(message: String) {
+            Log.farm(message)
+        }
+
+        override fun logError(message: String) {
+            Log.error(TAG, message)
+        }
+
+        private fun canReceiveMultiStageAward(task: JSONObject): Boolean {
+            if (!shouldReceiveAwards) {
+                return false
+            }
+            if (foodStock >= foodStockLimit) {
+                return false
+            }
+            if (!gameFinished && foodStock >= 180) {
+                return false
+            }
+            return task.optString("taskStatus") == TaskStatus.FINISHED.name ||
+                getMultiStageAccumulatedAward(task) > 0
+        }
+
+        private fun missingMultiStageRawResult(item: TaskFlowItem, action: String): TaskFlowActionResult {
+            return TaskFlowActionResult.failure(
+                failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                message = "缺少多阶段任务原始数据",
+                rpc = "FarmMultiStageTaskFlowAdapter.$action",
+                detail = "taskId=${item.id} taskName=${item.title} status=${item.status}"
+            )
+        }
+    }
+
+    private fun getMultiStageAccumulatedAward(task: JSONObject): Int {
+        val currentTotalAward = task.optInt("awardCount", 0)
+        val alreadyReceived = task.optInt("alreadyReceiveStageAwardCount", 0)
+        return (currentTotalAward - alreadyReceived).coerceAtLeast(0)
     }
 
     private fun resolveFarmTaskFlagState(): Status.TodayFlagState {
@@ -2703,27 +3006,81 @@ class AntFarm : ModelTask() {
         }
     }
 
-    // 抽取视频处理逻辑，避免嵌套过深
-    private suspend fun handleVideoTask(bizKey: String, title: String) {
-        val res = AntFarmRpcCall.queryTabVideoUrl()
-        val jo = JSONObject(res)
-        if (ResChecker.checkRes(TAG, jo)) {
-            val videoUrl = jo.getString("videoUrl")
-            // 建议增加 contentId 提取的安全性检查
-            try {
-                val contentId = videoUrl.substring(
-                    videoUrl.indexOf("&contentId=") + 11,
-                    videoUrl.indexOf("&refer")
-                )
-                if (ResChecker.checkRes(TAG, JSONObject(AntFarmRpcCall.videoDeliverModule(contentId)))) {
-                    if (ResChecker.checkRes(TAG, JSONObject(AntFarmRpcCall.videoTrigger(contentId)))) {
-                        Log.farm("庄园视频任务确认成功🧾[$title]")
-                    }
-                }
-            } catch (e: Exception) {
-                Log.error(TAG, "解析视频ID失败: $title")
-            }
+    private fun syncFarmAnswerTaskState(bizKey: String, taskStatus: String) {
+        if (bizKey != "ANSWER") {
+            return
         }
+        if (taskStatus != TaskStatus.FINISHED.name && taskStatus != TaskStatus.RECEIVED.name) {
+            return
+        }
+        if (!Status.hasFlagToday(StatusFlags.FLAG_FARM_QUESTION_ANSWERED)) {
+            Status.setFlagToday(StatusFlags.FLAG_FARM_QUESTION_ANSWERED)
+        }
+        if (!Status.hasFlagToday(StatusFlags.FLAG_FARM_QUESTION_CACHE)) {
+            Log.farm("答题已完成，尝试预取明日答案...")
+            answerQuestion("100")
+        }
+    }
+
+    private fun completeFarmAnswerTask(title: String): TaskFlowActionResult {
+        if (!Status.hasFlagToday(StatusFlags.FLAG_FARM_QUESTION_CACHE)) {
+            answerQuestion("100")
+        }
+        return if (Status.hasFlagToday(StatusFlags.FLAG_FARM_QUESTION_ANSWERED)) {
+            TaskFlowActionResult.success()
+        } else {
+            TaskFlowActionResult.failure(
+                failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                message = "答题任务未确认完成",
+                rpc = "DadaDailyRpcCall.home/submit",
+                detail = "taskName=$title"
+            )
+        }
+    }
+
+    // 抽取视频处理逻辑，避免嵌套过深
+    private fun handleVideoTask(bizKey: String, title: String): TaskFlowActionResult {
+        val res = AntFarmRpcCall.queryTabVideoUrl()
+        if (res.isEmpty()) {
+            return TaskFlowActionResult.failure(
+                failureType = TaskRpcFailureType.RETRYABLE_RPC,
+                message = "queryTabVideoUrl返回空",
+                rpc = "AntFarmRpcCall.queryTabVideoUrl",
+                detail = "taskId=$bizKey taskName=$title",
+                stopCurrentRound = true
+            )
+        }
+        val jo = JSONObject(res)
+        if (!ResChecker.checkRes(TAG, jo)) {
+            return buildFarmTaskFailureResult(jo, bizKey, title, "queryVideo", "AntFarmRpcCall.queryTabVideoUrl")
+        }
+
+        val videoUrl = jo.optString("videoUrl")
+        val contentIdStart = videoUrl.indexOf("&contentId=")
+        val referStart = videoUrl.indexOf("&refer", startIndex = (contentIdStart + 1).coerceAtLeast(0))
+        if (contentIdStart < 0 || referStart <= contentIdStart) {
+            return TaskFlowActionResult.failure(
+                failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                message = "解析视频ID失败",
+                rpc = "AntFarmRpcCall.queryTabVideoUrl",
+                raw = jo.toString(),
+                detail = "taskId=$bizKey taskName=$title"
+            )
+        }
+
+        val contentId = videoUrl.substring(contentIdStart + 11, referStart)
+        val deliverJo = JSONObject(AntFarmRpcCall.videoDeliverModule(contentId))
+        if (!ResChecker.checkRes(TAG, deliverJo)) {
+            return buildFarmTaskFailureResult(deliverJo, bizKey, title, "videoDeliver", "AntFarmRpcCall.videoDeliverModule")
+        }
+
+        val triggerJo = JSONObject(AntFarmRpcCall.videoTrigger(contentId))
+        if (!ResChecker.checkRes(TAG, triggerJo)) {
+            return buildFarmTaskFailureResult(triggerJo, bizKey, title, "videoTrigger", "AntFarmRpcCall.videoTrigger")
+        }
+
+        Log.farm("庄园视频任务确认成功🧾[$title]")
+        return TaskFlowActionResult.success()
     }
 
     private fun isFarmTaskQuotaReachedResponse(jo: JSONObject): Boolean {
@@ -2754,34 +3111,34 @@ class AntFarm : ModelTask() {
             .ifBlank { jo.toString() }
     }
 
-    private fun classifyFarmRpcFailure(jo: JSONObject): FarmRpcFailureType {
+    private fun classifyFarmRpcFailure(jo: JSONObject): TaskRpcFailureType {
         val code = extractFarmRpcErrorCode(jo)
         val message = extractFarmRpcMessage(jo)
         return when {
             containsAny(message, "已领取", "已经领取", "重复领取", "重复领奖", "重复完成", "已完成", "任务已完结", "任务已结束") ->
-                FarmRpcFailureType.TERMINAL_DONE
+                TaskRpcFailureType.TERMINAL_DONE
 
             code == "331" ||
                 isFarmTaskQuotaReachedResponse(jo) ||
                 code == "CAMP_TRIGGER_ERROR" ||
                 code.contains("LIMIT", ignoreCase = true) ||
                 containsAny(message, "上限", "限制", "受限", "不可领取", "资格不足", "饲料槽已满", "兑完", "风控", "风险") ->
-                FarmRpcFailureType.BUSINESS_LIMIT
+                TaskRpcFailureType.BUSINESS_LIMIT
 
             code == "400000040" ||
                 containsAny(message, "不支持rpc调用", "不支持RPC完成") ->
-                FarmRpcFailureType.UNSUPPORTED_NO_CLOSURE
+                TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE
 
             code in setOf("20020012", "TASK_ID_INVALID", "ILLEGAL_ARGUMENT", "PROMISE_TEMPLATE_NOT_EXIST") ||
                 containsAny(message, "参数错误", "任务ID非法", "模板不存在") ->
-                FarmRpcFailureType.NON_RETRYABLE_INVALID
+                TaskRpcFailureType.NON_RETRYABLE_INVALID
 
             code in setOf("3000", "REMOTE_INVOKE_EXCEPTION", "OP_REPEAT_CHECK") ||
                 containsAny(message, "系统出错", "系统繁忙", "稍后", "繁忙", "频繁", "重试") ||
                 isFarmMarkedRetryable(jo) ->
-                FarmRpcFailureType.RETRYABLE_RPC
+                TaskRpcFailureType.RETRYABLE_RPC
 
-            else -> FarmRpcFailureType.UNKNOWN_NEEDS_REVIEW
+            else -> TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW
         }
     }
 
@@ -2795,47 +3152,85 @@ class AntFarm : ModelTask() {
         return keywords.any { keyword -> text.contains(keyword, ignoreCase = true) }
     }
 
+    private fun buildFarmTaskFailureResult(
+        jo: JSONObject,
+        taskId: String,
+        title: String,
+        action: String,
+        rpc: String
+    ): TaskFlowActionResult {
+        val failureType = classifyFarmRpcFailure(jo)
+        return TaskFlowActionResult.failure(
+            failureType = failureType,
+            code = extractFarmRpcErrorCode(jo),
+            message = extractFarmRpcMessage(jo),
+            rpc = rpc,
+            raw = jo.toString(),
+            detail = "taskId=$taskId taskName=$title action=$action",
+            stopCurrentRound = failureType == TaskRpcFailureType.RETRYABLE_RPC
+        )
+    }
+
     // 抽取通用任务处理逻辑
-    private fun handleGeneralTask(bizKey: String, title: String, silent: Boolean = false) {
+    private fun handleGeneralTask(
+        bizKey: String,
+        title: String,
+        silent: Boolean = false,
+        blacklistOnTerminalFailure: Boolean = true
+    ): TaskFlowActionResult {
         val result = AntFarmRpcCall.doFarmTask(bizKey)
-        if (result.isNullOrEmpty()) return
+        if (result.isEmpty()) {
+            return TaskFlowActionResult.failure(
+                failureType = TaskRpcFailureType.RETRYABLE_RPC,
+                message = "doFarmTask返回空",
+                rpc = "AntFarmRpcCall.doFarmTask",
+                detail = "taskId=$bizKey taskName=$title",
+                stopCurrentRound = true
+            )
+        }
 
         val jo = JSONObject(result)
         if (isFarmTaskQuotaReachedResponse(jo)) {
             Status.setFlagToday(StatusFlags.FLAG_FARM_TASK_LIMIT_PREFIX + bizKey)
             Log.farm("庄园任务[$title]已达上限")
-            return
+            return buildFarmTaskFailureResult(jo, bizKey, title, "doFarmTask", "AntFarmRpcCall.doFarmTask")
         }
 
         if (ResChecker.checkRes(TAG, jo)) {
             if (!silent) Log.farm("庄园任务完成🧾[$title]")
+            return TaskFlowActionResult.success()
         } else {
             val resultCode = extractFarmRpcErrorCode(jo)
             val message = extractFarmRpcMessage(jo)
             val detail = "module=$farmTaskBlacklistModule taskId=$bizKey taskName=$title " +
                 "action=doFarmTask rpc=AntFarmRpcCall.doFarmTask code=${resultCode.ifBlank { "UNKNOWN" }} msg=$message raw=$jo"
             when (classifyFarmRpcFailure(jo)) {
-                FarmRpcFailureType.TERMINAL_DONE -> {
-                    Log.farm("庄园任务[$title] classification=TERMINAL_DONE decision=MARK_HANDLED $detail")
+                TaskRpcFailureType.TERMINAL_DONE -> {
+                    if (blacklistOnTerminalFailure) Log.farm("庄园任务[$title] classification=TERMINAL_DONE decision=MARK_HANDLED $detail")
                 }
-                FarmRpcFailureType.BUSINESS_LIMIT -> {
-                    Log.farm("庄园任务[$title] classification=BUSINESS_LIMIT decision=STOP_TODAY_OR_CURRENT_CHAIN $detail")
+                TaskRpcFailureType.BUSINESS_LIMIT -> {
+                    if (blacklistOnTerminalFailure) Log.farm("庄园任务[$title] classification=BUSINESS_LIMIT decision=STOP_TODAY_OR_CURRENT_CHAIN $detail")
                 }
-                FarmRpcFailureType.UNSUPPORTED_NO_CLOSURE -> {
-                    blacklistClassifiedFarmTask(bizKey, title, resultCode)
-                    Log.error(TAG, "庄园任务[$title] classification=UNSUPPORTED_NO_CLOSURE decision=BLACKLIST reason=未抓到稳定完成RPC $detail")
+                TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE -> {
+                    if (blacklistOnTerminalFailure) {
+                        blacklistClassifiedFarmTask(bizKey, title, resultCode)
+                        Log.error(TAG, "庄园任务[$title] classification=UNSUPPORTED_NO_CLOSURE decision=BLACKLIST reason=未抓到稳定完成RPC $detail")
+                    }
                 }
-                FarmRpcFailureType.NON_RETRYABLE_INVALID -> {
-                    blacklistClassifiedFarmTask(bizKey, title, resultCode)
-                    Log.error(TAG, "庄园任务[$title] classification=NON_RETRYABLE_INVALID decision=BLACKLIST $detail")
+                TaskRpcFailureType.NON_RETRYABLE_INVALID -> {
+                    if (blacklistOnTerminalFailure) {
+                        blacklistClassifiedFarmTask(bizKey, title, resultCode)
+                        Log.error(TAG, "庄园任务[$title] classification=NON_RETRYABLE_INVALID decision=BLACKLIST $detail")
+                    }
                 }
-                FarmRpcFailureType.RETRYABLE_RPC -> {
-                    Log.error(TAG, "庄园任务[$title] classification=RETRYABLE_RPC decision=RETRY_LATER $detail")
+                TaskRpcFailureType.RETRYABLE_RPC -> {
+                    if (blacklistOnTerminalFailure) Log.error(TAG, "庄园任务[$title] classification=RETRYABLE_RPC decision=RETRY_LATER $detail")
                 }
-                FarmRpcFailureType.UNKNOWN_NEEDS_REVIEW -> {
-                    Log.error(TAG, "庄园任务[$title] classification=UNKNOWN_NEEDS_REVIEW decision=LOG_ONLY $detail")
+                TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW -> {
+                    if (blacklistOnTerminalFailure) Log.error(TAG, "庄园任务[$title] classification=UNKNOWN_NEEDS_REVIEW decision=LOG_ONLY $detail")
                 }
             }
+            return buildFarmTaskFailureResult(jo, bizKey, title, "doFarmTask", "AntFarmRpcCall.doFarmTask")
         }
     }
 
@@ -3004,35 +3399,35 @@ class AntFarm : ModelTask() {
                                 "action=receiveAward rpc=AntFarmRpcCall.receiveFarmTaskAward " +
                                 "code=${resultCode.ifBlank { "UNKNOWN" }} msg=$memo raw=$receiveTaskAwardjo"
                             when (classifyFarmRpcFailure(receiveTaskAwardjo)) {
-                                FarmRpcFailureType.TERMINAL_DONE -> {
+                                TaskRpcFailureType.TERMINAL_DONE -> {
                                     Log.farm("庄园任务[$taskTitle] classification=TERMINAL_DONE decision=MARK_HANDLED $detail")
                                     doubleCheck = true
                                     if (unreceiveTaskAward > 0) unreceiveTaskAward--
                                 }
-                                FarmRpcFailureType.BUSINESS_LIMIT -> {
+                                TaskRpcFailureType.BUSINESS_LIMIT -> {
                                     Log.farm("庄园任务[$taskTitle] classification=BUSINESS_LIMIT decision=STOP_TODAY_OR_CURRENT_CHAIN $detail")
                                     unreceiveTaskAward += (unreceivedTasks.size - i)
                                     isFeedFull = true
                                     break@awardLoop
                                 }
-                                FarmRpcFailureType.UNSUPPORTED_NO_CLOSURE -> {
+                                TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE -> {
                                     blacklistClassifiedFarmTask(taskId, taskTitle, resultCode)
                                     Log.error(TAG, "庄园任务[$taskTitle] classification=UNSUPPORTED_NO_CLOSURE decision=BLACKLIST reason=未抓到稳定领奖闭环 $detail")
                                     unreceiveTaskAward += (unreceivedTasks.size - i)
                                     break@awardLoop
                                 }
-                                FarmRpcFailureType.NON_RETRYABLE_INVALID -> {
+                                TaskRpcFailureType.NON_RETRYABLE_INVALID -> {
                                     blacklistClassifiedFarmTask(taskId, taskTitle, resultCode)
                                     Log.error(TAG, "庄园任务[$taskTitle] classification=NON_RETRYABLE_INVALID decision=BLACKLIST $detail")
                                     unreceiveTaskAward += (unreceivedTasks.size - i)
                                     break@awardLoop
                                 }
-                                FarmRpcFailureType.RETRYABLE_RPC -> {
+                                TaskRpcFailureType.RETRYABLE_RPC -> {
                                     Log.error(TAG, "庄园任务[$taskTitle] classification=RETRYABLE_RPC decision=RETRY_LATER $detail")
                                     unreceiveTaskAward += (unreceivedTasks.size - i)
                                     break@awardLoop
                                 }
-                                FarmRpcFailureType.UNKNOWN_NEEDS_REVIEW -> {
+                                TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW -> {
                                     Log.error(TAG, "庄园任务[$taskTitle] classification=UNKNOWN_NEEDS_REVIEW decision=LOG_ONLY $detail")
                                     unreceiveTaskAward += (unreceivedTasks.size - i)
                                     break@awardLoop

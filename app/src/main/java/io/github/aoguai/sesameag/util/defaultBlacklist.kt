@@ -35,7 +35,10 @@ private val sesameCreditDefaultBlacklist = setOf(
     "完成任务去玩一局斗地主",   // 参数错误：ILLEGAL_ARGUMENT
     "完成任务添加桌面小组件",   // 参数错误：ILLEGAL_ARGUMENT
     "领取任务将芝麻信用添加到首页", // 服务端模板不存在：PROMISE_TEMPLATE_NOT_EXIST
-    "领取任务去开通信用额度"    // 服务端模板不存在：PROMISE_TEMPLATE_NOT_EXIST
+    "领取任务去开通信用额度",   // 服务端模板不存在：PROMISE_TEMPLATE_NOT_EXIST
+    "去租赁下单",              // 参数错误：promiseActivityExtCheck
+    "zml_xiangjiangshikaipao_renwu", // 参数错误：promiseActivityExtCheck
+    "去玩向僵尸开炮"           // 参数错误：promiseActivityExtCheck
 )
 
 private val sesameAlchemyDefaultBlacklist = setOf(
@@ -60,12 +63,10 @@ private val orchardDefaultBlacklist = setOf(
     "ORCHARD_NORMAL_KUAISHOU_MAX",      // 逛一逛快手
     "ORCHARD_NORMAL_DIAOYU1",           // 钓鱼1次
     "ZHUFANG3IN1",                      // 添加农场小组件并访问
-    "12172",                            // 逛助农好货得肥料
+    "12172|逛浙江农货得肥料",             // 任务全局配置不存在
     "12173",                            // 买好货
-    "TOUTIAO",                          // 逛一逛今日头条
+    "TOUTIAO|逛一逛今日头条",            // 精确匹配旧今日头条任务，避免误伤趣头条任务
     "ORCHARD_NORMAL_ZADAN10_3000",      // 砸蛋10次得3000肥料
-    "TAOBAO2",                          // 历史闲鱼短链任务键
-    "TAOBAO",                           // 历史阿福/美团福利任务键
     "ORCHARD_NORMAL_JIUYIHUISHOU_VISIT", // 旧衣服回收
     "ORCHARD_NORMAL_SHOUJISHUMAHUISHOU", // 数码回收
     "ORCHARD_NORMAL_TAB3_ZHIFA",        // 看视频领肥料
@@ -76,16 +77,15 @@ private val orchardDefaultBlacklist = setOf(
     "babafarm_cjmk_xdujdd15",           // 去游戏中心玩游戏：不支持rpc调用
     "LINGHUOTIAOKONG",                  // 逛一逛新浪微博
     "ORCHARD_NORMAL_XIANYU_DUAN",       // 逛一逛闲鱼
+    "ORCHARD_NORMAL_TAOBAOTAOLIPAI_VISIT|逛一逛淘宝拍照", // 不支持rpc调用
     "ORCHARD_NORMAL_WAIMAIMIANDAN",     // 逛一逛闪购外卖
     "ORCHARD_NORMAL_BAIDU_DUO",         // 去百度浏览资讯
-    "ORCHARD_NORMAL_QUTOUTIAOXCX",      // 逛趣头条小程序
     "ORCHARD_NORMAL_XIANXIAZHIFU100",   // 到店支付1笔得100肥
     "ANTFARM_ORCHARD_P2P_SHARER",       // 分享给好友
     "ANTFARM_ORCHARD_NORMAL_GONGGEFANGWEN", // 从支付宝首页访问农场：400000040，不支持rpc调用
     "ORCHARD_TEAM_SPREAD_PERSON",       // 合种/帮帮种多人施肥
     "ORCHARD_HELP_TEAM_MEMBER_COUNT",   // 帮帮种组队
     "NTFARM_ORCHARD_NORMAL_FQHB_NEW1",  // 去天猫攒福气兑红包
-    "去淘宝农场得肥料",
     "试玩农场乐园火爆新游",
     "分享给好友",
     "合种/帮帮种多人施肥",
@@ -114,7 +114,10 @@ private val farmDefaultBlacklist = setOf(
 private val oceanDefaultBlacklist = setOf(
     // 神奇海洋
     "玩一玩生存33天",
-    "DAOLIU_SCSST_GAME_NEW"
+    "DAOLIU_SCSST_GAME_NEW",
+    "LMCT_QDRW_HAIYANG",       // finishTask 返回 400000040，不支持rpc调用
+    "mokuai_senlin_hydrw|随机任务：玩一玩得拼图", // finishTask 返回 400000040，不支持rpc调用
+    "随机任务：玩一玩浪漫餐厅"  // finishTask 返回 400000040，不支持rpc调用
 )
 
 private val forestDefaultBlacklist = setOf(
@@ -173,10 +176,8 @@ private val forestDefaultBlacklist = setOf(
     "ENERGY_XUANJIAO_dianzizhifu电子支付",
     "FOREST_CONTINUOUS_COLLECT_ENERGY_7连续7天收自己能量",
     "LSHS_huisho20_202508", // 完成旧衣回收得能量
-    "TEST_LEAF_TASK",      // 逛农场得落叶肥料
     "YUSHU_202511",        // 单种榆树，年年有榆
     "KTKZ_YS202511",       // 一起组团种榆树
-    "mokuai_senlin_hlz",   // 去玩一玩得活力值
     "CNXDY_TASK_QUDONG",   // 玩下蛋鸭击败20只怪：不支持rpc调用
     "FOREST_NORMAL_DRAW_SHARE", // 森林抽抽乐分享任务
     "FOREST_ACTIVITY_DRAW_SHARE", // 森林抽抽乐活动分享任务
@@ -204,6 +205,7 @@ private val fishPondDefaultBlacklist = setOf(
     "FISHPOND_NCLY_GAME_NCDDP_PLAY1",
     "FISHPOND_NCLY_GAME_CGNNC_PLAY1",
     "FISHPOND_NCLY_GAME_MSQYJ_PLAY",
+    "FISHPOND_NCLY_GAME_NCLSW_PLAY",
     "NORMAL_RENMENYOUXI",
     "TASK_SUBSCRIBE",
     "ANTFISHPOND_WECHAT_SHARE",
@@ -216,12 +218,24 @@ private val fishPondDefaultBlacklist = setOf(
     "农场对对碰匹配5组",
     "闯关挪挪车通过1关",
     "美食奇遇记合成10次",
+    "农场螺丝王消除5组螺丝",
     "开启领钓竿提醒",
     "去玩热门小游戏",
     "送福袋 我也得福袋",
     "钓鱼结果页翻倍",
     "补救广告",
     "浮球游戏广告"
+)
+
+private val stallDefaultBlacklist = setOf(
+    // 蚂蚁新村
+    "ANTSTALL_TASK_XCXYX_sanguobinghe|玩三冰历史最高战力提升1万",
+    "ANTSTALL_TASK_XCXYX_baoweixiangrikui|玩保卫向日葵通关1次",
+    "ANTSTALL_NORMAL_DAILY_DONATE_COUNT|助力就业岗位",
+    "ANTSTALL_TASK_xcjmjyjuankuan2026|帮乡村姐妹家乡就业",
+    "ANTSTALL_TASK_kuaishouhuanduan|去快手逛一逛",
+    "ANTSTALL_TASK_taojinbihuanduan|进入淘宝芭芭农场领免费水果",
+    "ANTSTALL_P2P_DAILY_SHARER|邀请好友助力"
 )
 
 private val yuebaoDefaultBlacklist = setOf(
@@ -239,6 +253,7 @@ private val dodoDefaultBlacklist = emptySet<String>()
 
 private val memberDefaultBlacklist = setOf(
     // 会员
+    "SYH_RTB_SHOW_TASK_INDEX_1",
     "逛淘宝签到领现金",
     "逛一逛淘宝芭芭农场",
     "逛百度天天领现金",
@@ -267,21 +282,27 @@ private val memberDefaultBlacklist = setOf(
     "逛美团刷视频领现金",
     "逛一逛抖音极速版",
     "玩向西冲冲冲升5级",
-    "去设计签名",
-    "个性签名",
-    "会员浮球广告浏览任务" // 浮球后续广告缺少稳定 adBizId/configId 闭环
+    "SYH_RTB_SHOW_TASK_INDEX_2|去签名设计", // 304/TASK_NOT_FINISHED
+    "SYH_RTB_SHOW_TASK_INDEX_3|玩游戏通过1次游戏" // 001，系统异常
 )
 
 private val insuredDefaultBlacklist = emptySet<String>()
 
 private val sportsDefaultBlacklist = setOf(
     // 运动
-    "去设计签名",
-    "签名设计",
-    "真人手写！定制签名",
-    "高端手写・专属签名",
-    "个性签名",
-    "玩游戏"
+    "玩游戏",
+    // 签名/设计类广告任务：finishAdTask 返回 304/TASK_NOT_FINISHED
+    "AP17300472",
+    "AP14300572",
+    "AP18300607",
+    "AP13300544",
+    "AP19300555",
+    "AP18300546",
+    "AP10300545",
+    "AP16300608",
+    "AP12300554",
+    "AP13300501",
+    "AP16300571"
 )
 
 val DEFAULT_BLACKLIST: Map<String, Set<String>> = mapOf(
@@ -297,5 +318,6 @@ val DEFAULT_BLACKLIST: Map<String, Set<String>> = mapOf(
     "蚂蚁保" to insuredDefaultBlacklist,
     "运动" to sportsDefaultBlacklist,
     "神奇物种" to dodoDefaultBlacklist,
+    "蚂蚁新村" to stallDefaultBlacklist,
     "福气鱼池" to fishPondDefaultBlacklist
 )

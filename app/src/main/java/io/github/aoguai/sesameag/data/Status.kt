@@ -42,7 +42,6 @@ class Status {
     var ancientTreeCityCodeList: MutableSet<String> = HashSet() // 古树
     var protectBubbleList: MutableSet<String> = HashSet()
     var doubleTimes: Int = 0
-    var exchangeEnergyShield: Boolean = false // 活力值兑换能量保护罩
     var exchangeCollectHistoryAnimal7Days: Boolean = false
     var exchangeCollectToFriendTimes7Days: Boolean = false
     var youthPrivilege: Boolean = true

@@ -12,6 +12,16 @@ import io.github.aoguai.sesameag.model.modelFieldExt.ChoiceModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.FriendSelectionModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.IntegerModelField
 import io.github.aoguai.sesameag.task.ModelTask
+import io.github.aoguai.sesameag.task.TaskStatus
+import io.github.aoguai.sesameag.task.common.TaskFlowAction
+import io.github.aoguai.sesameag.task.common.TaskFlowActionResult
+import io.github.aoguai.sesameag.task.common.TaskFlowAdapter
+import io.github.aoguai.sesameag.task.common.TaskFlowDecision
+import io.github.aoguai.sesameag.task.common.TaskFlowEngine
+import io.github.aoguai.sesameag.task.common.TaskFlowItem
+import io.github.aoguai.sesameag.task.common.TaskFlowPhase
+import io.github.aoguai.sesameag.task.common.TaskFlowSnapshot
+import io.github.aoguai.sesameag.task.common.TaskRpcFailureType
 import io.github.aoguai.sesameag.util.FriendGuard
 import io.github.aoguai.sesameag.util.GlobalThreadPools
 import io.github.aoguai.sesameag.util.JsonUtil
@@ -69,6 +79,9 @@ class AntStall : ModelTask() {
     private lateinit var stallInviteRegisterList: FriendSelectionModelField
     private lateinit var stallAssistFriend: BooleanModelField
     private lateinit var assistFriendList: FriendSelectionModelField
+    private val handledTaskFinishes = LinkedHashSet<String>()
+    private val handledTaskAwards = LinkedHashSet<String>()
+    private val loggedTaskMessages = LinkedHashSet<String>()
 
     override fun getName(): String = "新村"
 
@@ -309,6 +322,9 @@ class AntStall : ModelTask() {
 
             // 自动任务
             if (stallAutoTask.value == true) {
+                handledTaskFinishes.clear()
+                handledTaskAwards.clear()
+                loggedTaskMessages.clear()
                 taskList()
                 tc.countDebug("自动任务第一次")
                 GlobalThreadPools.sleepCompat(500)
@@ -831,196 +847,629 @@ class AntStall : ModelTask() {
      */
     private fun taskList() {
         try {
-            val response = AntStallRpcCall.taskList()
-            val json = JSONObject(response)
-
-            if (!ResChecker.checkRes(TAG, json)) {
-                Log.error(TAG, "taskList err: $response")
-                return
-            }
-
-            // 签到
-            val signListModel = json.getJSONObject("signListModel")
-            if (!signListModel.getBoolean("currentKeySigned")) {
-                Log.stall("开始执行每日签到...")
-                signToday()
-            }
-
-            val taskModels = json.getJSONArray("taskModels")
-            Log.stall("开始检查 ${taskModels.length()} 个新村任务...")
-
-            for (i in 0 until taskModels.length()) {
-                try {
-                    val task = taskModels.getJSONObject(i)
-                    val taskStatus = task.getString("taskStatus")
-                    val taskType = task.getString("taskType")
-
-                    // 已完成的任务领取奖励
-                    if (taskStatus == "FINISHED") {
-                        Log.stall("任务[$taskType]已完成,尝试领取奖励...")
-                        receiveTaskAward(taskType)
-                        continue
-                    }
-
-                    if (taskStatus != "TODO") continue
-
-                    val bizInfo = JSONObject(task.getString("bizInfo"))
-                    val title = bizInfo.optString("title", taskType)
-                    val actionType = bizInfo.getString("actionType")
-
-                    // 自动完成任务
-                    if (actionType == "VISIT_AUTO_FINISH" || taskType in TASK_TYPE_LIST) {
-                        if (finishTask(taskType)) {
-                            Log.stall("蚂蚁新村💣任务[$title]完成")
-                            GlobalThreadPools.sleepCompat(200L)
-                        }
-                        continue
-                    }
-
-                    // 特殊任务处理
-                    when (taskType) {
-                        "ANTSTALL_NORMAL_DAILY_QA" -> {
-                            if (ReadingDada.answerQuestion(bizInfo)) {
-                                receiveTaskAward(taskType)
-                            }
-                        }
-
-                        "ANTSTALL_NORMAL_INVITE_REGISTER" -> {
-                            if (inviteRegister()) {
-                                GlobalThreadPools.sleepCompat(200L)
-                            }
-                        }
-
-                        "ANTSTALL_XLIGHT_VARIABLE_AWARD" -> {
-                            handleXlightTask()
-                        }
-                    }
-
-                    GlobalThreadPools.sleepCompat(200L)
-
-                } catch (t: Throwable) {
-                    Log.printStackTrace(TAG, "taskList for err:", t)
-                }
-            }
+            TaskFlowEngine(StallTaskFlowAdapter(), roundSleepMs = 500L).run()
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "taskList err:", t)
+        }
+    }
+
+    private inner class StallTaskFlowAdapter : TaskFlowAdapter {
+        override val moduleName: String = STALL_TASK_BLACKLIST_MODULE
+        override val flowName: String = "新村任务"
+
+        override fun query(): JSONObject {
+            val response = AntStallRpcCall.taskList()
+            return JsonUtil.parseJSONObjectOrNull(response) ?: JSONObject()
+                .put("success", false)
+                .put("resultDesc", "taskList返回空或无法解析")
+        }
+
+        override fun isQuerySuccess(response: JSONObject): Boolean {
+            return ResChecker.checkRes(TAG, response)
+        }
+
+        override fun extractItems(response: JSONObject): List<TaskFlowItem> {
+            val items = mutableListOf<TaskFlowItem>()
+            val signListModel = response.optJSONObject("signListModel")
+            if (signListModel != null && !signListModel.optBoolean("currentKeySigned", true)) {
+                items.add(
+                    TaskFlowItem(
+                        id = STALL_SIGN_TASK_TYPE,
+                        title = "新村签到",
+                        status = TaskStatus.TODO.name,
+                        type = STALL_SIGN_TASK_TYPE,
+                        actionType = "SIGN",
+                        blacklistKeys = emptyList(),
+                        raw = JSONObject().put("signListModel", signListModel)
+                    )
+                )
+            }
+
+            val taskModels = response.optJSONArray("taskModels") ?: return items
+            for (i in 0 until taskModels.length()) {
+                val task = taskModels.optJSONObject(i) ?: continue
+                val taskType = task.optString("taskType").trim()
+                if (taskType.isBlank()) {
+                    continue
+                }
+                val bizInfo = parseStallBizInfo(task.opt("bizInfo"))
+                val taskTitle = getStallTaskTitle(task, bizInfo, taskType)
+                val taskStatus = task.optString("taskStatus").trim()
+                val actionType = bizInfo.optString("actionType").trim().ifBlank {
+                    task.optString("actionType").trim()
+                }
+                val awardCount = bizInfo.optString("awardCount").trim().ifBlank {
+                    task.optString("awardCount").trim()
+                }
+                val raw = JSONObject()
+                    .put("task", task)
+                    .put("bizInfo", bizInfo)
+                    .put("taskKey", buildStallTaskKey(taskType))
+                    .put("awardCount", awardCount)
+
+                items.add(
+                    TaskFlowItem(
+                        id = taskType,
+                        title = taskTitle,
+                        status = taskStatus,
+                        type = taskType,
+                        actionType = actionType,
+                        blacklistKeys = listOf(taskType, taskTitle).filter { it.isNotBlank() },
+                        raw = raw,
+                        progress = "actionType=${actionType.ifBlank { "UNKNOWN" }} award=$awardCount"
+                    )
+                )
+            }
+            return items
+        }
+
+        override fun mapPhase(item: TaskFlowItem): TaskFlowPhase {
+            if (item.type == STALL_SIGN_TASK_TYPE) {
+                return TaskFlowPhase.READY_TO_COMPLETE
+            }
+            return when {
+                isStallRewardReadyStatus(item.status) -> TaskFlowPhase.REWARD_READY
+                isStallTerminalStatus(item.status) -> TaskFlowPhase.TERMINAL
+                isStallTodoStatus(item.status) && isCompletableStallTask(item) -> TaskFlowPhase.READY_TO_COMPLETE
+                isStallTodoStatus(item.status) -> TaskFlowPhase.UNSUPPORTED
+                else -> TaskFlowPhase.UNKNOWN
+            }
+        }
+
+        override fun shouldSkip(item: TaskFlowItem): Boolean {
+            if (Thread.currentThread().isInterrupted) {
+                return true
+            }
+
+            val phase = mapPhase(item)
+            val taskKey = buildStallTaskKey(item.type)
+            if (handledTaskAwards.contains(taskKey) && phase == TaskFlowPhase.REWARD_READY) {
+                return true
+            }
+            if (handledTaskFinishes.contains(taskKey) && phase == TaskFlowPhase.READY_TO_COMPLETE) {
+                return true
+            }
+            if (phase == TaskFlowPhase.REWARD_READY && stallReceiveAward.value != true) {
+                logStallTaskOnce("新村任务⛪[${item.title}]已完成，未开启领奖，跳过领取")
+                return true
+            }
+            if (item.type == STALL_INVITE_REGISTER_TASK_TYPE &&
+                phase == TaskFlowPhase.READY_TO_COMPLETE &&
+                stallInviteRegister.value != true
+            ) {
+                logStallTaskOnce("新村任务⛪[${item.title}]未开启邀请好友开通，跳过")
+                return true
+            }
+            if (phase == TaskFlowPhase.UNSUPPORTED) {
+                logStallTaskOnce(
+                    "新村任务⛪[${item.title}]暂不支持自动闭环，跳过 " +
+                        "taskType=${item.type} actionType=${item.actionType.ifBlank { "UNKNOWN" }} status=${item.status}"
+                )
+                return true
+            }
+            return false
+        }
+
+        override fun isBlacklisted(item: TaskFlowItem): Boolean {
+            val blacklisted = super<TaskFlowAdapter>.isBlacklisted(item)
+            if (blacklisted) {
+                logStallTaskOnce("新村任务⛪[${item.title}]已在黑名单中，跳过处理")
+            }
+            return blacklisted
+        }
+
+        override fun receive(item: TaskFlowItem): TaskFlowActionResult {
+            return receiveTaskAward(item)
+        }
+
+        override fun complete(item: TaskFlowItem): TaskFlowActionResult {
+            return when (item.type) {
+                STALL_SIGN_TASK_TYPE -> signToday()
+                STALL_DAILY_QA_TASK_TYPE -> completeDailyQuestionTask(item)
+                STALL_INVITE_REGISTER_TASK_TYPE -> completeInviteRegisterTask(item)
+                STALL_XLIGHT_TASK_TYPE -> handleXlightTask(item)
+                else -> finishTask(item)
+            }
+        }
+
+        override fun actionKey(item: TaskFlowItem, action: TaskFlowAction): String {
+            val taskKey = buildStallTaskKey(item.type)
+            return when (action) {
+                TaskFlowAction.RECEIVE -> "receive:$taskKey"
+                TaskFlowAction.COMPLETE -> "complete:$taskKey"
+                else -> super<TaskFlowAdapter>.actionKey(item, action)
+            }
+        }
+
+        override fun afterSuccess(item: TaskFlowItem, action: TaskFlowAction, result: TaskFlowActionResult) {
+            rememberHandledTask(item, action)
+        }
+
+        override fun afterFailure(
+            item: TaskFlowItem,
+            action: TaskFlowAction,
+            result: TaskFlowActionResult,
+            decision: TaskFlowDecision
+        ) {
+            if (decision == TaskFlowDecision.MARK_HANDLED ||
+                decision == TaskFlowDecision.STOP_TODAY_OR_CURRENT_CHAIN ||
+                decision == TaskFlowDecision.BLACKLIST
+            ) {
+                rememberHandledTask(item, action)
+            }
+        }
+
+        override fun onAllTasksDone(snapshot: TaskFlowSnapshot) {
+            Log.stall("新村任务⛪全部处理完成[${snapshot.completedTasks}/${snapshot.totalTasks}]")
+        }
+
+        override fun onQueryFailed(response: JSONObject) {
+            Log.error(TAG, "新村任务列表查询失败 raw=$response")
+        }
+
+        override fun logInfo(message: String) {
+            Log.stall(message)
+        }
+
+        override fun logError(message: String) {
+            Log.error(TAG, message)
+        }
+
+        private fun rememberHandledTask(item: TaskFlowItem, action: TaskFlowAction) {
+            val taskKey = buildStallTaskKey(item.type)
+            when (action) {
+                TaskFlowAction.RECEIVE -> handledTaskAwards.add(taskKey)
+                TaskFlowAction.COMPLETE -> handledTaskFinishes.add(taskKey)
+                else -> Unit
+            }
         }
     }
 
     /**
      * @brief 处理X-light任务
      */
-    private fun handleXlightTask() {
-        try {
-            val response = AntStallRpcCall.xlightPlugin()
-            val json = JSONObject(response)
+    private fun handleXlightTask(item: TaskFlowItem): TaskFlowActionResult {
+        val response = AntStallRpcCall.xlightPlugin()
+        val json = JsonUtil.parseJSONObjectOrNull(response) ?: return emptyStallActionResponse(
+            rpc = "AntStallRpcCall.xlightPlugin",
+            item = item,
+            action = "xlightPlugin",
+            raw = response
+        )
 
-            if (!json.has("playingResult")) {
-                Log.error(TAG, "taskList.xlightPlugin err: ${json.optString("resultDesc")}")
-                return
-            }
+        val playingResult = json.optJSONObject("playingResult") ?: return stallTaskActionFailureResult(
+            response = json,
+            rpc = "AntStallRpcCall.xlightPlugin",
+            detail = stallTaskActionDetail(item, "xlightPlugin")
+        )
+        val pid = playingResult.optString("playingBizId").trim()
+        if (pid.isBlank()) {
+            return TaskFlowActionResult.failure(
+                failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                message = "XLight缺少playingBizId",
+                rpc = "AntStallRpcCall.xlightPlugin",
+                raw = json.toString(),
+                detail = stallTaskActionDetail(item, "xlightPlugin")
+            )
+        }
 
-            val playingResult = json.getJSONObject("playingResult")
-            val pid = playingResult.getString("playingBizId")
-            val eventList = JsonUtil.getValueByPathObject(
-                playingResult,
-                "eventRewardDetail.eventRewardInfoList"
-            ) as? JSONArray ?: return
+        val eventList = JsonUtil.getValueByPathObject(
+            playingResult,
+            "eventRewardDetail.eventRewardInfoList"
+        ) as? JSONArray ?: return TaskFlowActionResult.failure(
+            failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+            message = "XLight缺少奖励事件",
+            rpc = "AntStallRpcCall.xlightPlugin",
+            raw = json.toString(),
+            detail = stallTaskActionDetail(item, "xlightPlugin")
+        )
 
-            if (eventList.length() == 0) return
+        if (eventList.length() == 0) {
+            return TaskFlowActionResult.failure(
+                failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                message = "XLight奖励事件为空",
+                rpc = "AntStallRpcCall.xlightPlugin",
+                raw = json.toString(),
+                detail = stallTaskActionDetail(item, "xlightPlugin")
+            )
+        }
 
-            for (j in 0 until eventList.length()) {
-                try {
-                    val eventInfo = eventList.getJSONObject(j)
-                    val finishResponse = AntStallRpcCall.finish(pid, eventInfo)
-                    Log.stall("延时5S 木兰市集")
-                    GlobalThreadPools.sleepCompat(5000)
+        var successCount = 0
+        var firstFailure: TaskFlowActionResult? = null
+        for (j in 0 until eventList.length()) {
+            val eventInfo = eventList.optJSONObject(j) ?: continue
+            val finishResponse = AntStallRpcCall.finish(pid, eventInfo)
+            Log.stall("延时5S 木兰市集")
+            GlobalThreadPools.sleepCompat(5000)
 
-                    val finishJson = JSONObject(finishResponse)
-                    if (!finishJson.optBoolean("success")) {
-                        Log.error(TAG, "taskList.finish err: ${finishJson.optString("resultDesc")}")
-                    }
-                } catch (t: Throwable) {
-                    Log.printStackTrace(TAG, "taskList for err:", t)
+            val finishJson = JsonUtil.parseJSONObjectOrNull(finishResponse)
+            if (finishJson == null) {
+                if (firstFailure == null) {
+                    firstFailure = emptyStallActionResponse(
+                        rpc = "AntStallRpcCall.finish",
+                        item = item,
+                        action = "xlightFinish",
+                        raw = finishResponse
+                    )
                 }
+                continue
             }
-        } catch (t: Throwable) {
-            Log.printStackTrace(TAG, "handleXlightTask err:", t)
+
+            if (isStallTaskRpcSuccess(finishJson)) {
+                successCount++
+            } else if (firstFailure == null) {
+                firstFailure = stallTaskActionFailureResult(
+                    response = finishJson,
+                    rpc = "AntStallRpcCall.finish",
+                    detail = stallTaskActionDetail(item, "xlightFinish")
+                )
+            }
+        }
+
+        return if (successCount > 0) {
+            Log.stall("蚂蚁新村💣任务[${item.title}]完成")
+            TaskFlowActionResult.success()
+        } else {
+            firstFailure ?: TaskFlowActionResult.failure(
+                failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                message = "XLight未推进任何事件",
+                rpc = "AntStallRpcCall.finish",
+                raw = json.toString(),
+                detail = stallTaskActionDetail(item, "xlightFinish")
+            )
         }
     }
 
     /**
      * @brief 今日签到
      */
-    private fun signToday() {
-        try {
-            val response = AntStallRpcCall.signToday()
-            val json = JSONObject(response)
+    private fun signToday(): TaskFlowActionResult {
+        val response = AntStallRpcCall.signToday()
+        val json = JsonUtil.parseJSONObjectOrNull(response) ?: return TaskFlowActionResult.failure(
+            failureType = TaskRpcFailureType.RETRYABLE_RPC,
+            message = "signToday返回空或无法解析",
+            rpc = "AntStallRpcCall.signToday",
+            raw = response,
+            stopCurrentRound = true
+        )
 
-            if (ResChecker.checkRes(TAG, json)) {
-                Log.stall("蚂蚁新村⛪[签到成功]")
-            } else {
-                Log.error(TAG, "signToday err: $response")
-            }
-        } catch (t: Throwable) {
-            Log.printStackTrace(TAG, "signToday err:", t)
+        return if (isStallTaskRpcSuccess(json)) {
+            Log.stall("蚂蚁新村⛪[签到成功]")
+            TaskFlowActionResult.success()
+        } else {
+            stallTaskActionFailureResult(
+                response = json,
+                rpc = "AntStallRpcCall.signToday",
+                detail = "taskType=$STALL_SIGN_TASK_TYPE action=signToday"
+            )
         }
     }
 
     /**
      * @brief 领取任务奖励
      */
-    private fun receiveTaskAward(taskType: String) {
-        if (stallReceiveAward.value != true) return
+    private fun receiveTaskAward(item: TaskFlowItem): TaskFlowActionResult {
+        val response = AntStallRpcCall.receiveTaskAward(item.type)
+        val json = JsonUtil.parseJSONObjectOrNull(response) ?: return emptyStallActionResponse(
+            rpc = "AntStallRpcCall.receiveTaskAward",
+            item = item,
+            action = "receiveTaskAward",
+            raw = response
+        )
 
-        try {
-            val response = AntStallRpcCall.receiveTaskAward(taskType)
-            val json = JSONObject(response)
-
-            if (json.optBoolean("success")) {
-                Log.stall("蚂蚁新村⛪[领取奖励]")
-            } else {
-                Log.error(TAG, "receiveTaskAward err: $response")
-            }
-        } catch (t: Throwable) {
-            Log.printStackTrace(TAG, "receiveTaskAward err:", t)
+        return if (isStallTaskRpcSuccess(json)) {
+            Log.stall("蚂蚁新村⛪[领取奖励:${item.title}]")
+            TaskFlowActionResult.success()
+        } else {
+            stallTaskActionFailureResult(
+                response = json,
+                rpc = "AntStallRpcCall.receiveTaskAward",
+                detail = stallTaskActionDetail(item, "receiveTaskAward")
+            )
         }
     }
 
     /**
      * @brief 完成任务
      */
-    private fun finishTask(taskType: String): Boolean {
-        try {
-            val response = AntStallRpcCall.finishTask(
-                "${taskType}_${System.currentTimeMillis()}",
-                taskType
-            )
-            val json = JSONObject(response)
+    private fun finishTask(item: TaskFlowItem): TaskFlowActionResult {
+        val response = AntStallRpcCall.finishTask(
+            "${item.type}_${System.currentTimeMillis()}",
+            item.type
+        )
+        val json = JsonUtil.parseJSONObjectOrNull(response) ?: return emptyStallActionResponse(
+            rpc = "AntStallRpcCall.finishTask",
+            item = item,
+            action = "finishTask",
+            raw = response
+        )
 
-            if (json.optBoolean("success")) {
-                return true
-            } else {
-                val errorCode = json.optString("code", json.optString("resultCode", ""))
-                val desc = json.optString("desc", json.optString("memo", ""))
-                if (errorCode == "400000040" || desc.contains("不支持rpc调用")) {
-                    Log.stall("任务[$taskType]不支持RPC完成，跳过finishTask，等待服务端状态回写")
-                    return false
-                }
-                if (ResChecker.isSilentFailure(json)) {
-                    val reason = desc.ifBlank {
-                        json.optString("resultDesc").ifBlank { json.optString("errorMsg") }
-                    }
-                    val detail = if (reason.isNotBlank()) "：$reason" else ""
-                    Log.stall("任务[$taskType]达到业务限制，跳过finishTask$detail")
-                    return false
-                }
-                Log.error(TAG, "finishTask err: $response")
-            }
-        } catch (t: Throwable) {
-            Log.printStackTrace(TAG, "finishTask err:", t)
+        return if (isStallTaskRpcSuccess(json)) {
+            Log.stall("蚂蚁新村💣任务[${item.title}]完成")
+            TaskFlowActionResult.success()
+        } else {
+            stallTaskActionFailureResult(
+                response = json,
+                rpc = "AntStallRpcCall.finishTask",
+                detail = stallTaskActionDetail(item, "finishTask")
+            )
         }
-        return false
+    }
+
+    private fun completeDailyQuestionTask(item: TaskFlowItem): TaskFlowActionResult {
+        val bizInfo = item.raw?.optJSONObject("bizInfo") ?: return missingStallRawResult(item, "dailyQuestion")
+        return if (ReadingDada.answerQuestion(bizInfo)) {
+            TaskFlowActionResult.success()
+        } else {
+            TaskFlowActionResult.failure(
+                failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                message = "答题任务未完成",
+                rpc = "ReadingDada.answerQuestion",
+                detail = stallTaskActionDetail(item, "dailyQuestion")
+            )
+        }
+    }
+
+    private fun completeInviteRegisterTask(item: TaskFlowItem): TaskFlowActionResult {
+        return if (inviteRegister()) {
+            TaskFlowActionResult.success()
+        } else {
+            TaskFlowActionResult.failure(
+                failureType = TaskRpcFailureType.BUSINESS_LIMIT,
+                message = "未找到可邀请好友或邀请未成功",
+                rpc = "AntStall.inviteRegister",
+                detail = stallTaskActionDetail(item, "inviteRegister")
+            )
+        }
+    }
+
+    private fun emptyStallActionResponse(
+        rpc: String,
+        item: TaskFlowItem,
+        action: String,
+        raw: String = ""
+    ): TaskFlowActionResult {
+        return TaskFlowActionResult.failure(
+            failureType = TaskRpcFailureType.RETRYABLE_RPC,
+            message = "${action}返回空或无法解析",
+            rpc = rpc,
+            raw = raw,
+            detail = stallTaskActionDetail(item, action),
+            stopCurrentRound = true
+        )
+    }
+
+    private fun missingStallRawResult(item: TaskFlowItem, action: String): TaskFlowActionResult {
+        return TaskFlowActionResult.failure(
+            failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+            message = "缺少任务原始数据",
+            rpc = "StallTaskFlowAdapter.$action",
+            detail = stallTaskActionDetail(item, action)
+        )
+    }
+
+    private fun stallTaskActionFailureResult(
+        response: JSONObject,
+        rpc: String,
+        detail: String
+    ): TaskFlowActionResult {
+        val code = extractStallTaskFailureCode(response)
+        val message = extractStallTaskFailureMessage(response)
+        val failureType = classifyStallTaskFailure(response)
+        return TaskFlowActionResult.failure(
+            failureType = failureType,
+            code = code,
+            message = message,
+            rpc = rpc,
+            raw = response.toString(),
+            detail = detail,
+            stopCurrentRound = failureType == TaskRpcFailureType.RETRYABLE_RPC
+        )
+    }
+
+    private fun stallTaskActionDetail(item: TaskFlowItem, action: String): String {
+        return "taskType=${item.type} taskName=${item.title} actionType=${item.actionType} action=$action"
+    }
+
+    private fun buildStallTaskKey(taskType: String): String {
+        return taskType.ifBlank { "UNKNOWN_TASK" }
+    }
+
+    private fun parseStallBizInfo(rawBizInfo: Any?): JSONObject {
+        return when (rawBizInfo) {
+            is JSONObject -> rawBizInfo
+            is String -> rawBizInfo.takeIf { it.isNotBlank() }?.let {
+                JsonUtil.parseJSONObjectOrNull(it)
+            } ?: JSONObject()
+            else -> JSONObject()
+        }
+    }
+
+    private fun getStallTaskTitle(task: JSONObject, bizInfo: JSONObject, taskType: String): String {
+        return sequenceOf(
+            bizInfo.optString("taskTitle"),
+            bizInfo.optString("title"),
+            bizInfo.optString("taskName"),
+            bizInfo.optString("taskDesc"),
+            task.optString("taskTitle"),
+            task.optString("title"),
+            taskType
+        ).firstOrNull { it.isNotBlank() } ?: taskType
+    }
+
+    private fun isCompletableStallTask(item: TaskFlowItem): Boolean {
+        return item.actionType == "VISIT_AUTO_FINISH" ||
+            item.type in TASK_TYPE_LIST ||
+            item.type == STALL_DAILY_QA_TASK_TYPE ||
+            item.type == STALL_INVITE_REGISTER_TASK_TYPE ||
+            item.type == STALL_XLIGHT_TASK_TYPE
+    }
+
+    private fun isStallRewardReadyStatus(taskStatus: String): Boolean {
+        return taskStatus == TaskStatus.FINISHED.name ||
+            taskStatus == "COMPLETE" ||
+            taskStatus == "WAIT_RECEIVE" ||
+            taskStatus == "TO_RECEIVE" ||
+            taskStatus == "UNLOCKED"
+    }
+
+    private fun isStallTerminalStatus(taskStatus: String): Boolean {
+        return taskStatus == TaskStatus.RECEIVED.name ||
+            taskStatus == "HAS_RECEIVED" ||
+            taskStatus == "DONE" ||
+            taskStatus == "COMPLETED"
+    }
+
+    private fun isStallTodoStatus(taskStatus: String): Boolean {
+        return taskStatus == TaskStatus.TODO.name ||
+            taskStatus == "WAIT_COMPLETE"
+    }
+
+    private fun isStallTaskRpcSuccess(response: JSONObject): Boolean {
+        response.optJSONObject("resData")?.let {
+            return isStallTaskRpcSuccess(it)
+        }
+        if (response.has("success")) {
+            return response.optBoolean("success", false)
+        }
+        if (response.has("isSuccess")) {
+            return response.optBoolean("isSuccess", false)
+        }
+
+        val resultCode = response.opt("resultCode")
+        when (resultCode) {
+            is Number -> if (resultCode.toInt() == 100 || resultCode.toInt() == 200) return true
+            is String -> {
+                if (resultCode.equals("SUCCESS", ignoreCase = true) ||
+                    resultCode == "100" ||
+                    resultCode == "200"
+                ) {
+                    return true
+                }
+                if (resultCode.isNotBlank()) {
+                    return false
+                }
+            }
+        }
+
+        if ("SUCCESS".equals(response.optString("memo"), ignoreCase = true)) {
+            return true
+        }
+        val resultDesc = response.optString("resultDesc").trim()
+        if (resultDesc == "成功" || resultDesc == "处理成功") {
+            return true
+        }
+        val resultView = response.optString("resultView").trim()
+        return resultView == "成功" || resultView == "处理成功"
+    }
+
+    private fun classifyStallTaskFailure(response: JSONObject): TaskRpcFailureType {
+        response.optJSONObject("resData")?.let {
+            return classifyStallTaskFailure(it)
+        }
+        val code = extractStallTaskFailureCode(response)
+        val message = extractStallTaskFailureMessage(response)
+        return when {
+            isStallTaskAlreadyHandled(response) ||
+                containsAnyStall(message, "已领取", "已经领取", "重复领取", "重复领奖", "重复完成", "已完成", "任务已完结", "任务已结束", "无状态转换处理") ->
+                TaskRpcFailureType.TERMINAL_DONE
+
+            ResChecker.isSilentFailure(response) ||
+                code == "CAMP_TRIGGER_ERROR" ||
+                code.contains("LIMIT", ignoreCase = true) ||
+                containsAnyStall(message, "上限", "限制", "受限", "不可领取", "资格不足", "兑完", "风控", "风险") ->
+                TaskRpcFailureType.BUSINESS_LIMIT
+
+            code == "400000040" ||
+                containsAnyStall(message, "不支持rpc调用", "不支持RPC完成") ->
+                TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE
+
+            code in setOf("20020012", "TASK_ID_INVALID", "ILLEGAL_ARGUMENT", "PROMISE_TEMPLATE_NOT_EXIST") ||
+                containsAnyStall(message, "参数错误", "任务ID非法", "模板不存在") ->
+                TaskRpcFailureType.NON_RETRYABLE_INVALID
+
+            code in setOf("3000", "REMOTE_INVOKE_EXCEPTION", "OP_REPEAT_CHECK", "SYSTEM_BUSY", "NETWORK_ERROR", "I07", "USER_FREQUENTLY_LOCK") ||
+                containsAnyStall(message, "系统出错", "系统繁忙", "稍后", "繁忙", "频繁", "重试", "需要验证", "访问被拒绝") ||
+                isStallFailureMarkedRetryable(response) ->
+                TaskRpcFailureType.RETRYABLE_RPC
+
+            else -> TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW
+        }
+    }
+
+    private fun isStallTaskAlreadyHandled(response: JSONObject): Boolean {
+        val code = extractStallTaskFailureCode(response)
+        val message = extractStallTaskFailureMessage(response)
+        return code == "400000030" ||
+            code == "B000000008" ||
+            containsAnyStall(message, "任务已完结", "无状态转换处理")
+    }
+
+    private fun extractStallTaskFailureCode(response: JSONObject): String {
+        response.optJSONObject("resData")?.let {
+            return extractStallTaskFailureCode(it)
+        }
+        return response.optString("code").trim()
+            .ifBlank { response.optString("errorCode").trim() }
+            .ifBlank { response.optString("resultCode").trim() }
+            .ifBlank { response.opt("error")?.toString()?.trim().orEmpty() }
+    }
+
+    private fun extractStallTaskFailureMessage(response: JSONObject): String {
+        response.optJSONObject("resData")?.let {
+            return extractStallTaskFailureMessage(it)
+        }
+        return sequenceOf(
+            response.optString("desc").trim(),
+            response.optString("errorMsg").trim(),
+            response.optString("resultDesc").trim(),
+            response.optString("resultMessage").trim(),
+            response.optString("resultMsg").trim(),
+            response.optString("errorMessage").trim(),
+            response.optString("memo").trim(),
+            response.optString("message").trim(),
+            response.optString("resultView").trim(),
+            response.optString("errorTip").trim()
+        ).firstOrNull { it.isNotBlank() } ?: response.toString()
+    }
+
+    private fun isStallFailureMarkedRetryable(response: JSONObject): Boolean {
+        response.optJSONObject("resData")?.let {
+            return isStallFailureMarkedRetryable(it)
+        }
+        return listOf("retryable", "retriable", "canRetry").any { key ->
+            response.has(key) && response.optBoolean(key, false)
+        }
+    }
+
+    private fun containsAnyStall(text: String, vararg keywords: String): Boolean {
+        return keywords.any { keyword -> text.contains(keyword, ignoreCase = true) }
+    }
+
+    private fun logStallTaskOnce(message: String) {
+        if (loggedTaskMessages.add(message)) {
+            Log.stall(message)
+        }
     }
 
     /**
@@ -1560,6 +2009,11 @@ class AntStall : ModelTask() {
 
     companion object {
         private const val TAG = "AntStall"
+        private const val STALL_TASK_BLACKLIST_MODULE = "蚂蚁新村"
+        private const val STALL_SIGN_TASK_TYPE = "ANTSTALL_SIGN_TODAY"
+        private const val STALL_DAILY_QA_TASK_TYPE = "ANTSTALL_NORMAL_DAILY_QA"
+        private const val STALL_INVITE_REGISTER_TASK_TYPE = "ANTSTALL_NORMAL_INVITE_REGISTER"
+        private const val STALL_XLIGHT_TASK_TYPE = "ANTSTALL_XLIGHT_VARIABLE_AWARD"
 
         /**
          * @brief 任务类型列表

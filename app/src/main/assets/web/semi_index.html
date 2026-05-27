@@ -551,6 +551,15 @@
         .time-editor-toggle:active {
             background-color: var(--semi-color-fill-0);
         }
+
+        .boot-loading {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--semi-color-text-2);
+            font-size: 0.875rem;
+        }
     </style>
 
     <!-- React & ReactDOM -->
@@ -565,7 +574,9 @@
 </head>
 
 <body>
-    <div id="app"></div>
+    <div id="app">
+        <div class="boot-loading">正在加载设置...</div>
+    </div>
 
     <script type="text/babel">
         const switchMode = () => {
@@ -1327,6 +1338,8 @@
             const [sheetConfig, setSheetConfig] = useState({ modelCode: '', fieldCode: '', type: '', title: '', desc: '' });
             const [sheetList, setSheetList] = useState([]); // 完整列表数据
             const [sheetSearch, setSheetSearch] = useState(''); // 搜索关键词
+            const [sheetLoading, setSheetLoading] = useState(false);
+            const [sheetVisibleLimit, setSheetVisibleLimit] = useState(120);
             const [selectedIds, setSelectedIds] = useState(new Set()); // 选中的ID集合
             const [selectedCounts, setSelectedCounts] = useState({}); // ID对应的数值
             const [friendSheetVisible, setFriendSheetVisible] = useState(false);
@@ -1360,6 +1373,7 @@
             const friendLongPressTriggeredRef = useRef(false);
             const friendLongPressStartRef = useRef(null);
             const friendSheetLoadTokenRef = useRef(0);
+            const sheetLoadTokenRef = useRef(null);
 
             const normalizeFriendBatchIds = (value) => {
                 const result = new Set();
@@ -1381,15 +1395,54 @@
                 setFriendBatchSelectedIds(next);
             };
 
+            const loadModelIfNeeded = (modelCode) => {
+                if (!modelCode) return;
+                setModelsMap(prev => {
+                    if (prev[modelCode]) return prev;
+                    return { ...prev, [modelCode]: getModelData(modelCode) };
+                });
+            };
+
             // 初始化
             useEffect(() => {
                 const tabsData = getTabsData();
                 setTabs(tabsData);
                 const initialMap = {};
-                tabsData.forEach(tab => {
-                    initialMap[tab.modelCode] = getModelData(tab.modelCode);
-                });
+                if (tabsData[0]?.modelCode) {
+                    initialMap[tabsData[0].modelCode] = getModelData(tabsData[0].modelCode);
+                }
                 setModelsMap(initialMap);
+            }, []);
+
+            useEffect(() => {
+                setSheetVisibleLimit(120);
+            }, [sheetSearch, sheetVisible]);
+
+            useEffect(() => {
+                window.__onFieldOptionsResult = (payload) => {
+                    const pending = sheetLoadTokenRef.current;
+                    if (!pending || !payload || payload.requestId !== pending.requestId) return;
+                    const selectedForSort = pending.selectedIds || new Set();
+                    const listData = normalizeSheetList(payload.expandValue);
+                    listData.sort((a, b) => {
+                        const isA = selectedForSort.has(a.id);
+                        const isB = selectedForSort.has(b.id);
+                        if (isA && !isB) return -1;
+                        if (!isA && isB) return 1;
+                        return 0;
+                    });
+                    setSheetList(listData);
+                    setSheetLoading(false);
+                    setSheetVisibleLimit(120);
+                    if (!payload.success) {
+                        Toast.error(payload.message || '列表加载失败');
+                    }
+                };
+                return () => {
+                    if (window.__onFieldOptionsResult) {
+                        delete window.__onFieldOptionsResult;
+                    }
+                };
             }, []);
 
             useEffect(() => {
@@ -1590,13 +1643,42 @@
 
             // --- 列表弹窗逻辑 (关键修改部分) ---
 
+            const normalizeSheetList = (rawList) => {
+                if (!Array.isArray(rawList)) return [];
+                return rawList.map(item => {
+                    const id = String(item?.id ?? '').trim();
+                    const name = String(item?.name ?? item?.id ?? '').trim();
+                    return id ? { ...item, id, name: name || id } : null;
+                }).filter(Boolean);
+            };
+
+            const loadListSheetSyncFallback = (modelCode, fieldCode, selectedForSort) => {
+                window.requestAnimationFrame(() => {
+                    window.setTimeout(() => {
+                        try {
+                            const listData = normalizeSheetList(getFieldData(modelCode, fieldCode));
+                            listData.sort((a, b) => {
+                                const isA = selectedForSort.has(a.id);
+                                const isB = selectedForSort.has(b.id);
+                                if (isA && !isB) return -1;
+                                if (!isA && isB) return 1;
+                                return 0;
+                            });
+                            setSheetList(listData);
+                        } catch (e) {
+                            Toast.error('列表加载失败');
+                        } finally {
+                            setSheetLoading(false);
+                            setSheetVisibleLimit(120);
+                        }
+                    }, 0);
+                });
+            };
+
             const openListSheet = (modelCode, fieldItem) => {
                 const { code, name, type, desc, configValue } = fieldItem;
 
-                // 1. 先获取原始数据
-                let listData = getFieldData(modelCode, code);
-
-                // 2. 解析当前已选中的 ID，用于排序
+                // 先打开弹窗并显示加载态，RPC/文件读取通过异步 bridge 完成，避免阻塞 WebView。
                 const newSelectedIds = new Set();
                 const newSelectedCounts = {};
                 try {
@@ -1613,26 +1695,38 @@
                     }
                 } catch (e) { console.error("Parse config value failed", e); }
 
-                // 3. 执行排序：已选中的排在最前面 (只执行一次)
-                // sort 会改变原数组，这里直接操作 listData 即可
-                listData.sort((a, b) => {
-                    const isA = newSelectedIds.has(a.id);
-                    const isB = newSelectedIds.has(b.id);
-                    if (isA && !isB) return -1; // a 在前
-                    if (!isA && isB) return 1;  // b 在前
-                    return 0; // 保持原顺序
-                });
-
-                // 4. 将排好序的数据设置到 State
-                setSheetList(listData);
                 setSheetConfig({ modelCode, fieldCode: code, type, title: name, desc: desc });
+                setSheetList([]);
                 setSheetSearch('');
                 setSelectedIds(newSelectedIds);
                 setSelectedCounts(newSelectedCounts);
+                setSheetLoading(true);
+                setSheetVisibleLimit(120);
                 setSheetVisible(true);
+
+                const requestId = `${modelCode}_${code}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+                sheetLoadTokenRef.current = { requestId, selectedIds: newSelectedIds };
+                let asyncRequested = false;
+                if (window.HOOK && window.HOOK.requestFieldOptions) {
+                    try {
+                        asyncRequested = window.HOOK.requestFieldOptions(modelCode, code, requestId) === true;
+                    } catch (e) {
+                        asyncRequested = false;
+                    }
+                }
+                if (!asyncRequested) {
+                    loadListSheetSyncFallback(modelCode, code, newSelectedIds);
+                }
+            };
+
+            const closeListSheet = () => {
+                sheetLoadTokenRef.current = null;
+                setSheetLoading(false);
+                setSheetVisible(false);
             };
 
             const saveSheet = () => {
+                if (sheetLoading) return;
                 const { modelCode, fieldCode, type } = sheetConfig;
                 let newValueStr = "";
                 if (type === 'SELECT') {
@@ -1646,7 +1740,7 @@
                     newValueStr = JSON.stringify(obj);
                 }
                 commitFieldChange(modelCode, fieldCode, newValueStr);
-                setSheetVisible(false);
+                closeListSheet();
                 Toast.success("已保存列表设置");
             };
 
@@ -1832,7 +1926,10 @@
             );
 
             const toggleAll = () => {
-                const filteredList = sheetList.filter(item => item.name.includes(sheetSearch));
+                const normalizedSearch = sheetSearch.toLowerCase();
+                const filteredList = sheetList
+                    .filter(item => item.name.toLowerCase().includes(normalizedSearch))
+                    .slice(0, sheetVisibleLimit);
                 const allSelected = filteredList.every(item => selectedIds.has(item.id));
                 const newIds = new Set(selectedIds);
                 filteredList.forEach(item => {
@@ -1850,31 +1947,48 @@
 
             // 渲染过滤后的列表 (注意：这里不再包含排序逻辑)
             const renderSheetList = () => {
+                if (sheetLoading) {
+                    return <div style={{ padding: '2rem 1rem', textAlign: 'center', color: 'var(--semi-color-text-2)' }}>正在获取列表，请稍候...</div>;
+                }
                 const filtered = sheetList.filter(item => item.name.toLowerCase().includes(sheetSearch.toLowerCase()));
 
                 if (filtered.length === 0) return <div style={{ padding: '1.25rem', textAlign: 'center', color: '#999' }}>无数据</div>;
 
-                return filtered.map(item => {
-                    const isChecked = selectedIds.has(item.id);
-                    return (
-                        <div key={item.id} className="list-item">
-                            <div className="list-item-left" onClick={() => toggleItem(item.id, !isChecked)}>
-                                <Checkbox checked={isChecked} style={{ pointerEvents: 'none' }} />
-                                <span className="list-item-name">{item.name}</span>
-                            </div>
-                            {sheetConfig.type === 'SELECT_AND_COUNT' && isChecked && (
-                                <InputNumber
-                                    className="list-count-input"
-                                    size="small"
-                                    min={0}
-                                    value={selectedCounts[item.id] || 0}
-                                    onChange={(v) => handleCountChange(item.id, v)}
-                                    placeholder="数量"
-                                />
-                            )}
-                        </div>
-                    );
-                });
+                const visible = filtered.slice(0, sheetVisibleLimit);
+                return (
+                    <React.Fragment>
+                        {visible.map(item => {
+                            const isChecked = selectedIds.has(item.id);
+                            return (
+                                <div key={item.id} className="list-item">
+                                    <div className="list-item-left" onClick={() => toggleItem(item.id, !isChecked)}>
+                                        <Checkbox checked={isChecked} style={{ pointerEvents: 'none' }} />
+                                        <span className="list-item-name">{item.name}</span>
+                                    </div>
+                                    {sheetConfig.type === 'SELECT_AND_COUNT' && isChecked && (
+                                        <InputNumber
+                                            className="list-count-input"
+                                            size="small"
+                                            min={0}
+                                            value={selectedCounts[item.id] || 0}
+                                            onChange={(v) => handleCountChange(item.id, v)}
+                                            placeholder="数量"
+                                        />
+                                    )}
+                                </div>
+                            );
+                        })}
+                        {visible.length < filtered.length ? (
+                            <Button
+                                block
+                                style={{ marginTop: '0.75rem' }}
+                                onClick={() => setSheetVisibleLimit(prev => prev + 120)}
+                            >
+                                加载更多 ({visible.length}/{filtered.length})
+                            </Button>
+                        ) : null}
+                    </React.Fragment>
+                );
             };
 
             const renderFriendSheet = () => {
@@ -2548,7 +2662,14 @@
                     </div>
 
                     <div className="section-padding">
-                        <Collapse accordion defaultActiveKey={tabs[0]?.modelCode}>
+                        <Collapse
+                            accordion
+                            defaultActiveKey={tabs[0]?.modelCode}
+                            onChange={(activeKey) => {
+                                const nextKey = Array.isArray(activeKey) ? activeKey[0] : activeKey;
+                                loadModelIfNeeded(nextKey);
+                            }}
+                        >
                             {tabs.map((tab) => (
                                 <Collapse.Panel
                                     header={
@@ -2561,7 +2682,10 @@
                                                 }
                                             }}
                                             style={{ fontWeight: 600, scrollMarginTop: '5rem' }}
-                                            onClick={() => scrollToPanel(tab.modelCode)}
+                                            onClick={() => {
+                                                loadModelIfNeeded(tab.modelCode);
+                                                scrollToPanel(tab.modelCode);
+                                            }}
                                         >
                                             {tab.modelName}
                                         </div>
@@ -2638,7 +2762,7 @@
                     <SideSheet
                         title={<span style={{ fontSize: '1rem', fontWeight: 600 }}>{sheetConfig.title}</span>}
                         visible={sheetVisible}
-                        onCancel={() => setSheetVisible(false)}
+                        onCancel={closeListSheet}
                         width="100%"
                         placement="right"
                         bodyStyle={{ padding: '0.625rem' }}
@@ -2649,21 +2773,22 @@
                                 prefix={<IconSearch />}
                                 placeholder="搜索名称..."
                                 value={sheetSearch}
+                                disabled={sheetLoading}
                                 onChange={setSheetSearch}
                             />
                             <div style={{ marginTop: '0.625rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                <Checkbox onChange={toggleAll} checked={false}>
+                                <Checkbox onChange={toggleAll} checked={false} disabled={sheetLoading}>
                                     全选/反选 (当前可见)
                                 </Checkbox>
-                                <Text size="small" type="secondary">已选: {selectedIds.size}</Text>
+                                <Text size="small" type="secondary">已选: {selectedIds.size} / 总数: {sheetList.length}</Text>
                             </div>
                         </div>
-                        <div style={{ padding: '0 1rem', overflowY: 'auto', height: 'calc(100vh - 11.25rem)' }}>
+                        <div style={{ padding: '0 1rem 5.5rem', overflowY: 'auto', height: 'calc(100vh - 11.25rem)' }}>
                             {renderSheetList()}
                         </div>
                         <div className="sheet-footer" style={{ padding: '1rem', justifyContent: 'space-around', position: 'absolute', bottom: 0, width: '100%', background: 'var(--semi-color-bg-1)' }}>
-                            <Button style={{ marginRight: '0.625rem' }} onClick={() => setSheetVisible(false)}>取消</Button>
-                            <Button theme="solid" onClick={saveSheet}>保存</Button>
+                            <Button style={{ marginRight: '0.625rem' }} onClick={closeListSheet}>取消</Button>
+                            <Button theme="solid" disabled={sheetLoading} onClick={saveSheet}>保存</Button>
                         </div>
                     </SideSheet>
 

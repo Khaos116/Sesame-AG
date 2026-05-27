@@ -28,6 +28,8 @@ object ApplicationHookConstants {
         const val HOOK_READY_RESULT: String = "com.eg.android.AlipayGphone.sesame.hook_ready_result"
         const val REFRESH_FRIENDS: String = "com.eg.android.AlipayGphone.sesame.refresh_friends"
         const val REFRESH_FRIENDS_RESULT: String = "com.eg.android.AlipayGphone.sesame.refresh_friends_result"
+        const val REFRESH_EXCHANGE_OPTIONS: String = "com.eg.android.AlipayGphone.sesame.refresh_exchange_options"
+        const val REFRESH_EXCHANGE_OPTIONS_RESULT: String = "com.eg.android.AlipayGphone.sesame.refresh_exchange_options_result"
     }
 
     object AlipayClasses {

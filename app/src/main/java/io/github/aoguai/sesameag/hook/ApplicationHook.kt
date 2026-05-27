@@ -476,6 +476,9 @@ class ApplicationHook {
             )
 
             UserMap.setCurrentUserId(safeUserId)
+            runCatching { UserMap.load(safeUserId) }.onFailure {
+                Log.printStackTrace(TAG, "刷新好友前加载本地好友快照失败", it)
+            }
             runCatching { load(safeUserId, false) }.onFailure {
                 Log.printStackTrace(TAG, "刷新好友前加载每日状态失败", it)
             }
@@ -601,7 +604,7 @@ class ApplicationHook {
         }
 
 
-        fun scheduleNextExecutionInternal(lastTime: Long) {
+        fun scheduleNextExecutionInternal(baseTime: Long) {
             try {
                 checkInactiveTime()
                 val checkInterval = checkInterval.value ?: 0
@@ -611,18 +614,18 @@ class ApplicationHook {
                 if (execScheduleField.isDisabled()) {
                     record(TAG, "定时执行已关闭，保留轮询间隔调度")
                 } else {
-                    val intervalTargetTime = lastTime + checkInterval.toLong()
+                    val intervalTargetTime = baseTime + checkInterval.toLong()
                     val nextPointAt = TimeTriggerEvaluator.nextCheckpointAt(
                         execScheduleField.getTriggerSpec(),
-                        lastTime
+                        baseTime
                     )
                     if (nextPointAt != null && nextPointAt < intervalTargetTime) {
                         record(TAG, "设置定时执行:${TimeUtil.getCommonDate(nextPointAt)}")
                         targetTime = nextPointAt
-                        delayMillis = targetTime - lastTime
+                        delayMillis = targetTime - baseTime
                     }
                 }
-                nextExecutionTime = if (targetTime > 0) targetTime else (lastTime + delayMillis)
+                nextExecutionTime = if (targetTime > 0) targetTime else (baseTime + delayMillis)
                 ensureScheduler()
                 schedule(delayMillis, "轮询任务") {
                     ApplicationHookEntry.onPollAlarm()
@@ -986,6 +989,7 @@ class ApplicationHook {
                 filter.addAction(ApplicationHookConstants.BroadcastActions.MANUAL_TASK)
                 filter.addAction(ApplicationHookConstants.BroadcastActions.HOOK_READY)
                 filter.addAction(ApplicationHookConstants.BroadcastActions.REFRESH_FRIENDS)
+                filter.addAction(ApplicationHookConstants.BroadcastActions.REFRESH_EXCHANGE_OPTIONS)
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     context.registerReceiver(mBroadcastReceiver, filter, Context.RECEIVER_EXPORTED)

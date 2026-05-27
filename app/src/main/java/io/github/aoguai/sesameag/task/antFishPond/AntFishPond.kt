@@ -8,10 +8,18 @@ import io.github.aoguai.sesameag.model.modelFieldExt.BooleanModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.IntegerModelField
 import io.github.aoguai.sesameag.model.withDesc
 import io.github.aoguai.sesameag.task.ModelTask
+import io.github.aoguai.sesameag.task.common.TaskFlowAction
+import io.github.aoguai.sesameag.task.common.TaskFlowActionResult
+import io.github.aoguai.sesameag.task.common.TaskFlowAdapter
+import io.github.aoguai.sesameag.task.common.TaskFlowDecision
+import io.github.aoguai.sesameag.task.common.TaskFlowEngine
+import io.github.aoguai.sesameag.task.common.TaskFlowItem
+import io.github.aoguai.sesameag.task.common.TaskFlowPhase
+import io.github.aoguai.sesameag.task.common.TaskFlowSnapshot
+import io.github.aoguai.sesameag.task.common.TaskRpcFailureType
 import io.github.aoguai.sesameag.util.GlobalThreadPools
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.ResChecker
-import io.github.aoguai.sesameag.util.TaskBlacklist
 import io.github.aoguai.sesameag.util.maps.IdMapManager
 import io.github.aoguai.sesameag.util.maps.UserMap
 import io.github.aoguai.sesameag.util.maps.VipDataIdMap
@@ -206,22 +214,16 @@ class AntFishPond : ModelTask() {
 
     private fun handleTaskList() {
         try {
-            var listJson = queryTaskList() ?: return
-            if (handleSign(listJson)) {
-                listJson = queryTaskList() ?: listJson
-            }
+            val listJson = queryTaskList() ?: return
+            handleSign(listJson)
 
-            var rounds = 0
-            while (rounds < MAX_TASK_REFRESH_ROUNDS && !Thread.currentThread().isInterrupted) {
-                rounds++
-                val handled = handleOneTaskAction(listJson)
-                if (!handled) {
-                    if (!hasStablePendingTask(listJson)) {
-                        Status.setFlagToday(StatusFlags.FLAG_ANTFISHPOND_TASKS_DONE)
-                    }
-                    break
-                }
-                listJson = queryTaskList() ?: break
+            val taskFlowAdapter = FishPondTaskFlowAdapter()
+            val result = TaskFlowEngine(
+                taskFlowAdapter,
+                roundSleepMs = SHORT_INTERVAL_MS
+            ).run()
+            if (!result.stopped && taskFlowAdapter.canMarkTasksDone()) {
+                Status.setFlagToday(StatusFlags.FLAG_ANTFISHPOND_TASKS_DONE)
             }
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "handleTaskList err:", t)
@@ -278,47 +280,292 @@ class AntFishPond : ModelTask() {
         return false
     }
 
-    private fun handleOneTaskAction(listJson: JSONObject): Boolean {
-        val taskList = payloadOf(listJson).optJSONArray("taskList") ?: return false
-        for (i in 0 until taskList.length()) {
-            val task = taskList.optJSONObject(i) ?: continue
-            val taskId = task.optString("taskId")
-            val sceneCode = task.optString("sceneCode", TASK_SCENE)
-            val actionType = task.optString("actionType")
-            val taskStatus = task.optString("taskStatus")
-            val taskTitle = taskTitle(task)
+    private inner class FishPondTaskFlowAdapter : TaskFlowAdapter {
+        private val loggedSkipKeys = LinkedHashSet<String>()
+        private var latestItems: List<TaskFlowItem> = emptyList()
+        private var querySucceeded = false
+        private var unknownPhaseSeen = false
+        private var unknownFailureSeen = false
 
-            if (TaskBlacklist.isTaskInBlacklist(TASK_BLACKLIST_MODULE, taskId) ||
-                TaskBlacklist.isTaskInBlacklist(TASK_BLACKLIST_MODULE, taskTitle)
-            ) {
-                continue
+        override val moduleName: String = TASK_BLACKLIST_MODULE
+        override val flowName: String = "福气鱼池任务"
+
+        override fun query(): JSONObject {
+            val response = AntFishPondRpcCall.listTask()
+            if (response.isBlank()) {
+                return JSONObject()
+                    .put("success", false)
+                    .put("resultDesc", "listTask返回空")
             }
+            return parseObject(response) ?: JSONObject()
+                .put("success", false)
+                .put("resultDesc", "listTask返回无法解析")
+                .put("raw", response)
+        }
 
-            if (actionType == ACTION_GO_FISH && shouldClaimGoFishAward(task)) {
-                val taskKey = "$sceneCode|$taskId"
-                if (handledTaskAwards.contains(taskKey)) {
-                    continue
-                }
-                return claimTaskAward(sceneCode, taskId, taskTitle, taskKey)
+        override fun isQuerySuccess(response: JSONObject): Boolean {
+            return isRpcSuccess(response)
+        }
+
+        override fun extractItems(response: JSONObject): List<TaskFlowItem> {
+            querySucceeded = true
+            val taskList = payloadOf(response).optJSONArray("taskList") ?: run {
+                latestItems = emptyList()
+                return emptyList()
             }
+            val items = mutableListOf<TaskFlowItem>()
+            for (i in 0 until taskList.length()) {
+                val task = taskList.optJSONObject(i) ?: continue
+                val taskId = task.optString("taskId").trim()
+                val title = taskTitle(task).trim().ifBlank { taskId.ifBlank { "未知任务" } }
+                val taskRequire = task.optInt("taskRequire", 0)
+                val taskProgress = task.optInt("taskProgress", 0)
+                val rightsTimesLimit = task.optInt("rightsTimesLimit", 0)
+                val rightsTimes = task.optInt("rightsTimes", 0)
+                val current = when {
+                    taskRequire > 0 -> taskProgress
+                    rightsTimesLimit > 0 -> rightsTimes
+                    else -> null
+                }
+                val limit = when {
+                    taskRequire > 0 -> taskRequire
+                    rightsTimesLimit > 0 -> rightsTimesLimit
+                    else -> null
+                }
 
-            if (actionType == ACTION_VISIT &&
-                taskStatus == STATUS_TODO &&
-                SUPPORTED_VISIT_TASKS.contains(taskId)
-            ) {
-                val adBizNo = extractAdBizNo(task)
-                if (adBizNo.isBlank()) {
-                    Log.fishpond("浏览任务缺少 adBizNo，跳过[$taskTitle]")
-                    continue
+                items.add(
+                    TaskFlowItem(
+                        id = taskId.ifBlank { title },
+                        title = title,
+                        status = task.optString("taskStatus").trim(),
+                        type = taskId,
+                        sceneCode = task.optString("sceneCode", TASK_SCENE).trim().ifBlank { TASK_SCENE },
+                        actionType = task.optString("actionType").trim(),
+                        blacklistKeys = listOf(taskId, title).filter { it.isNotBlank() },
+                        raw = task,
+                        progress = buildFishPondTaskProgress(task),
+                        current = current,
+                        limit = limit
+                    )
+                )
+            }
+            latestItems = items
+            return items
+        }
+
+        override fun mapPhase(item: TaskFlowItem): TaskFlowPhase {
+            val task = item.raw
+            if (task != null && shouldClaimGoFishAward(task)) {
+                return TaskFlowPhase.REWARD_READY
+            }
+            return when (item.status.uppercase()) {
+                "RECEIVED",
+                "HAS_RECEIVED",
+                "DONE",
+                "COMPLETED",
+                "SUCCESS",
+                "COMPLETE" -> TaskFlowPhase.TERMINAL
+
+                "FINISHED",
+                "RECEIVABLE",
+                "TODO_RECEIVE",
+                "WAIT_RECEIVE",
+                "TO_RECEIVE" -> if (item.actionType == ACTION_GO_FISH && item.type == TASK_GO_FISH) {
+                    TaskFlowPhase.REWARD_READY
+                } else {
+                    TaskFlowPhase.UNSUPPORTED
                 }
-                val finishKey = "$sceneCode|$taskId|$adBizNo|${task.optInt("rightsTimes", 0)}"
-                if (handledVisitFinishes.contains(finishKey)) {
-                    continue
+
+                STATUS_TODO,
+                "WAIT_COMPLETE",
+                "NOT_DONE" -> when {
+                    item.actionType == ACTION_VISIT && item.type in SUPPORTED_VISIT_TASKS ->
+                        TaskFlowPhase.READY_TO_COMPLETE
+                    item.actionType == ACTION_GO_FISH -> TaskFlowPhase.BUSINESS_ACTION
+                    else -> TaskFlowPhase.UNSUPPORTED
                 }
-                return finishVisitTask(sceneCode, taskId, taskTitle, adBizNo, finishKey)
+
+                else -> TaskFlowPhase.UNKNOWN
             }
         }
-        return false
+
+        override fun shouldSkip(item: TaskFlowItem): Boolean {
+            val phase = mapPhase(item)
+            when (phase) {
+                TaskFlowPhase.BUSINESS_ACTION -> {
+                    logTaskSkipOnce(item, "action=${item.actionType} 需通过钓鱼业务动作推进，跳过任务中心直完成")
+                    return true
+                }
+                TaskFlowPhase.UNSUPPORTED -> {
+                    logTaskSkipOnce(
+                        item,
+                        "action=${item.actionType.ifBlank { "UNKNOWN" }} status=${item.status.ifBlank { "UNKNOWN" }} 暂未支持自动闭环"
+                    )
+                    return true
+                }
+                else -> Unit
+            }
+
+            val handled = when (phase) {
+                TaskFlowPhase.REWARD_READY -> handledTaskAwards.contains(buildFishPondAwardKey(item))
+                TaskFlowPhase.READY_TO_COMPLETE -> handledVisitFinishes.contains(buildFishPondVisitKey(item))
+                else -> false
+            }
+            if (handled) {
+                logTaskSkipOnce(item, "本轮已推进，等待刷新后再处理")
+            }
+            return handled
+        }
+
+        override fun isBlacklisted(item: TaskFlowItem): Boolean {
+            val blacklisted = super<TaskFlowAdapter>.isBlacklisted(item)
+            if (blacklisted) {
+                logTaskSkipOnce(item, "已在黑名单中，跳过完成动作；待领奖状态仍会尝试领取")
+            }
+            return blacklisted
+        }
+
+        override fun receive(item: TaskFlowItem): TaskFlowActionResult {
+            if (item.actionType != ACTION_GO_FISH || item.type != TASK_GO_FISH) {
+                return TaskFlowActionResult.failure(
+                    failureType = TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE,
+                    code = "UNSUPPORTED_ACTION",
+                    message = "仅支持GOFISH任务领奖",
+                    rpc = "FishPondTaskFlowAdapter.receive",
+                    detail = fishPondTaskActionDetail(item, "receive")
+                )
+            }
+            return claimTaskAward(item)
+        }
+
+        override fun complete(item: TaskFlowItem): TaskFlowActionResult {
+            if (item.actionType != ACTION_VISIT || item.type !in SUPPORTED_VISIT_TASKS) {
+                return TaskFlowActionResult.failure(
+                    failureType = TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE,
+                    code = "UNSUPPORTED_ACTION",
+                    message = "仅支持已验证IEP浏览任务",
+                    rpc = "FishPondTaskFlowAdapter.complete",
+                    detail = fishPondTaskActionDetail(item, "complete")
+                )
+            }
+            val task = item.raw ?: return missingRawResult(item, "complete")
+            val adBizNo = extractAdBizNo(task)
+            if (adBizNo.isBlank()) {
+                return TaskFlowActionResult.failure(
+                    failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                    message = "浏览任务缺少adBizNo",
+                    rpc = "AntFishPondRpcCall.finishTask",
+                    detail = fishPondTaskActionDetail(item, "complete")
+                )
+            }
+            return finishVisitTask(item, adBizNo)
+        }
+
+        override fun actionKey(item: TaskFlowItem, action: TaskFlowAction): String {
+            return when (action) {
+                TaskFlowAction.RECEIVE -> "receive:${buildFishPondAwardKey(item)}"
+                TaskFlowAction.COMPLETE -> "complete:${buildFishPondVisitKey(item)}"
+                else -> super<TaskFlowAdapter>.actionKey(item, action)
+            }
+        }
+
+        override fun afterSuccess(item: TaskFlowItem, action: TaskFlowAction, result: TaskFlowActionResult) {
+            rememberHandledTask(item, action)
+        }
+
+        override fun afterFailure(
+            item: TaskFlowItem,
+            action: TaskFlowAction,
+            result: TaskFlowActionResult,
+            decision: TaskFlowDecision
+        ) {
+            if (result.failureType == TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW) {
+                unknownFailureSeen = true
+            }
+            if (decision == TaskFlowDecision.MARK_HANDLED ||
+                decision == TaskFlowDecision.STOP_TODAY_OR_CURRENT_CHAIN ||
+                decision == TaskFlowDecision.BLACKLIST
+            ) {
+                rememberHandledTask(item, action)
+            }
+        }
+
+        override fun onAllTasksDone(snapshot: TaskFlowSnapshot) {
+            Status.setFlagToday(StatusFlags.FLAG_ANTFISHPOND_TASKS_DONE)
+            Log.fishpond("福气鱼池任务列表已处理完成：${snapshot.completedTasks}/${snapshot.totalTasks}")
+        }
+
+        override fun onQueryFailed(response: JSONObject) {
+            Log.fishpond("钓竿任务查询失败：${formatFailure(response)} raw=$response")
+        }
+
+        override fun onUnknownPhase(item: TaskFlowItem, phase: TaskFlowPhase) {
+            unknownPhaseSeen = true
+            Log.error(
+                TAG,
+                "$flowName[未知状态：${item.title}] taskId=${item.id} status=${item.status.ifBlank { "UNKNOWN" }} " +
+                    "actionType=${item.actionType.ifBlank { "UNKNOWN" }} sceneCode=${item.sceneCode.ifBlank { "UNKNOWN" }}"
+            )
+        }
+
+        override fun logInfo(message: String) {
+            Log.fishpond(message)
+        }
+
+        override fun logError(message: String) {
+            Log.error(TAG, message)
+        }
+
+        fun canMarkTasksDone(): Boolean {
+            if (!querySucceeded || unknownPhaseSeen || unknownFailureSeen) {
+                return false
+            }
+            for (item in latestItems) {
+                val phase = mapPhase(item)
+                if (phase == TaskFlowPhase.UNKNOWN) {
+                    return false
+                }
+                if (phase == TaskFlowPhase.REWARD_READY &&
+                    !handledTaskAwards.contains(buildFishPondAwardKey(item))
+                ) {
+                    return false
+                }
+                if (phase == TaskFlowPhase.READY_TO_COMPLETE &&
+                    !handledVisitFinishes.contains(buildFishPondVisitKey(item)) &&
+                    !super<TaskFlowAdapter>.isBlacklisted(item)
+                ) {
+                    return false
+                }
+            }
+            return true
+        }
+
+        private fun rememberHandledTask(item: TaskFlowItem, action: TaskFlowAction) {
+            when (action) {
+                TaskFlowAction.RECEIVE -> handledTaskAwards.add(buildFishPondAwardKey(item))
+                TaskFlowAction.COMPLETE -> handledVisitFinishes.add(buildFishPondVisitKey(item))
+                else -> Unit
+            }
+        }
+
+        private fun missingRawResult(item: TaskFlowItem, action: String): TaskFlowActionResult {
+            return TaskFlowActionResult.failure(
+                failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                message = "缺少任务原始数据",
+                rpc = "FishPondTaskFlowAdapter.$action",
+                detail = fishPondTaskActionDetail(item, action)
+            )
+        }
+
+        private fun logTaskSkipOnce(item: TaskFlowItem, reason: String) {
+            val key = "${item.id}:${item.actionType}:${item.status}:$reason"
+            if (loggedSkipKeys.add(key)) {
+                Log.fishpond(
+                    "鱼池任务跳过[${item.title}] $reason " +
+                        "taskId=${item.id} sceneCode=${item.sceneCode} progress=${item.progress.ifBlank { "UNKNOWN" }}"
+                )
+            }
+        }
     }
 
     private fun shouldClaimGoFishAward(task: JSONObject): Boolean {
@@ -336,106 +583,70 @@ class AntFishPond : ModelTask() {
         return taskRequire > 0 && task.optInt("taskProgress", 0) >= taskRequire
     }
 
-    private fun claimTaskAward(sceneCode: String, taskId: String, taskTitle: String, taskKey: String): Boolean {
-        val response = AntFishPondRpcCall.receiveTaskAward(taskId, sceneCode)
-        val jo = JSONObject(response)
+    private fun claimTaskAward(item: TaskFlowItem): TaskFlowActionResult {
+        val response = AntFishPondRpcCall.receiveTaskAward(item.type, item.sceneCode)
+        val jo = parseObject(response) ?: return emptyFishPondTaskResponse(
+            rpc = "AntFishPondRpcCall.receiveTaskAward",
+            item = item,
+            action = "receiveTaskAward",
+            raw = response
+        )
         if (isRpcSuccess(jo)) {
-            handledTaskAwards.add(taskKey)
-            Log.fishpond("任务奖励🎖️[$taskTitle]领取成功")
+            Log.fishpond("任务奖励🎖️[${item.title}]领取成功")
             AntFishPondRpcCall.fishpondSyncIndex(listOf("TASK_DISPLAY"))
             GlobalThreadPools.sleepCompat(SHORT_INTERVAL_MS)
-            return true
-        }
-        Log.fishpond("任务奖励领取失败[$taskTitle]：${formatFailure(jo)}")
-        if (isTerminalTaskFailure(jo)) {
-            handledTaskAwards.add(taskKey)
-            Log.runtime(TAG, "任务奖励[$taskTitle]命中终态失败，标记本轮已处理")
-            GlobalThreadPools.sleepCompat(SHORT_INTERVAL_MS)
-            return true
+            return TaskFlowActionResult.success()
         }
         GlobalThreadPools.sleepCompat(SHORT_INTERVAL_MS)
-        return false
+        return fishPondTaskActionFailureResult(
+            response = jo,
+            rpc = "AntFishPondRpcCall.receiveTaskAward",
+            item = item,
+            action = "receiveTaskAward"
+        )
     }
 
-    private fun finishVisitTask(
-        sceneCode: String,
-        taskId: String,
-        taskTitle: String,
-        adBizNo: String,
-        finishKey: String
-    ): Boolean {
-        val notice = JSONObject(AntFishPondRpcCall.fishpondAdNotice(adBizNo))
+    private fun finishVisitTask(item: TaskFlowItem, adBizNo: String): TaskFlowActionResult {
+        val noticeRaw = AntFishPondRpcCall.fishpondAdNotice(adBizNo)
+        val notice = parseObject(noticeRaw) ?: return emptyFishPondTaskResponse(
+            rpc = "AntFishPondRpcCall.fishpondAdNotice",
+            item = item,
+            action = "fishpondAdNotice",
+            raw = noticeRaw
+        )
         if (!isRpcSuccess(notice)) {
-            Log.fishpond("浏览任务广告通知失败[$taskTitle]：${formatFailure(notice)}")
-            if (isTerminalTaskFailure(notice)) {
-                handledVisitFinishes.add(finishKey)
-                Log.runtime(TAG, "浏览任务[$taskTitle]广告通知命中终态失败，标记本轮已处理")
-                GlobalThreadPools.sleepCompat(SHORT_INTERVAL_MS)
-                return true
-            }
-            return false
+            return fishPondTaskActionFailureResult(
+                response = notice,
+                rpc = "AntFishPondRpcCall.fishpondAdNotice",
+                item = item,
+                action = "fishpondAdNotice"
+            )
         }
 
-        Log.runtime(TAG, "浏览任务[$taskTitle]已通知广告，等待完成窗口")
+        Log.runtime(TAG, "浏览任务[${item.title}]已通知广告，等待完成窗口")
         GlobalThreadPools.sleepCompat(VISIT_WAIT_MS)
 
-        val finish = JSONObject(AntFishPondRpcCall.finishTask(taskId, adBizNo, sceneCode))
+        val finishRaw = AntFishPondRpcCall.finishTask(item.type, adBizNo, item.sceneCode)
+        val finish = parseObject(finishRaw) ?: return emptyFishPondTaskResponse(
+            rpc = "AntFishPondRpcCall.finishTask",
+            item = item,
+            action = "finishTask",
+            raw = finishRaw
+        )
         if (isRpcSuccess(finish)) {
-            handledVisitFinishes.add(finishKey)
-            Log.fishpond("浏览任务🧾[$taskTitle]完成")
+            Log.fishpond("浏览任务🧾[${item.title}]完成")
             AntFishPondRpcCall.fishpondSyncIndex(listOf("FISH_ACTIVITY", "TASK_DISPLAY", "TOMORROW_ROD", "LOTTERY_PLUS"))
             GlobalThreadPools.sleepCompat(SHORT_INTERVAL_MS)
-            return true
+            return TaskFlowActionResult.success()
         }
 
-        Log.fishpond("浏览任务完成失败[$taskTitle]：${formatFailure(finish)}")
-        if (isTerminalTaskFailure(finish)) {
-            handledVisitFinishes.add(finishKey)
-            Log.runtime(TAG, "浏览任务[$taskTitle]命中终态失败，标记本轮已处理")
-            GlobalThreadPools.sleepCompat(SHORT_INTERVAL_MS)
-            return true
-        }
         GlobalThreadPools.sleepCompat(SHORT_INTERVAL_MS)
-        return false
-    }
-
-    private fun hasStablePendingTask(listJson: JSONObject): Boolean {
-        val taskList = payloadOf(listJson).optJSONArray("taskList") ?: return false
-        for (i in 0 until taskList.length()) {
-            val task = taskList.optJSONObject(i) ?: continue
-            val taskId = task.optString("taskId")
-            val sceneCode = task.optString("sceneCode", TASK_SCENE)
-            val taskTitle = taskTitle(task)
-            if (TaskBlacklist.isTaskInBlacklist(TASK_BLACKLIST_MODULE, taskId) ||
-                TaskBlacklist.isTaskInBlacklist(TASK_BLACKLIST_MODULE, taskTitle)
-            ) {
-                continue
-            }
-            val actionType = task.optString("actionType")
-            val taskStatus = task.optString("taskStatus")
-            if (actionType == ACTION_GO_FISH && shouldClaimGoFishAward(task)) {
-                val taskKey = "$sceneCode|$taskId"
-                if (handledTaskAwards.contains(taskKey)) {
-                    continue
-                }
-                return true
-            }
-            if (actionType == ACTION_VISIT &&
-                taskStatus == STATUS_TODO &&
-                SUPPORTED_VISIT_TASKS.contains(taskId)
-            ) {
-                val adBizNo = extractAdBizNo(task)
-                if (adBizNo.isBlank()) {
-                    return true
-                }
-                val finishKey = "$sceneCode|$taskId|$adBizNo|${task.optInt("rightsTimes", 0)}"
-                if (handledVisitFinishes.contains(finishKey)) {
-                    continue
-                }
-                return true
-            }
-        }
-        return false
+        return fishPondTaskActionFailureResult(
+            response = finish,
+            rpc = "AntFishPondRpcCall.finishTask",
+            item = item,
+            action = "finishTask"
+        )
     }
 
     private fun runAutoFish(): Boolean {
@@ -666,6 +877,72 @@ class AntFishPond : ModelTask() {
             .orEmpty()
     }
 
+    private fun buildFishPondAwardKey(item: TaskFlowItem): String {
+        return "${item.sceneCode}|${item.type}|${item.progress.ifBlank { item.status.ifBlank { "NO_PROGRESS" } }}"
+    }
+
+    private fun buildFishPondVisitKey(item: TaskFlowItem): String {
+        val task = item.raw
+        val adBizNo = task?.let { extractAdBizNo(it) }.orEmpty().ifBlank { "NO_AD" }
+        val rightsTimes = task?.optInt("rightsTimes", 0) ?: 0
+        return "${item.sceneCode}|${item.type}|$adBizNo|$rightsTimes|${item.progress.ifBlank { item.status.ifBlank { "NO_PROGRESS" } }}"
+    }
+
+    private fun buildFishPondTaskProgress(task: JSONObject): String {
+        val parts = mutableListOf<String>()
+        val taskRequire = task.optInt("taskRequire", 0)
+        if (taskRequire > 0) {
+            parts.add("task=${task.optInt("taskProgress", 0)}/$taskRequire")
+        }
+        val rightsTimesLimit = task.optInt("rightsTimesLimit", 0)
+        if (rightsTimesLimit > 0) {
+            parts.add("rights=${task.optInt("rightsTimes", 0)}/$rightsTimesLimit")
+        }
+        return parts.joinToString("|").ifBlank {
+            "status=${task.optString("taskStatus").ifBlank { "UNKNOWN" }}"
+        }
+    }
+
+    private fun fishPondTaskActionDetail(item: TaskFlowItem, action: String): String {
+        return "taskType=${item.type.ifBlank { item.id }} sceneCode=${item.sceneCode} " +
+            "actionType=${item.actionType.ifBlank { "UNKNOWN" }} status=${item.status.ifBlank { "UNKNOWN" }} " +
+            "action=$action progress=${item.progress.ifBlank { "UNKNOWN" }}"
+    }
+
+    private fun emptyFishPondTaskResponse(
+        rpc: String,
+        item: TaskFlowItem,
+        action: String,
+        raw: String
+    ): TaskFlowActionResult {
+        return TaskFlowActionResult.failure(
+            failureType = TaskRpcFailureType.RETRYABLE_RPC,
+            message = "${action}返回空或无法解析",
+            rpc = rpc,
+            raw = raw,
+            detail = fishPondTaskActionDetail(item, action),
+            stopCurrentRound = true
+        )
+    }
+
+    private fun fishPondTaskActionFailureResult(
+        response: JSONObject,
+        rpc: String,
+        item: TaskFlowItem,
+        action: String
+    ): TaskFlowActionResult {
+        val failureType = classifyFishPondTaskFailure(response)
+        return TaskFlowActionResult.failure(
+            failureType = failureType,
+            code = extractFishPondTaskFailureCode(response),
+            message = extractFishPondTaskFailureMessage(response),
+            rpc = rpc,
+            raw = response.toString(),
+            detail = fishPondTaskActionDetail(item, action),
+            stopCurrentRound = failureType == TaskRpcFailureType.RETRYABLE_RPC
+        )
+    }
+
     private fun isRpcSuccess(jo: JSONObject): Boolean {
         val resultCode = jo.optString("resultCode")
         val memo = jo.optString("memo")
@@ -684,33 +961,75 @@ class AntFishPond : ModelTask() {
     }
 
     private fun formatFailure(jo: JSONObject): String {
-        val code = jo.optString("code")
-            .ifBlank { jo.optString("errorCode") }
-            .ifBlank { jo.optString("resultCode") }
-            .ifBlank { "UNKNOWN" }
-        val desc = jo.optString("desc")
-            .ifBlank { jo.optString("errorMsg") }
-            .ifBlank { jo.optString("resultDesc") }
-            .ifBlank { jo.optString("memo") }
-            .ifBlank { jo.toString() }
+        val code = extractFishPondTaskFailureCode(jo).ifBlank { "UNKNOWN" }
+        val desc = extractFishPondTaskFailureMessage(jo).ifBlank { jo.toString() }
         return "code=$code msg=$desc"
     }
 
-    private fun isTerminalTaskFailure(jo: JSONObject): Boolean {
-        val code = jo.optString("code")
-            .ifBlank { jo.optString("errorCode") }
-            .ifBlank { jo.optString("resultCode") }
-        val desc = jo.optString("desc")
-            .ifBlank { jo.optString("errorMsg") }
-            .ifBlank { jo.optString("resultDesc") }
-            .ifBlank { jo.optString("memo") }
-        return code in TERMINAL_TASK_CODES ||
-            desc.contains("已领取") ||
-            desc.contains("已完成") ||
-            desc.contains("重复") ||
-            desc.contains("超过上限") ||
-            desc.contains("任务已完结") ||
-            desc.contains("任务已结束")
+    private fun classifyFishPondTaskFailure(response: JSONObject): TaskRpcFailureType {
+        val code = extractFishPondTaskFailureCode(response)
+        val message = extractFishPondTaskFailureMessage(response)
+        return when {
+            code in FISHPOND_TERMINAL_TASK_CODES ||
+                containsAny(message, "已领取", "已经领取", "重复领取", "重复领奖", "重复完成", "已完成", "任务已完结", "任务已结束") ->
+                TaskRpcFailureType.TERMINAL_DONE
+
+            code in FISHPOND_BUSINESS_LIMIT_CODES ||
+                code.contains("LIMIT", ignoreCase = true) ||
+                containsAny(message, "上限", "限制", "受限", "不可领取", "资格不足", "次数超过限制", "超过上限", "兑完", "奖品已发完", "名额", "钓竿不足", "鱼竿不足", "风控", "风险") ->
+                TaskRpcFailureType.BUSINESS_LIMIT
+
+            code == "400000040" ||
+                containsAny(message, "不支持rpc调用", "不支持RPC完成") ->
+                TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE
+
+            code in FISHPOND_NON_RETRYABLE_INVALID_CODES ||
+                containsAny(message, "参数错误", "任务ID非法", "模板不存在", "生活记录模板不存在") ->
+                TaskRpcFailureType.NON_RETRYABLE_INVALID
+
+            code in FISHPOND_RETRYABLE_TASK_CODES ||
+                containsAny(message, "系统出错", "系统繁忙", "稍后", "繁忙", "频繁", "重试", "需要验证", "访问被拒绝") ||
+                isFishPondFailureMarkedRetryable(response) ->
+                TaskRpcFailureType.RETRYABLE_RPC
+
+            else -> TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW
+        }
+    }
+
+    private fun extractFishPondTaskFailureCode(response: JSONObject): String {
+        val payload = response.optJSONObject("data")
+        return response.optString("code")
+            .ifBlank { response.optString("errorCode") }
+            .ifBlank { response.optString("errCode") }
+            .ifBlank { response.optString("resultCode") }
+            .ifBlank { payload?.optString("code").orEmpty() }
+            .ifBlank { payload?.optString("errorCode").orEmpty() }
+            .ifBlank { payload?.optString("resultCode").orEmpty() }
+    }
+
+    private fun extractFishPondTaskFailureMessage(response: JSONObject): String {
+        val payload = response.optJSONObject("data")
+        return response.optString("desc")
+            .ifBlank { response.optString("errorMsg") }
+            .ifBlank { response.optString("errorMessage") }
+            .ifBlank { response.optString("message") }
+            .ifBlank { response.optString("resultDesc") }
+            .ifBlank { response.optString("memo") }
+            .ifBlank { payload?.optString("desc").orEmpty() }
+            .ifBlank { payload?.optString("errorMsg").orEmpty() }
+            .ifBlank { payload?.optString("message").orEmpty() }
+            .ifBlank { payload?.optString("resultDesc").orEmpty() }
+            .ifBlank { response.toString() }
+    }
+
+    private fun isFishPondFailureMarkedRetryable(response: JSONObject): Boolean {
+        return listOf("retryable", "retriable", "canRetry").any { key ->
+            response.has(key) && response.optBoolean(key, false)
+        }
+    }
+
+    private fun containsAny(text: String, vararg fragments: String): Boolean {
+        return fragments.any { text.contains(it, ignoreCase = true) }
     }
 
     private fun isRiskFailure(jo: JSONObject): Boolean {
@@ -730,7 +1049,6 @@ class AntFishPond : ModelTask() {
         private const val DEFAULT_FISH_LIMIT = 30
         private const val SHORT_INTERVAL_MS = 500L
         private const val VISIT_WAIT_MS = 16_000L
-        private const val MAX_TASK_REFRESH_ROUNDS = 8
 
         private const val ACTIVITY_GIFT_BOX = "GIFT_BOX"
         private const val ACTIVITY_TOMORROW_ROD = "TOMORROW_ROD"
@@ -750,12 +1068,34 @@ class AntFishPond : ModelTask() {
             "GYG_XLIGHT_JX_BUSINEES_3"
         )
         private val CLAIMABLE_STATUS = setOf("FINISHED", "RECEIVABLE", "TODO_RECEIVE")
-        private val TERMINAL_TASK_CODES = setOf(
+        private val FISHPOND_TERMINAL_TASK_CODES = setOf(
             "400000030",
             "400000012",
+            "RECEIVE_REWARD_REPEATED",
+            "TASK_ALREADY_FINISHED",
+            "TASK_HAS_FINISHED",
+            "REPEAT_FINISH",
+            "REPEAT_REWARD"
+        )
+        private val FISHPOND_BUSINESS_LIMIT_CODES = setOf(
+            "CAMP_TRIGGER_ERROR",
+            "PROMISE_TODAY_FINISH_TIMES_LIMIT"
+        )
+        private val FISHPOND_NON_RETRYABLE_INVALID_CODES = setOf(
+            "20020012",
             "TASK_ID_INVALID",
             "ILLEGAL_ARGUMENT",
-            "PROMISE_TODAY_FINISH_TIMES_LIMIT"
+            "PROMISE_TEMPLATE_NOT_EXIST"
+        )
+        private val FISHPOND_RETRYABLE_TASK_CODES = setOf(
+            "3000",
+            "400000004",
+            "REMOTE_INVOKE_EXCEPTION",
+            "OP_REPEAT_CHECK",
+            "SYSTEM_BUSY",
+            "NETWORK_ERROR",
+            "USER_FREQUENTLY_LOCK",
+            "I07"
         )
     }
 }

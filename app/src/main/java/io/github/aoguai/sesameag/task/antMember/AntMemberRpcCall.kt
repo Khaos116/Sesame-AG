@@ -28,6 +28,14 @@ object AntMemberRpcCall {
         }
     }
 
+    private fun copyMemberSourcePassMap(sourcePassMap: JSONObject?): JSONObject {
+        return if (sourcePassMap == null) {
+            buildMemberSourcePassMap()
+        } else {
+            JSONObject(sourcePassMap.toString())
+        }
+    }
+
     /* ant member point */
     @JvmStatic
     fun queryPointCert(page: Int, pageSize: Int): String {
@@ -214,10 +222,27 @@ object AntMemberRpcCall {
     }
 
     @JvmStatic
-    fun produce(actionCode: String): String {
+    fun produce(actionCode: String, channel: String? = null): String {
+        val args = JSONObject().apply {
+            put("actionCode", actionCode)
+            if (!channel.isNullOrBlank()) {
+                put("channel", channel)
+            }
+        }
         return RequestManager.requestString(
             "alipay.mrchservbase.biz.task.action.produce",
-            """[{"actionCode":"$actionCode"}]"""
+            JSONArray().put(args).toString()
+        )
+    }
+
+    @JvmStatic
+    fun merchantExamPage(taskCode: String): String {
+        val args = JSONObject().apply {
+            put("taskCode", taskCode)
+        }
+        return RequestManager.requestString(
+            "alipay.mrchservbase.business.exam.page",
+            JSONArray().put(args).toString()
         )
     }
 
@@ -814,22 +839,6 @@ object AntMemberRpcCall {
     }
 
     @JvmStatic
-    fun beanExchangeDetail(itemId: String): String {
-        return RequestManager.requestString(
-            "com.alipay.insmarketingbff.onestop.planTrigger",
-            """[{"extParams":{"itemId":"$itemId"},"planCode":"bluebean_onestop","planOperateCode":"exchangeDetail"}]"""
-        )
-    }
-
-    @JvmStatic
-    fun beanExchange(itemId: String, pointAmount: Int): String {
-        return RequestManager.requestString(
-            "com.alipay.insmarketingbff.onestop.planTrigger",
-            """[{"extParams":{"itemId":"$itemId","pointAmount":"$pointAmount"},"planCode":"bluebean_onestop","planOperateCode":"exchange"}]"""
-        )
-    }
-
-    @JvmStatic
     fun queryUserAccountInfo(pointProdCode: String): String {
         return RequestManager.requestString(
             "com.alipay.insmarketingbff.point.queryUserAccountInfo",
@@ -853,54 +862,242 @@ object AntMemberRpcCall {
      * @param pointBalance 当前可用会员积分
      */
     @JvmStatic
-    fun queryShandieEntityList(userId: String, pointBalance: String): String {
-        val uniqueId = "${System.currentTimeMillis()}${userId}94000SR202501061144200394000SR2025010611458003"
-        val data = """[{"blackIds":[],"deliveryIdList":["94000SR2025010611442003","94000SR2025010611458003"],"filterCityCode":false,"filterPointNoEnough":false,"filterStockNoEnough":false,"pageNum":1,"pageSize":18,"point":$pointBalance,"previewCopyDbId":"","queryType":"DELIVERY_ID_LIST","source":"member_day","sourcePassMap":{"innerSource":"","source":"0yuandui","unid":""},"topIds":[],"uniqueId":"$uniqueId"}]"""
-        return RequestManager.requestString("com.alipay.alipaymember.biz.rpc.config.h5.queryShandieEntityList", data)
+    fun queryShandieEntityList(_userId: String, pointBalance: String, pageNum: Int = 1, pageSize: Int = 18): String {
+        val deliveryId = "94000SR2025120515775004"
+        val uniqueId = "${System.currentTimeMillis()}${UUID.randomUUID()}$deliveryId"
+        val point = pointBalance.toIntOrNull() ?: 0
+        val args = JSONObject().apply {
+            put("blackIds", JSONArray())
+            put("deliveryIdList", JSONArray().put(deliveryId))
+            put("filterCityCode", false)
+            put("filterExchangeTime", true)
+            put("filterPointNoEnough", false)
+            put("filterStockNoEnough", false)
+            put("filterTimesLimit", true)
+            put("filterTimesLimitForPromo", true)
+            put("pageNum", pageNum)
+            put("pageSize", pageSize)
+            put("point", point)
+            put("previewCopyDbId", "")
+            put("queryType", "DELIVERY_ID_LIST")
+            put("shandieComponentId", "")
+            put("source", "member_day")
+            put("sourcePassMap", JSONObject().apply {
+                put("innerSource", "")
+                put("source", "0yuandui")
+                put("unid", "")
+            })
+            put("topIds", JSONArray())
+            put("uniqueId", uniqueId)
+        }
+        return RequestManager.requestString(
+            "com.alipay.alipaymember.biz.rpc.config.h5.queryShandieEntityList",
+            JSONArray().put(args).toString()
+        )
     }
 
-    /**
-     * 会员积分兑换道具
-     *
-     * @param benefitId benefitId
-     * @param itemId    itemId
-     * @return 结果
-     */
     @JvmStatic
-    fun exchangeBenefit(benefitId: String, itemId: String): String {
-        val requestId = "requestId${System.currentTimeMillis()}"
-        val alipayClientVersion = io.github.aoguai.sesameag.hook.ApplicationHook.alipayVersion.versionString
-        val data = """[{"benefitId":"$benefitId","cityCode":"","exchangeType":"POINT_PAY","itemId":"$itemId","miniAppId":"","orderSource":"","requestId":"$requestId","requestSourceInfo":"","sourcePassMap":{"alipayClientVersion":"$alipayClientVersion","innerSource":"","mobileOsType":"Android","source":"","unid":""},"userOutAccount":""}]"""
-        return RequestManager.requestString("com.alipay.alipaymember.biz.rpc.exchange.h5.exchangeBenefit", data)
+    fun queryDeliveryZoneDetail(pointBalance: String, pageNum: Int = 1, pageSize: Int = 18, uniqueId: String = ""): String {
+        val deliveryIds = JSONArray().apply {
+            put("94000SR2024110510425045")
+            put("94000SR2025091714812006")
+            put("94000SR2023102305988003")
+        }
+        val requestUniqueId = uniqueId.ifBlank {
+            "${System.currentTimeMillis()}and99999999INTELLIGENT_SORT5000551494000SR2024110510425045,94000SR2025091714812006,94000SR2023102305988003"
+        }
+        val args = JSONObject().apply {
+            put("deliveryIdList", deliveryIds)
+            put("lowerPoint", 0)
+            put("pageNum", pageNum)
+            put("pageSize", pageSize)
+            put("queryNoReserve", true)
+            put("resourceCardChannel", "ZERO_EXCHANGE_CHANNEL")
+            put("sourcePassMap", JSONObject().apply {
+                put("innerSource", "")
+                put("source", "")
+                put("unid", "")
+            })
+            put("startPageFirstQuery", pageNum == 1)
+            put("topIdList", JSONArray().put("202412231259661040"))
+            put("uniqueId", requestUniqueId)
+            put("upperPoint", 99999999)
+            put("withPointRange", false)
+        }
+        return RequestManager.requestString(
+            "com.alipay.alipaymember.biz.rpc.config.h5.queryDeliveryZoneDetail",
+            JSONArray().put(args).toString()
+        )
     }
 
     @JvmStatic
-    fun exchangeBenefit(benefitId: String, itemId: String, userId: String?): String {
-        val now = System.currentTimeMillis()
-        val requestId = "requestId$now"
-        val unid = UUID.randomUUID().toString()
-        val uniqueId = userId.orEmpty() + now
-        val requestSourceInfo = "SID:$uniqueId|0"
-
-        val alipayClientVersion = io.github.aoguai.sesameag.hook.ApplicationHook.alipayVersion.versionString
-        val data =
-            """[{"benefitId":"$benefitId","cityCode":"","exchangeType":"POINT_PAY","itemId":"$itemId","miniAppId":"","orderSource":"","requestId":"$requestId","requestSourceInfo":"$requestSourceInfo","sourcePassMap":{"alipayClientVersion":"$alipayClientVersion","bid":"","feedsIndex":"0","innerSource":"a159.b52659","isCpc":"","mobileOsType":"Android","source":"","unid":"$unid","uniqueId":"$uniqueId"},"userOutAccount":""}]"""
-        return RequestManager.requestString("com.alipay.alipaymember.biz.rpc.exchange.h5.exchangeBenefit", data)
+    fun querySingleBenefitDetail(
+        benefitId: String,
+        requestSourceInfo: String = "",
+        sourcePassMap: JSONObject? = null
+    ): String {
+        val args = JSONObject().apply {
+            put("benefitId", benefitId)
+            put("cityCode", "440100")
+            put("miniAppId", "")
+            if (requestSourceInfo.isNotBlank()) {
+                put("requestSourceInfo", requestSourceInfo)
+            }
+            put("sourcePassMap", copyMemberSourcePassMap(sourcePassMap))
+        }
+        return RequestManager.requestString(
+            "com.alipay.alipaymember.biz.rpc.config.h5.querySingleBenefitDetail",
+            JSONArray().put(args).toString()
+        )
     }
 
     @JvmStatic
-    fun queryDeliveryZoneDetail(deliveryIdList: List<String>, pageNum: Int, pageSize: Int): String {
-        if (deliveryIdList.isEmpty()) return ""
-
-        val idsJoined = deliveryIdList.joinToString(",")
-        val uniqueId = "17665547901390and99999999INTELLIGENT_SORT92524974$idsJoined"
-        val deliveryIdListJson = deliveryIdList.joinToString(prefix = "[", postfix = "]") { "\"$it\"" }
-
-        val data =
-            """[{"deliveryIdList":$deliveryIdListJson,"lowerPoint":0,"pageNum":$pageNum,"pageSize":$pageSize,"queryNoReserve":true,"resourceCardChannel":"ZERO_EXCHANGE_CHANNEL","sourcePassMap":{"innerSource":"","source":"","unid":""},"startPageFirstQuery":false,"topIdList":["202412231259661040"],"uniqueId":"$uniqueId","upperPoint":99999999,"withPointRange":false}]"""
-        return RequestManager.requestString("com.alipay.alipaymember.biz.rpc.config.h5.queryDeliveryZoneDetail", data)
+    fun queryPromoBenefitOrderConfirmInfo(
+        benefitId: String,
+        requestSourceInfo: String = "",
+        sourcePassMap: JSONObject? = null
+    ): String {
+        val args = JSONObject().apply {
+            put("benefitId", benefitId)
+            if (requestSourceInfo.isNotBlank()) {
+                put("requestSourceInfo", requestSourceInfo)
+            }
+            put("sourcePassMap", copyMemberSourcePassMap(sourcePassMap))
+        }
+        return RequestManager.requestString(
+            "com.alipay.alipaymember.biz.rpc.config.h5.queryPromoBenefitOrderConfirmInfo",
+            JSONArray().put(args).toString()
+        )
     }
 
+    @JvmStatic
+    fun exchangeMemberBenefit(
+        benefitId: String,
+        itemId: String,
+        requestSourceInfo: String = "",
+        sourcePassMap: JSONObject? = null
+    ): String {
+        val exchangeSourcePassMap = copyMemberSourcePassMap(sourcePassMap).apply {
+            put("alipayClientVersion", "10.8.20.8000")
+            put("mobileOsType", "Android")
+        }
+        val args = JSONObject().apply {
+            put("benefitId", benefitId)
+            put("cityCode", "440100")
+            put("exchangeType", "POINT_PAY")
+            if (itemId.isNotBlank()) {
+                put("itemId", itemId)
+            }
+            put("miniAppId", "")
+            put("orderSource", "")
+            put("requestId", "requestId${System.currentTimeMillis()}")
+            if (requestSourceInfo.isNotBlank()) {
+                put("requestSourceInfo", requestSourceInfo)
+            }
+            put("sourcePassMap", exchangeSourcePassMap)
+            put("userOutAccount", "")
+        }
+        return RequestManager.requestString(
+            "com.alipay.alipaymember.biz.rpc.exchange.h5.exchangeBenefit",
+            JSONArray().put(args).toString()
+        )
+    }
+
+    @JvmStatic
+    fun querySingleExchangeOrderDetail(
+        benefitId: String,
+        bizType: String,
+        outBizNo: String,
+        sourcePassMap: JSONObject? = null
+    ): String {
+        val args = JSONObject().apply {
+            put("benefitId", benefitId)
+            put("bizType", bizType)
+            put("miniAppId", "")
+            put("outBizNo", outBizNo)
+            put("sourcePassMap", copyMemberSourcePassMap(sourcePassMap))
+        }
+        return RequestManager.requestString(
+            "com.alipay.alipaymember.biz.rpc.exchange.h5.querySingleExchangeOrderDetail",
+            JSONArray().put(args).toString()
+        )
+    }
+
+    @JvmStatic
+    fun rightsRecommend(pageStartIndex: Int = 0, pageSize: Int = 6, bizProperty: String = ""): String {
+        val isDefaultFirstPage = pageStartIndex == 0 && bizProperty.isBlank()
+        val args = JSONObject().apply {
+            put("bizScene", "BLUE_BEAN_POSITION")
+            if (bizProperty.isNotBlank()) {
+                put("bizProperty", bizProperty)
+            }
+            put("factors", JSONObject().put("entrance", "insplatform_mine_anxindou"))
+            put("pageSize", pageSize)
+            put("pageStartIndex", pageStartIndex)
+            put("riskScore", 0)
+            put("strategyId", "feeds1209")
+            put("userAccountConsult", if (isDefaultFirstPage) 1 else 0)
+            put("userAccountFilter", if (isDefaultFirstPage) 1 else 0)
+        }
+        return RequestManager.requestString(
+            "com.alipay.insmarketingbff.bean.rightsRecommend",
+            JSONArray().put(args).toString()
+        )
+    }
+
+    @JvmStatic
+    fun queryRightsDetail(rightsId: String): String {
+        val args = JSONObject().apply {
+            put("factors", JSONObject().put("entrance", "insplatform_mine_anxindou"))
+            put("rightsCode", rightsId)
+        }
+        return RequestManager.requestString(
+            "com.alipay.insmarketingbff.bean.queryRightsDetail",
+            JSONArray().put(args).toString()
+        )
+    }
+
+    @JvmStatic
+    fun queryRightsPreExchangeFlows(pageStartIndex: Int = 0, pageSize: Int = 99): String {
+        val args = JSONObject().apply {
+            put("bizScene", "BLUE_BEAN_POSITION")
+            put("factors", JSONObject().put("entrance", "insplatform_mine_anxindou"))
+            put("pageSize", pageSize)
+            put("pageStartIndex", pageStartIndex)
+        }
+        return RequestManager.requestString(
+            "com.alipay.insmarketingbff.bean.queryRightsPreExchangeFlows",
+            JSONArray().put(args).toString()
+        )
+    }
+
+    @JvmStatic
+    fun queryRightsExchangeFlows(pageStartIndex: Int = 0, pageSize: Int = 20): String {
+        val args = JSONObject().apply {
+            put("exchangeType", "ONLY_BLUE_BEAN")
+            put("pageSize", pageSize)
+            put("pageStartIndex", pageStartIndex)
+        }
+        return RequestManager.requestString(
+            "com.alipay.insmarketingbff.bean.queryRightsExchangeFlows",
+            JSONArray().put(args).toString()
+        )
+    }
+
+    @JvmStatic
+    fun rightsExchange(rightsId: String, assetAmount: Int, needOrder: Int): String {
+        val args = JSONObject().apply {
+            put("assetAmount", assetAmount)
+            put("bizScene", "BLUE_BEAN_POSITION")
+            put("factors", JSONObject().put("entrance", "insplatform_mine_anxindou"))
+            put("needOrder", needOrder)
+            put("rightsId", rightsId)
+        }
+        return RequestManager.requestString(
+            "com.alipay.insmarketingbff.bean.rightsExchange",
+            JSONArray().put(args).toString()
+        )
+    }
 
     @JvmStatic
     fun queryGoldTicketHome(taskId: String = ""): String? {
@@ -1138,4 +1335,3 @@ object AntMemberRpcCall {
     }
 
 }
-

@@ -48,6 +48,12 @@ abstract class ModelTask : Model() {
     
     /** 执行互斥锁，防止重复执行 */
     private val executionMutex = Mutex()
+
+    /** 当前已提交的启动 Job，覆盖“等待互斥锁”和“正在运行”两个阶段 */
+    @Volatile
+    private var currentStartJob: Job? = null
+
+    private val startJobLock = Any()
     
     /** 任务运行次数计数器 */
     var runCents: Int = 0
@@ -262,37 +268,56 @@ abstract class ModelTask : Model() {
         rounds: Int = 2
     ): Job {
         ensureTaskScope()
-        
-        return taskScope!!.launch {
-            executionMutex.withLock {
-                if (isRunning && !force) {
-                    Log.record(TAG, "任务 ${getName()} 正在运行，跳过启动")
-                    return@withLock
-                }
-                if (isRunning && force) {
-                    Log.record(TAG, "强制重启任务 ${getName()}")
-                    stopTask()
-                }
-                if (!isEnable() || !check()) {
-                    Log.record(TAG, "任务 ${getName()} 不满足执行条件")
-                    return@withLock
-                }
-                try {
-                    isRunning = true
-                    addRunCents()
-                    updateRunningStatus("${getName()?.ifBlank { "任务" } ?: "任务"} 运行中")
-                    executeMultiRoundTask(rounds)
-                } catch (_: CancellationException) {
-                    // 协程取消属于正常控制流程（如停止任务/切换用户），不视为错误
-                    Log.record(TAG, "任务被取消: ${getName()}")
-                } catch (e: Exception) {
-                    Log.printStackTrace("startTask err: ${getName()}", e)
-                } finally {
-                    isRunning = false
-                    updateRunningNextExec(-1)
+
+        val startJob = synchronized(startJobLock) {
+            val existingJob = currentStartJob
+            if (!force && existingJob != null && !existingJob.isCompleted) {
+                Log.record(TAG, "任务 ${getName()} 正在运行或等待启动，跳过重复启动")
+                existingJob
+            } else {
+                taskScope!!.launch(start = CoroutineStart.LAZY) {
+                    executionMutex.withLock {
+                        if (isRunning && !force) {
+                            Log.record(TAG, "任务 ${getName()} 正在运行，跳过启动")
+                            return@withLock
+                        }
+                        if (isRunning && force) {
+                            Log.record(TAG, "强制重启任务 ${getName()}")
+                            stopTask()
+                        }
+                        if (!isEnable() || !check()) {
+                            Log.record(TAG, "任务 ${getName()} 不满足执行条件")
+                            return@withLock
+                        }
+                        try {
+                            isRunning = true
+                            addRunCents()
+                            updateRunningStatus("${getName()?.ifBlank { "任务" } ?: "任务"} 运行中")
+                            executeMultiRoundTask(rounds)
+                        } catch (_: CancellationException) {
+                            // 协程取消属于正常控制流程（如停止任务/切换用户），不视为错误
+                            Log.record(TAG, "任务被取消: ${getName()}")
+                        } catch (e: Exception) {
+                            Log.printStackTrace("startTask err: ${getName()}", e)
+                        } finally {
+                            isRunning = false
+                            updateRunningNextExec(-1)
+                        }
+                    }
+                }.also { job ->
+                    currentStartJob = job
+                    job.invokeOnCompletion {
+                        synchronized(startJobLock) {
+                            if (currentStartJob === job) {
+                                currentStartJob = null
+                            }
+                        }
+                    }
                 }
             }
         }
+        startJob.start()
+        return startJob
     }
 
     /**

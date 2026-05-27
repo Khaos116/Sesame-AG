@@ -54,12 +54,14 @@ import io.github.aoguai.sesameag.util.ToastUtil
 import io.github.aoguai.sesameag.util.friend.FriendRepository
 import io.github.aoguai.sesameag.util.friend.FriendSelectionResolver
 import io.github.aoguai.sesameag.util.maps.BeachMap
+import io.github.aoguai.sesameag.util.maps.BeanExchangeRightMap
 import io.github.aoguai.sesameag.util.maps.CooperateMap
 import io.github.aoguai.sesameag.util.maps.IdMapManager
 import io.github.aoguai.sesameag.util.maps.MemberBenefitsMap
 import io.github.aoguai.sesameag.util.maps.ParadiseCoinBenefitIdMap
 import io.github.aoguai.sesameag.util.maps.ReserveaMap
 import io.github.aoguai.sesameag.util.maps.SesameGiftMap
+import io.github.aoguai.sesameag.util.maps.SportsEnergyExchangeMap
 import io.github.aoguai.sesameag.util.maps.UserMap
 import io.github.aoguai.sesameag.util.maps.VitalityRewardsMap
 import java.io.File
@@ -74,6 +76,7 @@ class WebSettingsActivity : AppCompatActivity() {
     private lateinit var toolbar: MaterialToolbar
     private lateinit var webView: WebView
     private lateinit var context: Context
+    private var progressBar: ProgressBar? = null
     private var userId: String? = null
     private var userName: String? = null
     private val tabList = ArrayList<ModelDto>()
@@ -82,6 +85,8 @@ class WebSettingsActivity : AppCompatActivity() {
     private var cachedFriendMapModifiedAt: Long = Long.MIN_VALUE
     @Volatile
     private var cachedFriendMapLength: Long = Long.MIN_VALUE
+    @Volatile
+    private var loadedOptionMapsForUser: String? = null
 
     @SuppressLint("MissingInflatedId", "SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -95,7 +100,7 @@ class WebSettingsActivity : AppCompatActivity() {
         setupToolbar()
 
         webView = findViewById(R.id.webView)
-        val progressBar: ProgressBar? = findViewById(R.id.progress_bar)
+        progressBar = findViewById(R.id.progress_bar)
 
         // 返回键：优先 WebView 后退，否则保存并退出
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -135,20 +140,11 @@ class WebSettingsActivity : AppCompatActivity() {
                 UserMap.setCurrentUserId(userId)
                 syncFriendCenterFromUserMapIfNeeded(force = true)
 
-                IdMapManager.getInstance(CooperateMap::class.java).load(userId)
-                IdMapManager.getInstance(VitalityRewardsMap::class.java).load(userId)
-                IdMapManager.getInstance(MemberBenefitsMap::class.java).load(userId)
-                IdMapManager.getInstance(SesameGiftMap::class.java).load(userId)
-                IdMapManager.getInstance(ParadiseCoinBenefitIdMap::class.java).load(userId)
-                IdMapManager.getInstance(ReserveaMap::class.java).load()
-                IdMapManager.getInstance(BeachMap::class.java).load()
-
                 userId?.let { Status.load(it) }
                 Config.load(userId)
 
                 runOnUiThread {
                     try {
-                        progressBar?.visibility = View.GONE
                         webView.visibility = View.VISIBLE
                         initializeWebView()
                     } catch (e: Exception) {
@@ -157,6 +153,7 @@ class WebSettingsActivity : AppCompatActivity() {
                         finish()
                     }
                 }
+                loadOptionMapsForUserIfNeeded()
             } catch (e: Exception) {
                 Log.printStackTrace(TAG, "WebSettingsActivity load failed", e)
                 runOnUiThread {
@@ -205,6 +202,25 @@ class WebSettingsActivity : AppCompatActivity() {
         cachedFriendMapLength = length
     }
 
+    @Synchronized
+    private fun loadOptionMapsForUserIfNeeded() {
+        val currentUserId = userId?.trim().orEmpty()
+        val loadedKey = currentUserId.ifBlank { "<default>" }
+        if (loadedOptionMapsForUser == loadedKey) {
+            return
+        }
+        IdMapManager.getInstance(CooperateMap::class.java).load(userId)
+        IdMapManager.getInstance(VitalityRewardsMap::class.java).load(userId)
+        IdMapManager.getInstance(MemberBenefitsMap::class.java).load(userId)
+        IdMapManager.getInstance(BeanExchangeRightMap::class.java).load(userId)
+        IdMapManager.getInstance(SesameGiftMap::class.java).load(userId)
+        IdMapManager.getInstance(ParadiseCoinBenefitIdMap::class.java).load(userId)
+        IdMapManager.getInstance(SportsEnergyExchangeMap::class.java).load(userId)
+        IdMapManager.getInstance(ReserveaMap::class.java).load()
+        IdMapManager.getInstance(BeachMap::class.java).load()
+        loadedOptionMapsForUser = loadedKey
+    }
+
     private fun initializeWebView() {
         webView.settings.apply {
             mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
@@ -226,6 +242,12 @@ class WebSettingsActivity : AppCompatActivity() {
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
                 super.onReceivedError(view, request, error)
                 Log.error(TAG, "WebView加载错误: code=${error.errorCode}, desc=${error.description}, url=${request.url}")
+            }
+
+            override fun onPageFinished(view: WebView, url: String?) {
+                super.onPageFinished(view, url)
+                progressBar?.visibility = View.GONE
+                webView.visibility = View.VISIBLE
             }
 
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
@@ -286,6 +308,26 @@ class WebSettingsActivity : AppCompatActivity() {
         webView.addJavascriptInterface(WebViewCallback(), "HOOK")
         webView.loadUrl("file:///android_asset/web/semi_index.html")
         webView.requestFocus()
+    }
+
+    private data class FieldOptionsResult(
+        val requestId: String,
+        val success: Boolean,
+        val expandValue: Any? = null,
+        val message: String = ""
+    )
+
+    private fun deliverFieldOptionsResult(result: FieldOptionsResult) {
+        val payload = JsonUtil.formatJson(result, false)
+        runOnUiThread {
+            if (isFinishing || isDestroyed || !::webView.isInitialized) {
+                return@runOnUiThread
+            }
+            webView.evaluateJavascript(
+                "window.__onFieldOptionsResult && window.__onFieldOptionsResult($payload);",
+                null
+            )
+        }
     }
 
     inner class WebViewCallback {
@@ -390,6 +432,50 @@ class WebSettingsActivity : AppCompatActivity() {
             val modelConfig = Model.getModelConfigMap()[modelCode] ?: return null
             val modelField = modelConfig.getModelField(fieldCode) ?: return null
             return JsonUtil.formatJson(ModelFieldInfoDto.toInfoDto(modelField), false)
+        }
+
+        @JavascriptInterface
+        fun requestFieldOptions(modelCode: String, fieldCode: String, requestId: String): Boolean {
+            val safeRequestId = requestId.trim()
+            if (safeRequestId.isEmpty()) {
+                return false
+            }
+            GlobalThreadPools.execute(Dispatchers.IO) {
+                val result = try {
+                    ensureSettingsUserContext()
+                    loadOptionMapsForUserIfNeeded()
+                    val modelConfig = Model.getModelConfigMap()[modelCode]
+                    val modelField = modelConfig?.getModelField(fieldCode)
+                    when {
+                        modelConfig == null -> FieldOptionsResult(
+                            safeRequestId,
+                            false,
+                            message = "模型不存在：$modelCode"
+                        )
+
+                        modelField == null -> FieldOptionsResult(
+                            safeRequestId,
+                            false,
+                            message = "字段不存在：$fieldCode"
+                        )
+
+                        else -> FieldOptionsResult(
+                            requestId = safeRequestId,
+                            success = true,
+                            expandValue = modelField.getExpandValue()
+                        )
+                    }
+                } catch (t: Throwable) {
+                    Log.printStackTrace(TAG, "requestFieldOptions failed", t)
+                    FieldOptionsResult(
+                        requestId = safeRequestId,
+                        success = false,
+                        message = t.message ?: t.javaClass.simpleName
+                    )
+                }
+                deliverFieldOptionsResult(result)
+            }
+            return true
         }
 
         @JavascriptInterface

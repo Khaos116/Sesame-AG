@@ -24,10 +24,18 @@ class AntFarmIPChouChouLeBenefit(i: String, n: String) : MapperEntity() {
             for ((key, value) in data.shopItems) {
                 // 解析存储格式 "名称|限购次数|所需碎片"
                 val split = value.split("|")
-                val benefit = AntFarmIPChouChouLeBenefit(key, split[0])
+                val rawName = split[0]
+                val limitCount = split.getOrNull(1)?.toIntOrNull() ?: 0
+                val cent = split.getOrNull(2)?.toIntOrNull() ?: 0
+                val displayParts = listOf(
+                    cent.takeIf { it > 0 }?.let { "${it}碎片" }.orEmpty(),
+                    limitCount.takeIf { it > 0 }?.let { "限购${it}次" }.orEmpty()
+                ).filter { it.isNotBlank() }
+                val displayName = if (displayParts.isEmpty()) rawName else "$rawName[${displayParts.joinToString(" | ")}]"
+                val benefit = AntFarmIPChouChouLeBenefit(key, displayName)
                 if (split.size >= 3) {
-                    benefit.limitCount = split[1].toIntOrNull() ?: 0
-                    benefit.cent = split[2].toIntOrNull() ?: 0
+                    benefit.limitCount = limitCount
+                    benefit.cent = cent
                 }
                 list.add(benefit)
             }

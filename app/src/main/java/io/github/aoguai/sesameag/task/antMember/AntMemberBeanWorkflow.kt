@@ -12,7 +12,7 @@ internal fun AntMember.scheduleBeanWorkflows(
     if (beanSignIn?.value == true) {
         deferredTasks.add(scope.async(Dispatchers.IO) { beanSignIn() })
     }
-    if (beanExchangeBubbleBoost?.value == true) {
-        deferredTasks.add(scope.async(Dispatchers.IO) { beanExchangeBubbleBoost() })
+    if (beanExchangeRight?.value == true) {
+        deferredTasks.add(scope.async(Dispatchers.IO) { beanExchangeRight() })
     }
 }
