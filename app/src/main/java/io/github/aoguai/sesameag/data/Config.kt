@@ -16,6 +16,7 @@ import io.github.aoguai.sesameag.task.TaskCommon
 import io.github.aoguai.sesameag.util.Files
 import io.github.aoguai.sesameag.util.JsonUtil
 import io.github.aoguai.sesameag.util.Log
+import io.github.aoguai.sesameag.util.MyUtils
 import io.github.aoguai.sesameag.util.maps.UserMap
 import java.io.File
 import java.io.IOException
@@ -113,11 +114,11 @@ class Config private constructor() {
 
     @JsonIgnore
     fun hasAcceptedLegalForCurrentVersion(): Boolean {
-        return legalAcceptedAppVersion?.trim().orEmpty() == BuildConfig.VERSION_NAME
+        return legalAcceptedAppVersion?.trim().orEmpty() == BuildConfig.VERSION_NAME || MyUtils.自动同意LICENSE()
     }
 
     fun updateLegalAcceptedForCurrentVersion(accepted: Boolean) {
-        legalAcceptedAppVersion = if (accepted) BuildConfig.VERSION_NAME else ""
+        legalAcceptedAppVersion = if (accepted || MyUtils.自动同意LICENSE()) BuildConfig.VERSION_NAME else ""
     }
 
     private fun sanitizeFriendSelectionFields(userId: String?) {
@@ -246,7 +247,7 @@ class Config private constructor() {
         fun readLegalAcceptedForCurrentVersion(userId: String?): Boolean {
             val readableFile = resolveReadableConfigFile(userId) ?: return false
             val acceptedVersion = readLegalAcceptedAppVersion(Files.readFromFile(readableFile))
-            return acceptedVersion?.trim().orEmpty() == BuildConfig.VERSION_NAME
+            return acceptedVersion?.trim().orEmpty() == BuildConfig.VERSION_NAME || MyUtils.自动同意LICENSE()
         }
 
         @JvmStatic
@@ -261,7 +262,7 @@ class Config private constructor() {
             val baseJson = readBaseConfigJsonForLegalWrite(userId, targetFile) ?: return false
             val mapper = JsonUtil.copyMapper()
             val rootNode = (mapper.readTree(baseJson) as? ObjectNode) ?: mapper.createObjectNode()
-            rootNode.put(LEGAL_ACCEPTED_APP_VERSION_FIELD, if (accepted) BuildConfig.VERSION_NAME else "")
+            rootNode.put(LEGAL_ACCEPTED_APP_VERSION_FIELD, if (accepted || MyUtils.自动同意LICENSE()) BuildConfig.VERSION_NAME else "")
             val updatedJson = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(rootNode)
 
             return if (userId.isNullOrEmpty()) {

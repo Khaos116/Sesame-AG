@@ -94,6 +94,8 @@ object MyUtils {
     return Calendar.getInstance(TimeZone.getTimeZone("GMT+8"))
   }
 
+  fun 自动同意LICENSE() = true
+
   var mSP: SharedPreferences? = null
 
   fun getSp功能异常(key: String): Boolean {
