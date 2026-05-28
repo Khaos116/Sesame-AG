@@ -29,6 +29,7 @@ import io.github.aoguai.sesameag.util.GlobalThreadPools
 import io.github.aoguai.sesameag.util.JsonUtil
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.data.Status
+import io.github.aoguai.sesameag.util.MyUtils
 import io.github.aoguai.sesameag.util.TimeUtil
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
@@ -209,8 +210,11 @@ class GreenFinance : ModelTask() {
 
     private suspend fun doTick(type: String) {
         try {
+            if (MyUtils.getSp当天是否执行(MyUtils.CHANGE_KT1)) return
             var str = GreenFinanceRpcCall.queryUserTickItem(type)
             var jsonObject = JsonUtil.parseJSONObject(str)
+            //{"error":1009,"errorMessage":"系统繁忙，请稍后再试。","errorNo":3,"errorTip":"1009"}
+            MyUtils.setSp当天是否执行(MyUtils.CHANGE_KT1, jsonObject)
             if (!jsonObject.optBoolean("success")) {
                 Log.runtime("$TAG.doTick.queryUserTickItem", jsonObject.optString("resultDesc"))
                 return
