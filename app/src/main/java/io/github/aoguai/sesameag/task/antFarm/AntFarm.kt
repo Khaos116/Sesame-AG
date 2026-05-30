@@ -58,7 +58,6 @@ import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.MyUtils
 import io.github.aoguai.sesameag.util.RandomUtil
 import io.github.aoguai.sesameag.util.ResChecker
-import io.github.aoguai.sesameag.util.RpcCache
 import io.github.aoguai.sesameag.util.TaskBlacklist
 import io.github.aoguai.sesameag.util.TimeCounter
 import io.github.aoguai.sesameag.util.TimeTriggerEvaluator
@@ -281,7 +280,6 @@ class AntFarm : ModelTask() {
     internal var enableChouchoule: BooleanModelField? = null
     internal var chouChouLeTrigger: TimeTriggerModelField? = null // 抽抽乐触发时间
     var autoExchange: BooleanModelField? = null
-    var doChouChouLeDonationTask: BooleanModelField? = null
     internal var exchangeDaysBeforeEndIp: IntegerModelField? = null  // IP 抽抽乐活动结束前兑换天数
     internal var autoExchangeList: SelectAndCountModelField? = null  // IP 抽抽乐自定义兑换列表
     private var listOrnaments: BooleanModelField? = null
@@ -305,7 +303,6 @@ class AntFarm : ModelTask() {
     internal var onlyQueryNewOrnaments: BooleanModelField? = null // 仅查询未兑换装扮
 
     internal var visitAnimal: BooleanModelField? = null
-    internal var useSmartSchedulerManager: BooleanModelField? = null
     private var hasFence: Boolean = false       // 是否正在使用篱笆
     private var fenceCountDown: Int = 0
     // 雇佣NPC
@@ -721,11 +718,11 @@ class AntFarm : ModelTask() {
         modelFields.addField(
             IntegerModelField(
                 "donationCompetitionOvertakeAmount",
-                "捐蛋排位赛 | 超过前一名的捐蛋数",
+                "捐蛋排位赛 | 反超目标额外捐蛋数",
                 1,
                 1,
                 10000
-            ).withDesc("在尝试反超前一名时，比对方多捐赠的爱心蛋数量。").also {
+            ).withDesc("计算反超目标时，比目标排名当前捐蛋数多捐的爱心蛋数量；激进和稳定模式均生效。").also {
                 donationCompetitionOvertakeAmount = it
             })
         modelFields.addField(
@@ -896,22 +893,6 @@ class AntFarm : ModelTask() {
                 false
             ).withDesc("开启后不执行兑换，仅查询并提示商城中未拥有的装扮。需开启“装扮商城 | 开启”。").also {
                 onlyQueryNewOrnaments = it
-            })
-        modelFields.addField(
-            BooleanModelField(
-                "useSmartSchedulerManager",
-                "蹲点任务 | 使用精细定时",
-                false
-            ).withDesc("蹲点投喂、定时赶鸡等子任务优先使用精细定时调度。").also {
-                useSmartSchedulerManager = it
-            })
-        modelFields.addField(
-            BooleanModelField(
-                "doChouChouLeDonationTask",
-                "装扮抽抽乐 | 公益捐赠任务",
-                false
-            ).withDesc("控制是否执行抽抽乐中的公益捐赠类任务；默认关闭以避免额外捐赠。需开启“装扮抽抽乐 | 开启”。").also {
-                doChouChouLeDonationTask = it
             })
         return modelFields
     }
@@ -1718,8 +1699,7 @@ class AntFarm : ModelTask() {
                                         Log.printStackTrace(TAG,"蹲点投喂任务执行失败", e)
                                     }
                                 },
-                                execTime = nextFeedTime,
-                                useSmartScheduler = useSmartSchedulerManager?.value == true
+                                execTime = nextFeedTime
                             )
                         )
                         Log.farm(UserMap.getCurrentMaskName() + "小鸡的蹲点投喂时间[" + TimeUtil.getCommonDate(nextFeedTime)+"]")
@@ -2316,7 +2296,7 @@ class AntFarm : ModelTask() {
             val title = question.getString("title")
 
             var answer: String? = null
-            var cacheHit = false
+            var farmAnswerMatched = false
             val cacheKey = "$title|$today"
 
             // 答题来源顺序：目标端预告答案缓存 -> AnswerAI 已验证正确缓存 -> AI 请求。
@@ -2329,18 +2309,18 @@ class AntFarm : ModelTask() {
                     val option = labels.getString(i)
                     if (option == cachedAnswer) {
                         answer = option
-                        cacheHit = true
+                        farmAnswerMatched = true
                         break
                     }
                 }
 
                 // 2. 如果精确匹配失败，尝试模糊匹配
-                if (!cacheHit && cachedAnswer != null) {
+                if (!farmAnswerMatched && cachedAnswer != null) {
                     for (i in 0..<labels.length()) {
                         val option = labels.getString(i)
                         if (option.contains(cachedAnswer) || cachedAnswer.contains(option)) {
                             answer = option
-                            cacheHit = true
+                            farmAnswerMatched = true
                             Log.farm("⚠️ 目标端答案缓存模糊匹配成功：$cachedAnswer → $option")
                             break
                         }
@@ -2349,7 +2329,7 @@ class AntFarm : ModelTask() {
             }
 
             // 目标端缓存未命中后，AnswerAI 内部会先查已验证正确缓存，再请求 AI。
-            if (!cacheHit) {
+            if (!farmAnswerMatched) {
                 Log.farm("目标端答案缓存未命中，进入AI答题链路：$title")
                 answer = AnswerAI.getAnswer(title, answerList, LogChannel.FARM.loggerName)
                 if (answer.isNullOrEmpty()) {
@@ -3566,8 +3546,7 @@ class AntFarm : ModelTask() {
                                         Log.printStackTrace(TAG, e)
                                     }
                                 },
-                                execTime = System.currentTimeMillis() + timeSendBackAnimal * 60 * 1000L,
-                                useSmartScheduler = useSmartSchedulerManager?.value == true
+                                execTime = System.currentTimeMillis() + timeSendBackAnimal * 60 * 1000L
                             )
                             addChildTask(task)
                             Log.farm(UserMap.getCurrentMaskName() + "${timeSendBackAnimal}分钟后${kcTime}蹲点赶小鸡")
@@ -3747,7 +3726,6 @@ class AntFarm : ModelTask() {
         }
         // 2) 同步最新状态，确保消耗速度、已吃量、食槽上限为最新
         syncAnimalStatus(ownerFarmId)
-        RpcCache.invalidate(RPC_LIST_FARM_TOOL)
         listFarmTool()
         if (AnimalBuff.ACCELERATING.name == ownerAnimal.animalBuff) {
             Log.farm("加速卡效果在本轮开始前已生效，继续按剩余时间和上限判断是否追加使用")
@@ -3910,7 +3888,6 @@ class AntFarm : ModelTask() {
         try {
             Log.farm("道具🎭[${toolType.nickName()}]返回“道具使用无效”，开始刷新状态复核")
             syncAnimalStatus(targetFarmId)
-            RpcCache.invalidate(RPC_LIST_FARM_TOOL)
             listFarmTool()
             val toolCountAfter = getFarmToolCount(toolType, forceRefresh = false)
             if (toolCountAfter in 0 until toolCountBefore) {
@@ -3989,7 +3966,6 @@ class AntFarm : ModelTask() {
                     hasFence = true
                     fenceCountDown = 86400
                 }
-                RpcCache.invalidate(RPC_LIST_FARM_TOOL)
                 if (toolType != ToolType.ACCELERATETOOL || !hasNextToolId) {
                     listFarmTool()
                 }
