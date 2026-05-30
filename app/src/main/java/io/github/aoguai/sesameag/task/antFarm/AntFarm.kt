@@ -907,7 +907,7 @@ class AntFarm : ModelTask() {
         try {
             val tc = TimeCounter(TAG)
             val userId = UserMap.currentUid
-            Log.farm("执行开始-${getName()}")
+            Log.farm("🟢执行开始-${getName()}")
             invalidToolTypesThisRound.clear()
             manurePotCollectionBlockedThisRound = false
 
@@ -924,7 +924,7 @@ class AntFarm : ModelTask() {
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "AntFarm.start.run err:",t)
         } finally {
-            Log.farm("执行结束-${getName()}")
+            Log.farm("🟥执行结束-${getName()}")
         }
     }
 

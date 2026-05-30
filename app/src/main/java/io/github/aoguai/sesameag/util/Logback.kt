@@ -119,7 +119,7 @@ object Logback {
     }
 
     private fun calculateNextMidnight(now: Long): Long {
-        return Calendar.getInstance().apply {
+        return MyUtils.getInstance().apply {
             timeInMillis = now
             add(Calendar.DAY_OF_YEAR, 1)
             set(Calendar.HOUR_OF_DAY, 0)
