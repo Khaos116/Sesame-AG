@@ -114,6 +114,7 @@ class OldRpcBridge : RpcBridge {
      */
     override fun requestString(rpcEntity: RpcEntity, tryCount: Int, retryInterval: Int): String? {
         if (MyUtils.getRpcTodayIsError(rpcEntity)) {
+          Log.greenFinance("当日异常的请求，当日不再请求\n${rpcEntity.requestMethod}")
           return "{\"error\":9999,\"errorMessage\":\"当日异常的请求，当日不再请求。\",\"errorNo\":9999,\"errorTip\":\"9999\"}"
         }
         val responseEntity = requestObject(rpcEntity, tryCount, retryInterval)
