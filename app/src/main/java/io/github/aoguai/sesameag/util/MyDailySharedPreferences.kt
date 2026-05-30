@@ -1,4 +1,5 @@
 package io.github.aoguai.sesameag.util
+
 import android.content.Context
 import android.content.SharedPreferences
 import java.text.SimpleDateFormat
@@ -61,12 +62,28 @@ class DailySharedPreferences(private val context: Context, private val uid: Stri
     }
   }
 
+  fun putBoolean(key: String, value: Boolean) {
+    checkAndClearIfCrossedDay() // 存之前检查
+
+    val today = getTodayDateString()
+    prefs.edit().apply {
+      putBoolean(key, value)
+      putString(KEY_GLOBAL_DATE, today) // 更新该账号的日期戳
+      apply()
+    }
+  }
+
   /**
    * 获取数据
    */
   fun getString(key: String): String? {
     checkAndClearIfCrossedDay() // 取之前检查
     return prefs.getString(key, null)
+  }
+
+  fun getBoolean(key: String): Boolean {
+    checkAndClearIfCrossedDay() // 取之前检查
+    return prefs.getBoolean(key, false)
   }
 
   /**

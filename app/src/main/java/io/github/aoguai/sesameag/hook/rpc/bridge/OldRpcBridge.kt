@@ -9,6 +9,7 @@ import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.Notify
 import io.github.aoguai.sesameag.util.RandomUtil
 import io.github.aoguai.sesameag.util.CoroutineUtils
+import io.github.aoguai.sesameag.util.MyUtils
 import io.github.aoguai.sesameag.util.TimeUtil
 import org.json.JSONException
 import org.json.JSONObject
@@ -112,6 +113,9 @@ class OldRpcBridge : RpcBridge {
      * @return 响应字符串，如果失败则返回null
      */
     override fun requestString(rpcEntity: RpcEntity, tryCount: Int, retryInterval: Int): String? {
+        if (MyUtils.getRpcTodayIsError(rpcEntity)) {
+          return "{\"error\":9999,\"errorMessage\":\"当日异常的请求，当日不再请求。\",\"errorNo\":9999,\"errorTip\":\"9999\"}"
+        }
         val responseEntity = requestObject(rpcEntity, tryCount, retryInterval)
         return responseEntity?.responseString
     }

@@ -1,8 +1,7 @@
 package io.github.aoguai.sesameag.util
 
 import android.content.Context
-import android.content.SharedPreferences
-import androidx.core.content.edit
+import io.github.aoguai.sesameag.entity.RpcEntity
 import io.github.aoguai.sesameag.hook.ApplicationHook
 import io.github.aoguai.sesameag.util.maps.UserMap
 import org.json.JSONObject
@@ -73,35 +72,10 @@ object MyUtils {
     return UserMap.currentUid == "2088702045701743"
   }
 
-  var mSP: SharedPreferences? = null
-
-  fun getSp功能异常(key: String): Boolean {
-    val sp: SharedPreferences = getMySp() ?: return true
-    return sp.getBoolean(key, false)
-  }
-
-  fun setSp功能异常(key: String, jo: JSONObject?) {
-    if (jo == null) return
-    //{"error":1009,"errorMessage":"访问被拒绝","errorNo":3,"errorTip":"1009"}
-    //{"error":3000,"errorMessage":"系统出错，正在排查","errorNo":3,"errorTip":"3000"}
-    val errorMessage = jo.optString("errorMessage", "")
-    var isError = false
-    if (errorMessage.contains("访问被拒绝")) {
-      isError = true
-    } else if (errorMessage.contains("系统出错")) {
-      isError = true
-    }
-    if (isError) {
-      getMySp()?.edit {
-        putBoolean(key, true)
-      }
-    }
-  }
-
   fun getSp当天是否执行(key: String): Boolean {
-    val sp: SharedPreferences = getMySp() ?: return true
+    val sp = getMySp() ?: return true
     val today = ZonedDateTime.now(ZoneId.of("GMT+8")).format(DateTimeFormatter.ofPattern("yyyyMMdd"))
-    return sp.getBoolean(key + "_" + today + "_" + (UserMap.currentUid ?: ""), false)
+    return sp.getBoolean(key + "_" + today + "_" + (UserMap.currentUid ?: ""))
   }
 
   fun setSp当天是否执行(key: String, jo: JSONObject?) {
@@ -126,15 +100,35 @@ object MyUtils {
     }
     if (isError) {
       val today = ZonedDateTime.now(ZoneId.of("GMT+8")).format(DateTimeFormatter.ofPattern("yyyyMMdd"))
-      getMySp()?.edit {
-        putBoolean(key + "_" + today + "_" + (UserMap.currentUid ?: ""), true)
+      getMySp()?.putBoolean(key + "_" + today + "_" + (UserMap.currentUid ?: ""), true)
+    }
+  }
+
+  private val mSpMap = hashMapOf<String, DailySharedPreferences>()
+  private fun getMySp(): DailySharedPreferences? {
+    val context: Context = ApplicationHook.appContext ?: return null
+    mSpMap[UserMap.currentUid.orEmpty()]?.let { sp -> return sp }
+    val sp = DailySharedPreferences(context, UserMap.currentUid.orEmpty())
+    mSpMap[UserMap.currentUid.orEmpty()] = sp
+    return sp
+  }
+
+  fun checkRpcTodayIsError(rpc: RpcEntity) {
+    rpc.responseString?.let { s ->
+      when {
+        s.contains("系统繁忙") ||
+          s.contains("验证后继续") ||
+          s.contains("已经签到") ||
+          s.contains("操作存在异常") ||
+          s.contains("系统出错") ||
+          s.contains("\"error\":1009") -> {
+          getMySp()?.putBoolean(MyCryptoUtils.encrypt("${rpc.requestMethod}_${rpc.requestData}"), true)
+        }
       }
     }
   }
 
-  private fun getMySp(): SharedPreferences? {
-    val context: Context = ApplicationHook.appContext ?: return null
-    if (mSP == null) mSP = context.getSharedPreferences("XQE_UID", Context.MODE_PRIVATE)
-    return mSP
+  fun getRpcTodayIsError(rpc: RpcEntity): Boolean {
+    return getMySp()?.getBoolean(MyCryptoUtils.encrypt("${rpc.requestMethod}_${rpc.requestData}")) ?: false
   }
 }

@@ -1,16 +1,11 @@
 package io.github.aoguai.sesameag.util
+
 import android.util.Base64
 import java.nio.ByteBuffer
 import javax.crypto.Cipher
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
-import android.content.Context
-import android.content.SharedPreferences
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-import java.util.TimeZone
 
 object MyCryptoUtils {
 
@@ -27,7 +22,7 @@ object MyCryptoUtils {
    * @param secretKey 16字节(128位)或32字节(256位)的自定义密钥
    * @return 加密后并经过 Base64 编码的短字符串
    */
-  fun encrypt(plainText: String, secretKey: SecretKey): String {
+  fun encrypt(plainText: String, secretKey: SecretKey = generateKeyFromString("1234567890123456")): String {
     val cipher = Cipher.getInstance(AES_MODE)
     cipher.init(Cipher.ENCRYPT_MODE, secretKey)
 
@@ -51,7 +46,7 @@ object MyCryptoUtils {
    * @param secretKey 加密时使用的同一个密钥
    * @return 解密后的明文字符串
    */
-  fun decrypt(encryptedText: String, secretKey: SecretKey): String {
+  fun decrypt(encryptedText: String, secretKey: SecretKey = generateKeyFromString("1234567890123456")): String {
     // 1. 解码 Base64 字符串
     val combinedBytes = Base64.decode(encryptedText, Base64.NO_WRAP or Base64.URL_SAFE)
 

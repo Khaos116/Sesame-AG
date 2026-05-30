@@ -7,6 +7,7 @@ import io.github.aoguai.sesameag.model.BaseModel
 import io.github.aoguai.sesameag.util.CoroutineUtils
 import io.github.aoguai.sesameag.util.GlobalThreadPools
 import io.github.aoguai.sesameag.util.Log
+import io.github.aoguai.sesameag.util.MyUtils
 import io.github.aoguai.sesameag.util.Notify
 import io.github.aoguai.sesameag.util.RandomUtil
 import io.github.aoguai.sesameag.util.TimeUtil
@@ -295,6 +296,9 @@ class NewRpcBridge : RpcBridge {
     }
 
     override fun requestString(rpcEntity: RpcEntity, tryCount: Int, retryInterval: Int): String? {
+        if (MyUtils.getRpcTodayIsError(rpcEntity)) {
+          return "{\"error\":9999,\"errorMessage\":\"当日异常的请求，当日不再请求。\",\"errorNo\":9999,\"errorTip\":\"9999\"}"
+        }
         val resRpcEntity = requestObject(rpcEntity, tryCount, retryInterval)
         return resRpcEntity?.responseString
     }
@@ -430,6 +434,7 @@ class NewRpcBridge : RpcBridge {
                                                             )
                                                         )
                                                     }
+                                                    MyUtils.checkRpcTodayIsError(rpcEntity)
                                                     Log.error(TAG, message)
                                                 }
                                             }
