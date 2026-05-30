@@ -6193,11 +6193,12 @@ class AntSports : ModelTask() {
                 val sources = onlySource?.let { listOf(it) } ?: candidateNeverlandSources()
                 var queriedAny = false
                 var foundActionable = false
-
+                if (MyUtils.getSp当天是否执行(MyUtils.CHANGE_KT2)) return
                 for (source in sources) {
                     Log.sports("健康岛 · 检查可领取泡泡[source=$source]")
+                    if (MyUtils.getSp当天是否执行(MyUtils.CHANGE_KT2)) return
                     val jo = JSONObject(AntSportsRpcCall.NeverlandRpcCall.queryBubbleTask(source))
-
+                    MyUtils.setSp当天是否执行(MyUtils.CHANGE_KT2, jo)
                     if (!ResChecker.checkRes(TAG, "查询泡泡失败:", jo) ||
                         jo.optJSONObject("data") == null
                     ) {

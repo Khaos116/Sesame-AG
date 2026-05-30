@@ -29,7 +29,7 @@ import java.util.TimeZone
 object MyUtils {
   //为了方便快速找到处理本地修改的代码
   const val CHANGE_KT1 = "1_当天异常不再执行_绿色经营"
-  //const val CHANGE_KT2 = "2"
+  const val CHANGE_KT2 = "2_当天异常不再执行_健康岛泡泡"
   //const val CHANGE_KT3 = "3"
   //const val CHANGE_KT4 = "4"
   //const val CHANGE_KT5 = "5"

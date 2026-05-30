@@ -210,11 +210,8 @@ class GreenFinance : ModelTask() {
 
     private suspend fun doTick(type: String) {
         try {
-            if (MyUtils.getSp当天是否执行(MyUtils.CHANGE_KT1)) return
             var str = GreenFinanceRpcCall.queryUserTickItem(type)
             var jsonObject = JsonUtil.parseJSONObject(str)
-            //{"error":1009,"errorMessage":"系统繁忙，请稍后再试。","errorNo":3,"errorTip":"1009"}
-            MyUtils.setSp当天是否执行(MyUtils.CHANGE_KT1, jsonObject)
             if (!jsonObject.optBoolean("success")) {
                 Log.runtime("$TAG.doTick.queryUserTickItem", jsonObject.optString("resultDesc"))
                 return
@@ -227,8 +224,11 @@ class GreenFinance : ModelTask() {
                 }
                 val behaviorCode = jsonObject.optString("behaviorCode")
                 if (behaviorCode.isEmpty()) continue
+                //{"error":1009,"errorMessage":"系统繁忙，请稍后再试。","errorNo":3,"errorTip":"1009"}
+                if (MyUtils.getSp当天是否执行(MyUtils.CHANGE_KT1)) return
                 str = GreenFinanceRpcCall.submitTick(type, behaviorCode)
                 val obj = JsonUtil.parseJSONObject(str)
+                MyUtils.setSp当天是否执行(MyUtils.CHANGE_KT1, jsonObject)
                 if (!obj.optBoolean("success") || 
                     JsonUtil.getValueByPath(obj, "result.result") != "true") {
                     Log.greenFinance("绿色经营📊[${jsonObject.optString("title")}]打卡失败")
