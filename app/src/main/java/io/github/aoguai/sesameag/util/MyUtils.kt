@@ -130,7 +130,12 @@ object MyUtils {
           s.contains("操作存在异常") ||
           s.contains("系统出错") ||
           s.contains("\"error\":1009") -> {
-          getMySp()?.putBoolean(MyCryptoUtils.encrypt("${rpc.requestMethod}_${rpc.requestData}"), true)
+          getMySp()?.let { sp ->
+            sp.putBoolean(MyCryptoUtils.encrypt("${rpc.requestMethod}_${rpc.requestData}"), true)
+            Log.greenFinance("当日异常的请求，当日不再请求\n${rpc.requestMethod}")
+          } ?: run {
+            Log.greenFinance("当日异常的请求，当日不再请求,存储失败:${rpc.requestMethod}")
+          }
         }
       }
     }

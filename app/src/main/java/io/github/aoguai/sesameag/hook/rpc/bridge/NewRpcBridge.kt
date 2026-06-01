@@ -339,15 +339,16 @@ class NewRpcBridge : RpcBridge {
     }
 
     override fun requestString(rpcEntity: RpcEntity, tryCount: Int, retryInterval: Int): String? {
-        if (MyUtils.getRpcTodayIsError(rpcEntity)) {
-          Log.greenFinance("当日异常的请求，当日不再请求\n${rpcEntity.requestMethod}")
-          return "{\"error\":9999,\"errorMessage\":\"当日异常的请求，当日不再请求。\",\"errorNo\":9999,\"errorTip\":\"9999\"}"
-        }
         val resRpcEntity = requestObject(rpcEntity, tryCount, retryInterval)
         return resRpcEntity?.responseString
     }
 
     override fun requestObject(rpcEntity: RpcEntity, tryCount: Int, retryInterval: Int): RpcEntity? {
+        if (MyUtils.getRpcTodayIsError(rpcEntity)) {
+          Log.greenFinance("当日异常的请求，当日不再请求\n${rpcEntity.requestMethod}")
+          rpcEntity.responseString = "{\"error\":9999,\"errorMessage\":\"当日异常的请求，当日不再请求。\",\"errorNo\":9999,\"errorTip\":\"9999\"}"
+          return rpcEntity
+        }
         // 方法开始时，将成员变量赋值给局部变量，以避免在方法执行期间因其他线程的unload()调用而导致成员变量变为null
         var localNewRpcCallMethod = newRpcCallMethod
         var localParseObjectMethod = parseObjectMethod

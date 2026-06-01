@@ -113,10 +113,6 @@ class OldRpcBridge : RpcBridge {
      * @return 响应字符串，如果失败则返回null
      */
     override fun requestString(rpcEntity: RpcEntity, tryCount: Int, retryInterval: Int): String? {
-        if (MyUtils.getRpcTodayIsError(rpcEntity)) {
-          Log.greenFinance("当日异常的请求，当日不再请求\n${rpcEntity.requestMethod}")
-          return "{\"error\":9999,\"errorMessage\":\"当日异常的请求，当日不再请求。\",\"errorNo\":9999,\"errorTip\":\"9999\"}"
-        }
         val responseEntity = requestObject(rpcEntity, tryCount, retryInterval)
         return responseEntity?.responseString
     }
@@ -125,7 +121,11 @@ class OldRpcBridge : RpcBridge {
         if (io.github.aoguai.sesameag.hook.ApplicationHookConstants.shouldBlockRpc()) {
             return null
         }
-
+        if (MyUtils.getRpcTodayIsError(rpcEntity)) {
+          Log.greenFinance("当日异常的请求，当日不再请求\n${rpcEntity.requestMethod}")
+          rpcEntity.responseString = "{\"error\":9999,\"errorMessage\":\"当日异常的请求，当日不再请求。\",\"errorNo\":9999,\"errorTip\":\"9999\"}"
+          return rpcEntity
+        }
         val id = rpcEntity.hashCode()
         val method = rpcEntity.requestMethod
         val args = rpcEntity.requestData
