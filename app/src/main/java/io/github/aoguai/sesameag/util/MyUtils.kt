@@ -5,9 +5,6 @@ import io.github.aoguai.sesameag.entity.RpcEntity
 import io.github.aoguai.sesameag.hook.ApplicationHook
 import io.github.aoguai.sesameag.util.maps.UserMap
 import org.json.JSONObject
-import java.time.ZoneId
-import java.time.ZonedDateTime
-import java.time.format.DateTimeFormatter
 import java.util.Calendar
 import java.util.TimeZone
 
@@ -74,8 +71,7 @@ object MyUtils {
 
   fun getSp当天是否执行(key: String): Boolean {
     val sp = getMySp() ?: return true
-    val today = ZonedDateTime.now(ZoneId.of("GMT+8")).format(DateTimeFormatter.ofPattern("yyyyMMdd"))
-    return sp.getBoolean(key + "_" + today + "_" + (UserMap.currentUid ?: ""))
+    return sp.getBoolean(key + "_" + (UserMap.currentUid ?: ""))
   }
 
   fun setSp当天是否执行(key: String, jo: JSONObject?) {
@@ -99,9 +95,21 @@ object MyUtils {
       isError = true
     }
     if (isError) {
-      val today = ZonedDateTime.now(ZoneId.of("GMT+8")).format(DateTimeFormatter.ofPattern("yyyyMMdd"))
-      getMySp()?.putBoolean(key + "_" + today + "_" + (UserMap.currentUid ?: ""), true)
+      getMySp()?.putBoolean(key + "_" + (UserMap.currentUid ?: ""), true)
     }
+  }
+
+  private const val DO_FARM_TASK_COUNT = "DO_FARM_TASK_COUNT"
+  fun updateDoFarmTaskCount() {
+    getMySp()?.let { sp ->
+      val key = DO_FARM_TASK_COUNT + "_" + (UserMap.currentUid ?: "")
+      val count = sp.getInt(key) + 1
+      sp.putInt(key, count)
+    }
+  }
+
+  fun getDoFarmTaskCount(): Int {
+    return getMySp()?.getInt(DO_FARM_TASK_COUNT + "_" + (UserMap.currentUid ?: "")) ?: 0
   }
 
   private val mSpMap = hashMapOf<String, DailySharedPreferences>()

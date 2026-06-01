@@ -3001,7 +3001,13 @@ class AntFarm : ModelTask() {
                 Log.farm("庄园任务[$title] 当前状态=$taskStatus，保留后续重试机会")
                 return Status.TodayFlagState.RETRY_LATER
             }
-            Status.TodayFlagState.NO_MORE_ACTION_TODAY
+            val count = MyUtils.getDoFarmTaskCount()
+            if (count > 5) {
+              Status.TodayFlagState.NO_MORE_ACTION_TODAY
+            } else {
+              MyUtils.updateDoFarmTaskCount()
+              Status.TodayFlagState.RETRY_LATER
+            }
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "resolveFarmTaskFlagState err:", t)
             Status.TodayFlagState.RETRY_LATER

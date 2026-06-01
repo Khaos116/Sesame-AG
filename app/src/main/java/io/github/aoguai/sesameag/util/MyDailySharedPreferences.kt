@@ -3,9 +3,7 @@ package io.github.aoguai.sesameag.util
 import android.content.Context
 import android.content.SharedPreferences
 import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-import java.util.TimeZone
+import java.util.*
 
 class DailySharedPreferences(private val context: Context, private val uid: String) {
 
@@ -73,6 +71,17 @@ class DailySharedPreferences(private val context: Context, private val uid: Stri
     }
   }
 
+  fun putInt(key: String, value: Int) {
+    checkAndClearIfCrossedDay() // 存之前检查
+
+    val today = getTodayDateString()
+    prefs.edit().apply {
+      putInt(key, value)
+      putString(KEY_GLOBAL_DATE, today) // 更新该账号的日期戳
+      apply()
+    }
+  }
+
   /**
    * 获取数据
    */
@@ -84,6 +93,11 @@ class DailySharedPreferences(private val context: Context, private val uid: Stri
   fun getBoolean(key: String): Boolean {
     checkAndClearIfCrossedDay() // 取之前检查
     return prefs.getBoolean(key, false)
+  }
+
+  fun getInt(key: String): Int {
+    checkAndClearIfCrossedDay() // 取之前检查
+    return prefs.getInt(key, 0)
   }
 
   /**
