@@ -122,6 +122,9 @@ object MyUtils {
   }
 
   fun checkRpcTodayIsError(rpc: RpcEntity) {
+    if (rpc.requestMethod.orEmpty().contains(".antfarm.")) {
+      return//不能耽误喂鸡大业
+    }
     rpc.responseString?.let { s ->
       when {
         s.contains("系统繁忙") ||
