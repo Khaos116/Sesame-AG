@@ -31,6 +31,11 @@ import io.github.aoguai.sesameag.hook.internal.AlipayMiniMarkHelper
 import io.github.aoguai.sesameag.hook.internal.LocationHelper
 import io.github.aoguai.sesameag.hook.internal.AuthCodeHelper
 import io.github.aoguai.sesameag.hook.internal.SecurityBodyHelper
+import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleDefaults
+import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleKind
+import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleRegistry
+import io.github.aoguai.sesameag.hook.keepalive.ScheduledTaskRouter
+import io.github.aoguai.sesameag.hook.keepalive.SystemWakeScheduler
 import io.github.aoguai.sesameag.hook.keepalive.UnifiedScheduler
 import io.github.aoguai.sesameag.hook.rpc.bridge.NewRpcBridge
 import io.github.aoguai.sesameag.hook.rpc.bridge.OldRpcBridge
@@ -220,12 +225,65 @@ class ApplicationHook {
         }
     }
 
+    private fun consumePersistentAlarmLaunch(intent: Intent?): Boolean {
+        val activityIntent = intent ?: return false
+        val persistentAlarmLaunch =
+            activityIntent.getBooleanExtra(SystemWakeScheduler.EXTRA_PERSISTENT_ALARM_LAUNCH, false)
+        if (!persistentAlarmLaunch) return false
+
+        ApplicationResumeCoordinator.recordReOpenAppLaunch()
+        pendingPersistentLaunchScheduleId = activityIntent.getStringExtra(SystemWakeScheduler.EXTRA_SCHEDULE_ID)
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+        activityIntent.removeExtra(SystemWakeScheduler.EXTRA_PERSISTENT_ALARM_LAUNCH)
+        activityIntent.removeExtra(SystemWakeScheduler.EXTRA_SCHEDULE_ID)
+        return true
+    }
+
+    private fun consumePersistentAlarmLaunch(activity: android.app.Activity?): Boolean {
+        return consumePersistentAlarmLaunch(activity?.intent)
+    }
+
+    private fun handlePersistentAlarmLaunch(source: String) {
+        if (!init) {
+            initHandler("onResume")
+            return
+        }
+        reconcilePersistentAlarmLaunch(source)
+    }
+
+    private fun reconcilePersistentAlarmLaunch(source: String) {
+        val context = appContext
+        if (isReadyForExec() && context != null) {
+            record(TAG, "持久调度唤醒目标应用，检查到期任务: $source")
+            val launchScheduleId = pendingPersistentLaunchScheduleId
+            if (!launchScheduleId.isNullOrBlank()) {
+                val schedule = PersistentScheduleRegistry.get(launchScheduleId)
+                if (schedule != null) {
+                    if (ScheduledTaskRouter.fire(context, schedule, source)) {
+                        pendingPersistentLaunchScheduleId = null
+                    }
+                } else {
+                    record(TAG, "持久调度唤醒目标应用但任务不存在[$launchScheduleId]")
+                    pendingPersistentLaunchScheduleId = null
+                }
+                return
+            }
+            UnifiedScheduler.reconcilePersistentSchedules(context)
+        } else {
+            record(TAG, "持久调度唤醒目标应用但工作流未就绪[$source]: ${readinessSummary()}")
+        }
+    }
+
     private fun hookLauncherResume() {
         try {
             val launcherClass = loadClass(classLoader!!, ApplicationHookConstants.AlipayClasses.LAUNCHER_ACTIVITY)
+            hookPersistentAlarmNewIntent(launcherClass, "launcher_onNewIntent")
             val onResumeMethod = findMethod(launcherClass, "onResume")
             requireXposedInterface().hook(onResumeMethod).intercept { chain ->
                 val result = chain.proceed()
+                val persistentAlarmLaunch =
+                    consumePersistentAlarmLaunch(chain.getThisObject() as? android.app.Activity)
                 ApplicationHookConstants.submitEntry("launcher_onResume") {
                             val targetUid = HookUtil.getUserId(classLoader!!) ?: run {
                                 show("用户未登录")
@@ -233,7 +291,11 @@ class ApplicationHook {
                             }
 
                             if (!init) {
-                                if (initHandler("onResume")) init = true
+                                if (persistentAlarmLaunch) {
+                                    handlePersistentAlarmLaunch("launcher_onResume:init")
+                                } else if (initHandler("onResume")) {
+                                    init = true
+                                }
                                 return@submitEntry
                             }
 
@@ -249,6 +311,9 @@ class ApplicationHook {
                             }
 
                             val recoveredFromOffline = ApplicationResumeCoordinator.tryRecoverOffline("onResume")
+                            if (persistentAlarmLaunch) {
+                                reconcilePersistentAlarmLaunch("launcher_onResume")
+                            }
 
                             val resumeAt = System.currentTimeMillis()
                             val resumedFromBackground = ApplicationResumeCoordinator.consumeHostAppBackgrounded()
@@ -286,11 +351,22 @@ class ApplicationHook {
     private fun hookLoginResume() {
         try {
             val loginActivityClass = loadClass(classLoader!!, General.CURRENT_USING_ACTIVITY)
+            hookPersistentAlarmNewIntent(loginActivityClass, "login_onNewIntent")
             val onResumeMethod = findMethod(loginActivityClass, "onResume")
             requireXposedInterface().hook(onResumeMethod).intercept { chain ->
                 val result = chain.proceed()
+                val persistentAlarmLaunch =
+                    consumePersistentAlarmLaunch(chain.getThisObject() as? android.app.Activity)
                 ApplicationHookConstants.submitEntry("login_onResume") {
-                            if (!init) return@submitEntry
+                            if (!init) {
+                                if (persistentAlarmLaunch) {
+                                    handlePersistentAlarmLaunch("login_onResume:init")
+                                }
+                                return@submitEntry
+                            }
+                            if (persistentAlarmLaunch) {
+                                reconcilePersistentAlarmLaunch("login_onResume")
+                            }
                             ApplicationResumeCoordinator.tryRecoverOffline("login.onResume")
                 }
                 result
@@ -298,6 +374,33 @@ class ApplicationHook {
         } catch (t: Throwable) {
             printStackTrace(TAG, "Hook Login failed", t)
         }
+    }
+
+    private fun hookPersistentAlarmNewIntent(activityClass: Class<*>, source: String) {
+        runCatching { findMethod(activityClass, "onNewIntent", Intent::class.java) }
+            .onSuccess { method ->
+                requireXposedInterface().hook(method).intercept { chain ->
+                    val result = chain.proceed()
+                    val activity = chain.getThisObject() as? android.app.Activity ?: return@intercept result
+                    if (!activityClass.isAssignableFrom(activity.javaClass)) {
+                        return@intercept result
+                    }
+                    val newIntent = chain.args.getOrNull(0) as? Intent
+                    val persistentAlarmLaunch = consumePersistentAlarmLaunch(newIntent)
+                    if (persistentAlarmLaunch) {
+                        activity.setIntent(newIntent)
+                    }
+                    if (persistentAlarmLaunch) {
+                        ApplicationHookConstants.submitEntry(source) {
+                            handlePersistentAlarmLaunch(source)
+                        }
+                    }
+                    result
+                }
+            }
+            .onFailure {
+                record(TAG, "未找到 $source 钩子入口: ${it.message}")
+            }
     }
 
     private fun hookServiceLifecycle(apkPath: String) {
@@ -447,6 +550,9 @@ class ApplicationHook {
         @Volatile
         private var reloadResumeDecision: ReloadResumeDecision? = null
 
+        @Volatile
+        private var pendingPersistentLaunchScheduleId: String? = null
+
         private fun ensureMainTask() {
             if (mainTask == null) {
                 mainTask = MainTask("主任务") { runMainTaskLogic() }
@@ -472,6 +578,28 @@ class ApplicationHook {
                 "offline=${ApplicationHookConstants.isOffline()} " +
                 "pending=${ApplicationHookConstants.pendingTriggerCount()} " +
                 "schedulerTasks=${UnifiedScheduler.activeTaskCount()}"
+        }
+
+        internal fun discardCoveredAlarmPollTriggers(): Int {
+            val runStartedAt = mainTaskRunStartedAtMs
+            val runCompletedAt = mainTaskRunCompletedAtMs
+            val scheduleUpdatedAt = mainTaskNextScheduleUpdatedAtMs
+            if (runStartedAt <= 0 || runCompletedAt <= 0 || scheduleUpdatedAt < runStartedAt) {
+                return 0
+            }
+
+            val removed = ApplicationHookConstants.removePendingTriggers("alarm_poll_covered_by_main_task") { trigger ->
+                trigger.type == ApplicationHookConstants.TriggerType.ALARM_POLL &&
+                    trigger.priority == ApplicationHookConstants.TriggerPriority.LOW &&
+                    trigger.createdAtMs <= runCompletedAt
+            }
+            val context = appContext
+            removed.forEach { trigger ->
+                trigger.persistentScheduleId
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { scheduleId -> PersistentScheduleRegistry.markFired(context, scheduleId) }
+            }
+            return removed.size
         }
 
         private fun shouldCaptureReloadState(reason: String): Boolean {
@@ -584,6 +712,15 @@ class ApplicationHook {
         @Volatile
         var nextExecutionTime: Long = 0
 
+        @Volatile
+        private var mainTaskRunStartedAtMs: Long = 0
+
+        @Volatile
+        private var mainTaskRunCompletedAtMs: Long = 0
+
+        @Volatile
+        private var mainTaskNextScheduleUpdatedAtMs: Long = 0
+
         private val appVisibilityCallbacks = object : ComponentCallbacks2 {
             override fun onTrimMemory(level: Int) {
                 if (level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) {
@@ -628,7 +765,14 @@ class ApplicationHook {
                         // 间隔保护仅用于防抖，重试应尽快（补足到 2s），而不是跟随执行间隔（如 50min）
                         val retryDelayMs = (2000L - elapsedSinceLastExec).coerceAtLeast(200L)
                         UnifiedScheduler.scheduleLongDelay(retryDelayMs, "间隔重试") {
-                            ApplicationHookEntry.onIntervalRetry()
+                            ApplicationHookCore.requestExecution(
+                                ApplicationHookConstants.TriggerInfo(
+                                    type = ApplicationHookConstants.TriggerType.INTERVAL_RETRY,
+                                    priority = ApplicationHookConstants.TriggerPriority.LOW,
+                                    dedupeKey = "interval_retry",
+                                    persistentScheduleId = trigger?.persistentScheduleId
+                                )
+                            )
                         }
                         return@withContext
                     }
@@ -641,9 +785,15 @@ class ApplicationHook {
                     }
 
                     lastExecTime = currentTime
+                    mainTaskRunStartedAtMs = currentTime
+                    mainTaskRunCompletedAtMs = 0
+                    trigger?.persistentScheduleId?.takeIf { it.isNotBlank() }?.let { scheduleId ->
+                        PersistentScheduleRegistry.markFired(appContext, scheduleId)
+                    }
 
                     val models = Model.modelArray.filterNotNull()
                     CoroutineTaskRunner(models).run(isFirst = true)
+                    mainTaskRunCompletedAtMs = System.currentTimeMillis()
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
@@ -692,9 +842,31 @@ class ApplicationHook {
                     }
                 }
                 nextExecutionTime = if (targetTime > 0) targetTime else (baseTime + delayMillis)
+                mainTaskNextScheduleUpdatedAtMs = System.currentTimeMillis()
                 ensureScheduler()
-                UnifiedScheduler.scheduleLongDelay(delayMillis, "轮询任务") {
-                    ApplicationHookEntry.onPollAlarm()
+                val context = appContext
+                if (context != null) {
+                    val triggerAt = nextExecutionTime
+                    val schedule = UnifiedScheduler.schedulePersistentTrigger(
+                        context = context,
+                        name = "轮询任务",
+                        kind = PersistentScheduleKind.GLOBAL_POLL,
+                        triggerAtMs = triggerAt,
+                        dedupeKey = "alarm_poll",
+                        payloadJson = """{"launch_target":true}""",
+                        toleranceMs = maxOf(checkInterval.toLong(), PersistentScheduleDefaults.DEFAULT_TOLERANCE_MS)
+                    )
+                    if (schedule.lastError != null) {
+                        UnifiedScheduler.scheduleLongDelay(delayMillis, "轮询任务") {
+                            ApplicationHookEntry.onPollAlarm()
+                        }
+                    } else {
+                        UnifiedScheduler.cancelNamedTask("轮询任务")
+                    }
+                } else {
+                    UnifiedScheduler.scheduleLongDelay(delayMillis, "轮询任务") {
+                        ApplicationHookEntry.onPollAlarm()
+                    }
                 }
             } catch (e: Exception) {
                 Log.printStackTrace(TAG, "scheduleNextExecution failed", e)
@@ -809,6 +981,7 @@ class ApplicationHook {
                 init = true
                 pendingInit = false
                 pendingInitReason = null
+                handlePersistentLaunchAfterInit(appContext!!)
                 ModuleStatusReporter.requestUpdate(reason = "ready")
                 ApplicationHookEntry.onInitCompleted(reason)
                 return true
@@ -818,12 +991,33 @@ class ApplicationHook {
             }
         }
 
+        private fun handlePersistentLaunchAfterInit(context: Context) {
+            val launchScheduleId = pendingPersistentLaunchScheduleId
+            if (launchScheduleId.isNullOrBlank()) {
+                UnifiedScheduler.reconcilePersistentSchedules(context)
+                return
+            }
+            record(TAG, "初始化完成，处理持久调度唤醒任务[$launchScheduleId]")
+            val schedule = PersistentScheduleRegistry.get(launchScheduleId)
+            if (schedule != null) {
+                if (ScheduledTaskRouter.fire(context, schedule, "init_ready")) {
+                    pendingPersistentLaunchScheduleId = null
+                }
+            } else {
+                record(TAG, "初始化完成但持久调度任务不存在[$launchScheduleId]")
+                pendingPersistentLaunchScheduleId = null
+            }
+        }
+
         private fun checkBatteryPermission() {
             if (batteryPerm.value != true || batteryPermissionChecked) return
             batteryPermissionChecked = true
             val context = appContext ?: return
-            if (!checkBatteryPermissions(context, BuildConfig.APPLICATION_ID)) {
+            if (!checkBatteryPermissions(context, General.MODULE_PACKAGE_NAME)) {
                 record(TAG, "模块缺少忽略电池优化权限，请在模块界面内完成授权；自动链路不会主动申请")
+            }
+            if (!checkBatteryPermissions(context, General.PACKAGE_NAME)) {
+                record(TAG, "目标应用缺少忽略电池优化权限，请在系统设置中手动检查；自动链路不会主动申请")
             }
         }
 
@@ -956,6 +1150,10 @@ class ApplicationHook {
                 ApplicationHookUtils.resetToMidnight(dayCalendar!!)
                 record(TAG, "日期更新")
                 setWakenAtTimeAlarm()
+                val context = appContext
+                if (init && context != null) {
+                    UnifiedScheduler.reconcilePersistentSchedules(context)
+                }
             }
             try {
                 save(now)
@@ -999,14 +1197,17 @@ class ApplicationHook {
         }
 
         // --- 定时唤醒 ---
-        private fun setWakenAtTimeAlarm() {
+        internal fun setWakenAtTimeAlarm() {
             if (appContext == null) return
             ensureScheduler()
+            val context = appContext!!
 
             val wakeField = wakenAtTimeList
             if (wakeField.isDisabled()) {
                 UnifiedScheduler.cancelNamedTask("每日0点任务")
                 UnifiedScheduler.cancelNamedTask("自定义唤醒任务")
+                UnifiedScheduler.cancelPersistentByName(context, "每日0点任务")
+                UnifiedScheduler.cancelPersistentByName(context, "自定义唤醒任务")
                 return
             }
 
@@ -1015,18 +1216,31 @@ class ApplicationHook {
             calendar.add(Calendar.DAY_OF_MONTH, 1)
             ApplicationHookUtils.resetToMidnight(calendar)
             val delayToMidnight = calendar.getTimeInMillis() - System.currentTimeMillis()
-
-                if (delayToMidnight > 0) {
+            if (delayToMidnight > 0) {
+                val midnightSchedule = UnifiedScheduler.schedulePersistentTrigger(
+                    context = context,
+                    name = "每日0点任务",
+                    kind = PersistentScheduleKind.GLOBAL_WAKEUP,
+                    triggerAtMs = calendar.timeInMillis,
+                    dedupeKey = "wakeup_midnight",
+                    payloadJson = """{"waken_time":"0000","wake_type":"midnight","launch_target":true}""",
+                    toleranceMs = PersistentScheduleDefaults.DEFAULT_TOLERANCE_MS
+                )
+                if (midnightSchedule.lastError != null) {
                     UnifiedScheduler.scheduleLongDelay(delayToMidnight, "每日0点任务") {
                         record(TAG, "⏰ 0点任务触发")
                         updateDay()
                         ApplicationHookEntry.onWakeupMidnight()
-                        setWakenAtTimeAlarm() // 递归设置明天
+                        setWakenAtTimeAlarm()
                     }
+                } else {
+                    UnifiedScheduler.cancelNamedTask("每日0点任务")
                 }
+            }
 
             // 2. 下一次自定义唤醒（必要时跨日）
             UnifiedScheduler.cancelNamedTask("自定义唤醒任务")
+            UnifiedScheduler.cancelPersistentByName(context, "自定义唤醒任务")
             val nextWakeAt = wakeField.nextPointAt() ?: return
             val now = System.currentTimeMillis()
             val delay = nextWakeAt - now
@@ -1040,10 +1254,21 @@ class ApplicationHook {
                 secondOfDay,
                 useSeconds = targetCalendar.get(Calendar.SECOND) != 0
             )
-            UnifiedScheduler.scheduleLongDelay(delay, "自定义唤醒任务") {
-                record(TAG, "? 自定义触发: $timeToken")
-                ApplicationHookEntry.onWakeupCustom(timeToken)
-                setWakenAtTimeAlarm()
+            val customWakeSchedule = UnifiedScheduler.schedulePersistentTrigger(
+                context = context,
+                name = "自定义唤醒任务",
+                kind = PersistentScheduleKind.GLOBAL_WAKEUP,
+                triggerAtMs = nextWakeAt,
+                dedupeKey = "wakeup_$timeToken",
+                payloadJson = """{"waken_time":"$timeToken","wake_type":"custom","launch_target":true}""",
+                toleranceMs = PersistentScheduleDefaults.DEFAULT_TOLERANCE_MS
+            )
+            if (customWakeSchedule.lastError != null) {
+                UnifiedScheduler.scheduleLongDelay(delay, "自定义唤醒任务") {
+                    record(TAG, "? 自定义触发: $timeToken")
+                    ApplicationHookEntry.onWakeupCustom(timeToken)
+                    setWakenAtTimeAlarm()
+                }
             }
             return
         }

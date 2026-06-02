@@ -287,7 +287,8 @@ object ApplicationHookConstants {
         val wakenAtTime: Boolean = false,
         val wakenTime: String? = null,
         val reason: String? = null,
-        val dedupeKey: String? = null
+        val dedupeKey: String? = null,
+        val persistentScheduleId: String? = null
     ) {
         fun summary(): String {
             val parts = mutableListOf<String>()
@@ -366,6 +367,31 @@ object ApplicationHookConstants {
             pendingTrigger = null
             triggerQueue.clear()
             record(TAG, "🧹 trigger cleared${if (reason.isNullOrBlank()) "" else ": $reason"} | before=$before after=0")
+        }
+    }
+
+    fun removePendingTriggers(reason: String, predicate: (TriggerInfo) -> Boolean): List<TriggerInfo> {
+        return synchronized(triggerLock) {
+            val removed = mutableListOf<TriggerInfo>()
+            val currentPending = pendingTrigger
+            if (currentPending != null && predicate(currentPending)) {
+                removed.add(currentPending)
+                pendingTrigger = null
+            }
+            if (triggerQueue.isNotEmpty()) {
+                val it = triggerQueue.iterator()
+                while (it.hasNext()) {
+                    val trigger = it.next()
+                    if (predicate(trigger)) {
+                        removed.add(trigger)
+                        it.remove()
+                    }
+                }
+            }
+            if (removed.isNotEmpty()) {
+                record(TAG, "🧹 trigger removed: $reason | count=${removed.size} remain=${pendingTriggerCount()}")
+            }
+            removed
         }
     }
 
