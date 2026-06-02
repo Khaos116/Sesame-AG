@@ -123,7 +123,7 @@ object MyUtils {
 
   fun checkRpcTodayIsError(rpc: RpcEntity) {
     if (rpc.requestMethod.orEmpty().contains(".antfarm.")) {
-      return//不能耽误喂鸡大业
+      return //不能耽误喂鸡大业
     }
     rpc.responseString?.let { s ->
       when {
@@ -145,6 +145,9 @@ object MyUtils {
   }
 
   fun getRpcTodayIsError(rpc: RpcEntity): Boolean {
+    if (rpc.requestMethod.orEmpty().contains(".antfarm.")) {
+      return false //不能耽误喂鸡大业
+    }
     return getMySp()?.getBoolean(MyCryptoUtils.encrypt("${rpc.requestMethod}_${rpc.requestData}")) ?: false
   }
 }
