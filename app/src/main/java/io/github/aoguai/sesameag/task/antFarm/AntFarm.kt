@@ -15,6 +15,7 @@ import io.github.aoguai.sesameag.entity.OtherEntityProvider.farmFamilyOption
 import io.github.aoguai.sesameag.entity.ParadiseCoinBenefit
 import io.github.aoguai.sesameag.hook.ExchangeOptionsRefreshBridge
 import io.github.aoguai.sesameag.hook.HookReadyChecker
+import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
 import io.github.aoguai.sesameag.hook.ApplicationHook
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.hook.Toast
@@ -134,6 +135,7 @@ class AntFarm : ModelTask() {
      * 标记农场是否已满（用于雇佣小鸡逻辑）
      */
     private var isFarmFull: Boolean = false
+    private var hireAnimalFoodInsufficient: Boolean = false
 
     /**
      * 将服务端的饲喂状态代码转换为可读中文
@@ -1013,7 +1015,9 @@ class AntFarm : ModelTask() {
     }
 
     private fun persistentFarmDedupeKey(childId: String): String {
-        val owner = UserMap.currentUid?.takeIf { it.isNotBlank() } ?: "default"
+        val owner = AccountSessionCoordinator.currentUserId()?.takeIf { it.isNotBlank() }
+            ?: UserMap.currentUid?.takeIf { it.isNotBlank() }
+            ?: "default"
         return "farm_child_${owner}::$childId"
     }
 
@@ -1026,13 +1030,16 @@ class AntFarm : ModelTask() {
         val context = ApplicationHook.appContext ?: return
         if (triggerAtMs <= System.currentTimeMillis()) return
         try {
+            val ownerUserId = AccountSessionCoordinator.currentUserId()?.takeIf { it.isNotBlank() }
+                ?: UserMap.currentUid?.takeIf { it.isNotBlank() }
             val payload = JSONObject(extraPayload.toString())
                 .put("child_kind", PERSISTENT_CHILD_KIND)
                 .put("child_id", childId)
                 .put("group", group)
                 .put("launch_target", true)
             ownerFarmId?.takeIf { it.isNotBlank() }?.let { payload.put("farm_id", it) }
-            UserMap.currentUid?.takeIf { it.isNotBlank() }?.let { payload.put("owner_user_id", it) }
+            ownerUserId?.let { payload.put("owner_user_id", it) }
+            payload.put("session_epoch", AccountSessionCoordinator.currentSessionEpoch())
 
             UnifiedScheduler.schedulePersistentTrigger(
                 context = context,
@@ -1042,7 +1049,8 @@ class AntFarm : ModelTask() {
                 dedupeKey = persistentFarmDedupeKey(childId),
                 payloadJson = payload.toString(),
                 toleranceMs = PersistentScheduleDefaults.DEFAULT_TOLERANCE_MS,
-                ownerUserId = UserMap.currentUid
+                ownerUserId = ownerUserId,
+                sessionEpoch = AccountSessionCoordinator.currentSessionEpoch()
             )
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "注册庄园持久子任务失败[$group][$childId]", t)
@@ -1056,8 +1064,14 @@ class AntFarm : ModelTask() {
     internal fun triggerPersistentChildTask(childId: String, group: String, payloadJson: String, source: String): Boolean {
         val payload = runCatching { JSONObject(payloadJson.ifBlank { "{}" }) }.getOrDefault(JSONObject())
         val ownerUserId = payload.optString("owner_user_id").trim()
-        if (ownerUserId.isNotBlank() && ownerUserId != UserMap.currentUid) {
-            Log.farm("庄园持久子任务[$group][$childId]账号不匹配，跳过: owner=$ownerUserId current=${UserMap.currentUid}")
+        val payloadSessionEpoch = payload.optLong("session_epoch", 0L)
+        val currentOwnerUserId = (AccountSessionCoordinator.currentUserId() ?: UserMap.currentUid).orEmpty()
+        if (ownerUserId.isNotBlank() && ownerUserId != currentOwnerUserId) {
+            Log.farm("庄园持久子任务[$group][$childId]账号不匹配，跳过: owner=$ownerUserId current=$currentOwnerUserId")
+            return true
+        }
+        if (!isPersistentChildSessionCurrent(currentOwnerUserId, payloadSessionEpoch)) {
+            Log.farm("庄园持久子任务[$group][$childId]会话无效，跳过触发: owner=$currentOwnerUserId session=$payloadSessionEpoch")
             return true
         }
         if (!isEnable()) {
@@ -1065,13 +1079,30 @@ class AntFarm : ModelTask() {
             return true
         }
         GlobalThreadPools.execute(GlobalThreadPools.computeDispatcher) {
-            runPersistentChildTask(childId, group, payload, source)
+            runPersistentChildTask(childId, group, payload, source, currentOwnerUserId.orEmpty(), payloadSessionEpoch)
         }
         return true
     }
 
-    private suspend fun runPersistentChildTask(childId: String, group: String, payload: JSONObject, source: String) {
+    private fun isPersistentChildSessionCurrent(ownerUserId: String, sessionEpoch: Long): Boolean {
+        return ownerUserId.isNotBlank() &&
+            sessionEpoch > 0L &&
+            AccountSessionCoordinator.isCurrentSession(ownerUserId, sessionEpoch)
+    }
+
+    private suspend fun runPersistentChildTask(
+        childId: String,
+        group: String,
+        payload: JSONObject,
+        source: String,
+        ownerUserId: String,
+        sessionEpoch: Long
+    ) {
         try {
+            if (!isPersistentChildSessionCurrent(ownerUserId, sessionEpoch)) {
+                Log.farm("庄园持久子任务[$group][$childId]会话已切换，取消执行: owner=$ownerUserId session=$sessionEpoch")
+                return
+            }
             Log.farm("庄园持久子任务触发[$group][$childId] source=$source")
             cancelPersistentChildTask(childId)
             when (group) {
@@ -2874,15 +2905,17 @@ class AntFarm : ModelTask() {
         val consumedIndex = getFarmTaskTriggerIndex()
         val decision = TimeTriggerEvaluator.evaluateNow(spec, consumedIndex = consumedIndex)
         if (!decision.allowNow) {
+            val triggerContext = "配置=${spec.raw}，当前=${TimeUtil.getCommonDate(System.currentTimeMillis())}；" +
+                "答题/视频/杂货铺/排位赛/家庭等做任务遵守该槽位，已完成任务领奖和雇佣小鸡仍由各自开关流程处理"
             when {
                 decision.blockedNow && decision.nextTriggerAt != null -> {
-                    Log.farm("饲料任务当前槽位命中禁止窗口，等待${TimeUtil.getCommonDate(decision.nextTriggerAt)}后再尝试")
+                    Log.farm("饲料任务当前槽位命中禁止窗口，等待${TimeUtil.getCommonDate(decision.nextTriggerAt)}后再尝试；$triggerContext")
                 }
                 decision.nextTriggerAt != null -> {
-                    Log.farm("饲料任务未到触发时机，下一次可尝试时间=${TimeUtil.getCommonDate(decision.nextTriggerAt)}")
+                    Log.farm("饲料任务未到触发时机，下一次可尝试时间=${TimeUtil.getCommonDate(decision.nextTriggerAt)}；$triggerContext")
                 }
                 else -> {
-                    Log.farm("饲料任务今日已无可用触发槽位，跳过")
+                    Log.farm("饲料任务今日已无可用触发槽位，跳过；$triggerContext")
                 }
             }
             return false
@@ -5766,8 +5799,9 @@ class AntFarm : ModelTask() {
 
     /* 雇佣好友小鸡 */
     internal fun hireAnimal() {
-        // 重置农场已满标志
+        // 重置本轮雇佣止损标志
         isFarmFull = false
+        hireAnimalFoodInsufficient = false
         var animals: JSONArray? = null
         try {
             val jsonObject = enterFarm() ?: return
@@ -5887,10 +5921,17 @@ class AntFarm : ModelTask() {
                             availableCount++
                             if (hireAnimalAction(userId)) {
                                 animalCount++
+                                if (hireAnimalFoodInsufficient || foodStock < 50) {
+                                    Log.farm("雇佣小鸡👷[饲料不足，停止本轮雇佣] 当前${foodStock}g，至少需要50g")
+                                    break
+                                }
                                 if (animalCount >= 3) {
                                     break
                                 }
                                 continue
+                            }
+                            if (hireAnimalFoodInsufficient) {
+                                break
                             }
                             // 检查农场是否已满
                             if (isFarmFull) {
@@ -5904,7 +5945,7 @@ class AntFarm : ModelTask() {
                     Log.farm(s)
                     break
                 }
-            } while (hasNext && animalCount < 3)
+            } while (hasNext && animalCount < 3 && !hireAnimalFoodInsufficient && foodStock >= 50)
 
             // 详细的结果报告
             val hiredCount = animalCount - initialAnimalCount
@@ -5916,7 +5957,9 @@ class AntFarm : ModelTask() {
                 Log.farm("  • 已检查好友：${checkedCount}人")
                 Log.farm("  • 可雇佣状态：${availableCount}人")
 
-                if (availableCount == 0) {
+                if (hireAnimalFoodInsufficient || foodStock < 50) {
+                    Log.farm("❌ 失败原因：饲料不足，本轮停止雇佣（当前${foodStock}g，至少需要50g）")
+                } else if (availableCount == 0) {
                     Log.farm("❌ 失败原因：好友列表中没有可雇佣的小鸡")
                     Log.farm("   建议：等待好友的小鸡回家或添加更多好友")
                 } else if (hiredCount < availableCount) {
@@ -5929,6 +5972,17 @@ class AntFarm : ModelTask() {
             }
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "hireAnimal err:",t)
+        }
+    }
+
+    private fun syncHireAnimalFoodStock(jo: JSONObject) {
+        if (jo.has("foodStock")) {
+            foodStock = jo.optInt("foodStock", foodStock).coerceAtLeast(0)
+            return
+        }
+        val reduceFoodNum = jo.optInt("reduceFoodNum", 0)
+        if (reduceFoodNum > 0) {
+            foodStock = (foodStock - reduceFoodNum).coerceAtLeast(0)
         }
     }
 
@@ -5981,11 +6035,18 @@ class AntFarm : ModelTask() {
                 jo = JSONObject(AntFarmRpcCall.hireAnimal(farmId, animalId))
                 val resultCode = jo.optString("resultCode", "")
                 val memo = jo.optString("memo", "")
+                if (resultCode == "I01" || memo.contains("当前饲料不足支付单次雇佣")) {
+                    syncHireAnimalFoodStock(jo)
+                    hireAnimalFoodInsufficient = true
+                    Log.farm("雇佣小鸡👷[${UserMap.getMaskName(userId)}] 停止：当前饲料不足支付单次雇佣（当前${foodStock}g，至少需要50g）")
+                    return false
+                }
                 if (resultCode == "I05" || memo.contains("篱笆卡")) {
                     Log.farm("雇佣小鸡👷[${UserMap.getMaskName(userId)}] 跳过：好友使用了篱笆卡")
                     return false
                 }
                 if (ResChecker.checkRes(TAG, jo)) {
+                    syncHireAnimalFoodStock(jo)
                     Log.farm("雇佣小鸡👷[" + UserMap.getMaskName(userId) + "] 成功")
                     val newAnimals = jo.getJSONArray("animals")
                     var ii = 0

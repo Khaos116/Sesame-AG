@@ -383,9 +383,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
     }
 
     internal fun hasFriendRankingWorkEnabled(): Boolean {
-        return isCollectEnergyEnabled() ||
-                collectGiftBox?.value == true ||
-                hasRebornProtectWorkEnabled()
+        return isCollectEnergyEnabled()
     }
 
     override fun getFields(): ModelFields {
@@ -2610,21 +2608,54 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         var consecutiveEmpty = 0
         var shouldCooldown = false
         var firstTakeLook = true
+        var firstTakeLookExposedUserId = selfId.orEmpty()
 
         // 本地去重集合：防止单次运行中服务器重复返回同一个有保护罩的人
         val visitedInSession = mutableSetOf<String>()
 
         Log.forest("开始找能量 (服务器自动轮询)")
 
+        fun requestTakeLookEnd() {
+            if (source.isNullOrBlank()) {
+                AntForestRpcCall.takeLookEnd()
+            } else {
+                AntForestRpcCall.takeLookEnd(source)
+            }
+        }
+
         try {
+            try {
+                val combineBizResult = AntForestRpcCall.queryTakeLookCombineBiz(
+                    buildTakeLookSkipUsers(),
+                    source,
+                    takeLookExposedTimes = 0,
+                    takeLookExposed = false
+                )
+                if (combineBizResult.isNotBlank()) {
+                    val combineBizObj = JSONObject(combineBizResult)
+                    val exposedFriendId = combineBizObj
+                        .optJSONObject("combineHandlerVOMap")
+                        ?.optJSONObject("takeLookExpose")
+                        ?.optString("friendUserId")
+                        ?.takeIf { it.isNotBlank() }
+                    if (!exposedFriendId.isNullOrBlank()) {
+                        firstTakeLookExposedUserId = exposedFriendId
+                        Log.forest("找能量预曝光目标已更新")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.printStackTrace(TAG, "找能量预曝光接口异常", e)
+            }
+
             loop@ for (attempt in 1..maxAttempts) {
                 // A. 调用接口
+                val takeLookStartedThisRound = firstTakeLook
                 val takeLookResult = try {
                     val resStr = AntForestRpcCall.takeLook(
                         buildTakeLookSkipUsers(),
                         source,
-                        exposedUserId = if (firstTakeLook) selfId.orEmpty() else "",
-                        takeLookStart = firstTakeLook
+                        exposedUserId = if (takeLookStartedThisRound) firstTakeLookExposedUserId else "",
+                        takeLookStart = takeLookStartedThisRound
                     )
                     firstTakeLook = false
                     JSONObject(resStr)
@@ -2641,29 +2672,30 @@ class AntForest : ModelTask(), EnergyCollectCallback {
 
                 val takeLookEnded = takeLookResult.optBoolean("takeLookEnd", false)
                 val friendId = takeLookResult.optString("friendId")
-                if (takeLookEnded && friendId.isBlank()) {
-                    Log.forest("找能量已达到官方结束状态，结束")
+                val actionType = takeLookResult.optString("actionType")
+                if (actionType.isNotBlank() && actionType != "FRIEND") {
+                    Log.forest("找能量返回非好友动作[$actionType]，结束")
+                    if (!takeLookEnded) {
+                        requestTakeLookEnd()
+                    }
                     break@loop
                 }
-
-                // 如果 friendId 为空，说明服务器那边已经没有可以收取的对象了
-                if (friendId.isNullOrBlank()) {
-                    consecutiveEmpty++
-                    Log.forest("第$attempt 次未发现有能量的好友")
-
-                    // 连续2次没有返回ID，说明真的没了，直接结束
-                    if (consecutiveEmpty >= 2) {
-                        Log.forest("系统无可偷取目标，结束")
-                        break@loop
+                if (friendId.isBlank()) {
+                    val actionSuffix = if (actionType.isBlank()) "" else "[$actionType]"
+                    Log.forest("找能量返回${actionSuffix}无有效好友，结束")
+                    if (!takeLookEnded) {
+                        requestTakeLookEnd()
                     }
-                    // 缓冲一下重试
-                    GlobalThreadPools.sleepCompat(500L)
-                    continue@loop
+                    break@loop
                 }
 
                 // D. 排除自己
                 if (friendId == selfId) {
                     Log.forest("发现自己，跳过")
+                    if (takeLookEnded) {
+                        Log.forest("找能量已达到官方结束状态，结束")
+                        break@loop
+                    }
                     consecutiveEmpty++ // 某种意义上也是无效结果
                     continue@loop
                 }
@@ -2671,6 +2703,10 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 // E. 本地重复检查 (防止死循环刷同一个有盾的人)
                 if (visitedInSession.contains(friendId)) {
                     Log.forest("本次已检查过用户($friendId)，跳过")
+                    if (takeLookEnded) {
+                        Log.forest("找能量已达到官方结束状态，结束")
+                        break@loop
+                    }
                     consecutiveEmpty++
                     if (consecutiveEmpty >= 3) break@loop // 如果一直重复返回已访问的人，也没必要继续了
                     continue@loop
@@ -2682,6 +2718,10 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 if (processedUsersCache.contains(friendId)) {
                     consecutiveEmpty++
                     Log.forest("本轮已处理用户($friendId)，跳过")
+                    if (takeLookEnded) {
+                        Log.forest("找能量已达到官方结束状态，结束")
+                        break@loop
+                    }
                     continue@loop
                 }
 
@@ -2697,8 +2737,13 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     continue@loop
                 }
                 // G. 查询主页详情
-                val friendHomeObj = queryTakeLookFriendHome(friendId, source)
+                val fromAct = if (takeLookStartedThisRound) "TAKE_LOOK" else "TAKE_LOOK_FRIEND"
+                val friendHomeObj = queryTakeLookFriendHome(friendId, source, fromAct)
                 if (friendHomeObj == null) {
+                    if (takeLookEnded) {
+                        Log.forest("找能量已达到官方结束状态，结束")
+                        break@loop
+                    }
                     continue@loop
                 }
 
@@ -2776,8 +2821,12 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         return skipUsers
     }
 
-    private fun queryTakeLookFriendHome(userId: String, source: String? = null): JSONObject? {
-        return queryFriendHome(userId, null, source = source, fallbackFromAct = "PKContest")
+    private fun queryTakeLookFriendHome(
+        userId: String,
+        source: String? = null,
+        fromAct: String = "TAKE_LOOK_FRIEND"
+    ): JSONObject? {
+        return queryFriendHome(userId, fromAct, source = source, fallbackFromAct = "PKContest")
     }
 
     /**
@@ -2785,7 +2834,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
      */
     internal suspend fun collectFriendEnergyCoroutine() {
         if (!hasFriendRankingWorkEnabled()) {
-            Log.forest("收集能量、领取礼盒和复活能量均未开启，跳过好友排行榜扫描")
+            Log.forest("收能量未开启，跳过好友主页扫描；好友礼盒/复活能量仅随已获取好友主页处理")
             return
         }
         resetRebornScanStateForFriendRanking()
@@ -2958,31 +3007,16 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             collectEnergy(userId, queryFriendHome(userId, "PKContest"), "pk")
         } else { // 普通好友
             val needCollectEnergy = collectEnergy?.value == true && !jsonCollectMap.contains(userId)
-            val needHelpProtect = canTryRebornProtectNow(userId) && !handledProtectUsers.contains(userId)
-            val needCollectGiftBox = collectGiftBox?.value == true &&
-                    !handledGiftBoxUsers.contains(userId) &&
-                    obj.optBoolean("canCollectGiftBox")
             val energyAlreadyProcessed = processedUsersCache.contains(userId)
             val shouldQueryForEnergy = needCollectEnergy && !energyAlreadyProcessed
-            if (!shouldQueryForEnergy && !needHelpProtect && !needCollectGiftBox) {
+            if (!shouldQueryForEnergy) {
                 //   Log.forest("    普通好友: [$userName$userId], 所有条件不满足，跳过")
                 return
             }
-            var userHomeObj: JSONObject? = null
             // 只要开启了收能量，就进去看看，以便添加蹲点
-            if (shouldQueryForEnergy) {
-                // 即使排行榜信息显示没有可收能量，也进去检查，以便添加蹲点任务
-                Log.forest("  正在查询好友 [$userName$userId] 的主页...")
-                userHomeObj = collectEnergy(userId, queryFriendHome(userId, null), "friend")
-            }
-            if (needHelpProtect || needCollectGiftBox) {
-                val shouldRefreshExtraBenefitHome = userHomeObj == null ||
-                    (needHelpProtect && !shouldProtectFriendEnergyFromHome(userId, userHomeObj)) ||
-                    (needCollectGiftBox && !shouldCollectGiftBoxFromHome(userHomeObj))
-                if (shouldRefreshExtraBenefitHome) {
-                    userHomeObj = queryFriendHome(userId, "rankNew", forceRefresh = userHomeObj != null)
-                }
-            }
+            // 即使排行榜信息显示没有可收能量，也进去检查，以便添加蹲点任务
+            Log.forest("  正在查询好友 [$userName$userId] 的主页...")
+            val userHomeObj = collectEnergy(userId, queryFriendHome(userId, null), "friend")
             handleFriendExtraBenefits(userId, userHomeObj)
         }
     }
@@ -7627,13 +7661,18 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         return 0L // 立即收取，无延迟
     }
 
+    override fun canRunWaitingCollection(): Boolean {
+        return isCollectEnergyEnabled()
+    }
+
     override suspend fun collectUserEnergyForWaiting(task: EnergyWaitingManager.WaitingTask): CollectResult {
         if (!isCollectEnergyEnabled()) {
-            Log.forest("收集能量开关关闭，跳过蹲点收取")
+            Log.forest("收集能量开关关闭，暂停蹲点收取")
             return CollectResult(
                 success = false,
                 userName = task.userName,
-                message = "收集能量开关关闭"
+                message = EnergyWaitingManager.WAITING_PAUSED_COLLECT_DISABLED,
+                paused = true
             )
         }
         return try {
