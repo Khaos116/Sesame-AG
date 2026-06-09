@@ -5,8 +5,10 @@ import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.Status.Companion.hasFlagToday
 import io.github.aoguai.sesameag.data.Status.Companion.setFlagToday
 import io.github.aoguai.sesameag.data.StatusFlags
+import io.github.aoguai.sesameag.entity.MapperEntity
 import io.github.aoguai.sesameag.entity.SesameGift
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
+import io.github.aoguai.sesameag.hook.ExchangeOptionsRefreshBridge
 import io.github.aoguai.sesameag.hook.HookReadyChecker
 import io.github.aoguai.sesameag.hook.internal.LocationHelper.requestLocationSuspend
 import io.github.aoguai.sesameag.hook.internal.SecurityBodyHelper.getSecurityBodyData
@@ -26,8 +28,11 @@ import io.github.aoguai.sesameag.task.common.TaskFlowItem
 import io.github.aoguai.sesameag.task.common.TaskFlowPhase
 import io.github.aoguai.sesameag.task.common.TaskRpcFailureType
 import io.github.aoguai.sesameag.task.exchange.ExchangeCost
+import io.github.aoguai.sesameag.task.exchange.ExchangeEffectCatalog
 import io.github.aoguai.sesameag.task.exchange.ExchangeItem
 import io.github.aoguai.sesameag.task.exchange.ExchangeLimit
+import io.github.aoguai.sesameag.task.exchange.ExchangeOptionRow
+import io.github.aoguai.sesameag.task.exchange.ExchangeOptionsCache
 import io.github.aoguai.sesameag.task.exchange.ExchangeSafety
 import io.github.aoguai.sesameag.task.exchange.ExchangeSafetyRules
 import io.github.aoguai.sesameag.util.CoroutineUtils
@@ -151,7 +156,6 @@ class AntSesameCredit : ModelTask() {
                 LinkedHashSet<String?>()
             ) {
                 refreshSesameGrainExchangeOptionsForSettings()
-                SesameGift.getList()
             }.withDesc("勾选允许自动兑换的芝麻粒商品，需开启“芝麻粒 | 兑换道具”。").also { sesameGrainExchangeList = it })
         // 芝麻炼金
         modelFields.addField(
@@ -1445,12 +1449,14 @@ class AntSesameCredit : ModelTask() {
 
             if (finishFlag) continue
 
-            // 使用TaskBlacklist进行黑名单检查
-            if (isTaskInBlacklist(sesameAlchemyTaskBlacklistModule, title)) {
+            val blacklistKeys = listOf(templateId, title).filter { it.isNotBlank() }
+            // 使用TaskBlacklist进行黑名单检查，优先让 templateId 类默认黑名单生效。
+            if (blacklistKeys.any { isTaskInBlacklist(sesameAlchemyTaskBlacklistModule, it) }) {
                 // 只有在所有任务组中未处理过时才记录日志
-                if (!processedBlacklistTasks.contains(title)) {
-                    Log.sesame("跳过黑名单任务: $title")
-                    processedBlacklistTasks.add(title)
+                val blacklistLogKey = title.ifBlank { templateId }
+                if (!processedBlacklistTasks.contains(blacklistLogKey)) {
+                    Log.sesame("跳过黑名单任务: $blacklistLogKey")
+                    processedBlacklistTasks.add(blacklistLogKey)
                 }
                 continue
             }
@@ -1534,7 +1540,14 @@ class AntSesameCredit : ModelTask() {
                     //  Log.error(TAG, "任务提交失败: $title - $errorMsg")
                     // 自动添加到黑名单
                     if (!errorCode.isEmpty()) {
-                        autoBlacklistSesameTaskIfNeeded(sesameAlchemyTaskBlacklistModule, title, errorCode, resultView, "finish")
+                        autoBlacklistSesameTaskIfNeeded(
+                            sesameAlchemyTaskBlacklistModule,
+                            title,
+                            errorCode,
+                            resultView,
+                            "finish",
+                            templateId.ifBlank { title }
+                        )
                     }
                 }
             }
@@ -2791,7 +2804,75 @@ class AntSesameCredit : ModelTask() {
                 "0" == response.optString("errCode") ||
                 "SUCCESS".equals(response.optString("resultCode"), ignoreCase = true) ||
                 "SUCCESS".equals(response.optString("errorCode"), ignoreCase = true) ||
+                hasNestedAdTaskSuccess(response) ||
                 rawResponse.contains("业务自发奖")
+        }
+
+        private fun hasNestedAdTaskSuccess(response: JSONObject): Boolean {
+            val errorStack = response.optJSONObject("errorContext")?.optJSONArray("errorStack") ?: return false
+            for (i in 0 until errorStack.length()) {
+                val errorMsg = errorStack.optJSONObject(i)?.optString("errorMsg").orEmpty()
+                val taskBo = extractNestedTaskBo(errorMsg) ?: continue
+                if (isNestedAdTaskBoSuccess(taskBo)) {
+                    return true
+                }
+            }
+            return false
+        }
+
+        private fun extractNestedTaskBo(errorMsg: String): JSONObject? {
+            val marker = "taskBO:"
+            val start = errorMsg.indexOf(marker)
+            if (start < 0) return null
+            val jsonStart = errorMsg.indexOf('{', start + marker.length)
+            if (jsonStart < 0) return null
+            return runCatching {
+                JSONObject(errorMsg.substring(jsonStart))
+            }.getOrNull()
+        }
+
+        private fun isNestedAdTaskBoSuccess(taskBo: JSONObject): Boolean {
+            val taskResult = taskBo.optString("taskResult")
+                .takeIf { it.isNotBlank() }
+                ?.let { runCatching { JSONObject(it) }.getOrNull() }
+                ?: return false
+            if (!taskResult.optBoolean("success", false)) return false
+            val content = taskResult.optJSONObject("content")
+            if (content != null) {
+                if (!content.optBoolean("success", false)) return false
+                if (!isAdTaskOkStatus(content.optString("thirdPartyRetCode"))) return false
+                if (!isAdTaskOkStatus(content.optString("thirdPartyRetMsg"))) return false
+                return true
+            }
+            return hasNestedAdRewardSuccess(taskBo)
+        }
+
+        private fun isAdTaskOkStatus(value: String): Boolean {
+            return value.isBlank() ||
+                value == "0" ||
+                value.equals("OK", ignoreCase = true) ||
+                value.equals("SUCCESS", ignoreCase = true)
+        }
+
+        private fun hasNestedAdRewardSuccess(taskBo: JSONObject): Boolean {
+            val executePointStatus = taskBo.optJSONObject("executePointStatus")
+            val finishStatus = executePointStatus?.optString("UNION_TASK_SLAVE_EVENT_FINISH").orEmpty()
+            val extendInfo = taskBo.optJSONObject("extendInfo")
+            val rewardStatus = extendInfo?.optString("UNION_TASK_SLAVE_EVENT_FINISH_REWARD_STATUS").orEmpty()
+            return finishStatus.equals("SUCCESS", ignoreCase = true) ||
+                rewardStatus.equals("SUCCESS", ignoreCase = true) ||
+                hasUnionTaskRewardSuccess(taskBo)
+        }
+
+        private fun hasUnionTaskRewardSuccess(taskBo: JSONObject): Boolean {
+            val unionTaskInfo = taskBo.optJSONArray("unionTaskInfo") ?: return false
+            for (i in 0 until unionTaskInfo.length()) {
+                val rewardStatus = unionTaskInfo.optJSONObject(i)?.optString("rewardStatus").orEmpty()
+                if (rewardStatus.equals("SUCCESS", ignoreCase = true)) {
+                    return true
+                }
+            }
+            return false
         }
 
         private fun isAdTaskRetryable(response: JSONObject, message: String): Boolean {
@@ -2851,9 +2932,11 @@ class AntSesameCredit : ModelTask() {
             taskTitle: String,
             errorCode: String,
             resultView: String = "",
-            action: String = "task"
+            action: String = "task",
+            taskId: String = taskTitle
         ) {
-            if (taskTitle.isBlank() || (errorCode.isBlank() && resultView.isBlank())) {
+            val normalizedTaskId = taskId.ifBlank { taskTitle }
+            if (normalizedTaskId.isBlank() || (errorCode.isBlank() && resultView.isBlank())) {
                 return
             }
             val code = errorCode.ifBlank { "UNKNOWN" }
@@ -2865,7 +2948,7 @@ class AntSesameCredit : ModelTask() {
                 "adFinish" -> "AntSesameCreditRpcCall.taskFinish"
                 else -> "AntSesameCreditRpcCall.$action"
             }
-            val detail = "module=$moduleName taskId=$taskTitle taskName=$taskTitle action=$action rpc=$rpc " +
+            val detail = "module=$moduleName taskId=$normalizedTaskId taskName=$taskTitle action=$action rpc=$rpc " +
                 "code=$code msg=$message raw=$message"
             when (classifySesameTaskFailure(errorCode, resultView)) {
                 TaskRpcFailureType.TERMINAL_DONE -> {
@@ -2877,12 +2960,12 @@ class AntSesameCredit : ModelTask() {
                 }
 
                 TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE -> {
-                    blacklistClassifiedSesameTask(moduleName, taskTitle, errorCode)
+                    blacklistClassifiedSesameTask(moduleName, normalizedTaskId, taskTitle, errorCode)
                     Log.error(TAG, "$moduleName[$taskTitle] classification=UNSUPPORTED_NO_CLOSURE decision=BLACKLIST reason=未抓到稳定完成RPC $detail")
                 }
 
                 TaskRpcFailureType.NON_RETRYABLE_INVALID -> {
-                    blacklistClassifiedSesameTask(moduleName, taskTitle, errorCode)
+                    blacklistClassifiedSesameTask(moduleName, normalizedTaskId, taskTitle, errorCode)
                     Log.error(TAG, "$moduleName[$taskTitle] classification=NON_RETRYABLE_INVALID decision=BLACKLIST $detail")
                 }
 
@@ -2896,11 +2979,11 @@ class AntSesameCredit : ModelTask() {
             }
         }
 
-        private fun blacklistClassifiedSesameTask(moduleName: String, taskTitle: String, errorCode: String) {
+        private fun blacklistClassifiedSesameTask(moduleName: String, taskId: String, taskTitle: String, errorCode: String) {
             if (errorCode.isNotBlank()) {
-                autoAddToBlacklist(moduleName, taskTitle, taskTitle, errorCode)
+                autoAddToBlacklist(moduleName, taskId, taskTitle, errorCode)
             }
-            TaskBlacklist.addToBlacklist(moduleName, taskTitle, taskTitle)
+            TaskBlacklist.addToBlacklist(moduleName, taskId, taskTitle)
         }
 
         private fun classifySesameTaskFailure(errorCode: String, resultView: String): TaskRpcFailureType {
@@ -2981,7 +3064,8 @@ class AntSesameCredit : ModelTask() {
                     taskTitle,
                     result.code,
                     result.message.ifEmpty { result.raw },
-                    "feedback"
+                    "feedback",
+                    task.optString("templateId").ifBlank { taskTitle }
                 )
             }
             return result.success || result.failureType == TaskRpcFailureType.TERMINAL_DONE
@@ -3288,11 +3372,39 @@ class AntSesameCredit : ModelTask() {
      * 芝麻粒兑换道具
      * 仿照会员积分兑换逻辑：遍历列表更新Map，同时匹配用户设置进行兑换
      */
-    private fun refreshSesameGrainExchangeOptionsForSettings() {
-        if (!HookReadyChecker.isTargetAppReadyForRpc(UserMap.currentUid)) {
-            Log.sesame("芝麻粒兑换🛒目标应用未启动，设置页使用缓存列表")
-            return
+    private fun refreshSesameGrainExchangeOptionsForSettings(): List<MapperEntity> {
+        if (!HookReadyChecker.isCurrentProcessReadyForRpc(UserMap.currentUid)) {
+            if (!HookReadyChecker.isTargetAppReadyForRpc(UserMap.currentUid)) {
+                val cachedRows = ExchangeOptionsCache.loadForSettingsCache(
+                    UserMap.currentUid,
+                    ExchangeOptionsRefreshBridge.TARGET_SESAME_GRAIN
+                )
+                Log.sesame("芝麻粒兑换🛒目标应用未启动，设置页使用结构化缓存列表#${cachedRows.size}")
+                return cachedRows
+            }
+            val refreshResult = ExchangeOptionsRefreshBridge.requestRefreshOptions(
+                ExchangeOptionsRefreshBridge.TARGET_SESAME_GRAIN,
+                UserMap.currentUid
+            )
+            if (refreshResult.success) {
+                Log.sesame("芝麻粒兑换🛒设置页使用目标应用刷新列表#${refreshResult.options.size}")
+                return refreshResult.options
+            }
+            Log.sesame("芝麻粒兑换🛒远程刷新失败，不使用旧缓存#${refreshResult.message}")
+            return emptyList()
         }
+        val rows = runCatching {
+            refreshSesameGrainExchangeOptionsFromRpc()
+        }.onFailure {
+            Log.printStackTrace(TAG, "refreshSesameGrainExchangeOptionsForSettings.currentRpc err:", it)
+        }.getOrElse {
+            emptyList()
+        }
+        Log.sesame("芝麻粒兑换🛒设置页刷新结构化列表#${rows.size}")
+        return rows
+    }
+
+    private fun refreshSesameGrainExchangeOptionsFromRpc(): List<ExchangeOptionRow> {
         try {
             val userId = UserMap.currentUid
             val maxPage = 10
@@ -3301,6 +3413,7 @@ class AntSesameCredit : ModelTask() {
             val scannedTabs = LinkedHashSet<String>()
             val seenTemplateIds = LinkedHashSet<String>()
             val sesameGiftMap = IdMapManager.getInstance(SesameGiftMap::class.java)
+            val rows = mutableListOf<ExchangeOptionRow>()
             var tabIndex = 0
             var refreshedCount = 0
             while (tabIndex < pendingTabs.size) {
@@ -3338,6 +3451,7 @@ class AntSesameCredit : ModelTask() {
                             continue
                         }
                         sesameGiftMap.add(candidate.item.id, candidate.item.displayName())
+                        rows.add(candidate.item.toOptionRow())
                         refreshedCount++
                     }
                     hasNextPage = data.optBoolean("hasNext", false)
@@ -3345,11 +3459,17 @@ class AntSesameCredit : ModelTask() {
                 }
             }
             sesameGiftMap.save(userId)
-            Log.sesame("芝麻粒兑换🛒设置页刷新列表#$refreshedCount")
+            ExchangeOptionsCache.save(userId, ExchangeOptionsRefreshBridge.TARGET_SESAME_GRAIN, rows)
+            Log.sesame("芝麻粒兑换🛒刷新列表#$refreshedCount")
+            return rows
         } catch (t: Throwable) {
-            Log.printStackTrace(TAG, "refreshSesameGrainExchangeOptionsForSettings err:", t)
+            Log.printStackTrace(TAG, "refreshSesameGrainExchangeOptionsFromRpc err:", t)
+            throw t
         }
     }
+
+    internal fun refreshSesameGrainExchangeOptionsForRemote(): List<ExchangeOptionRow> =
+        refreshSesameGrainExchangeOptionsFromRpc()
 
     internal suspend fun doSesameGrainExchange(): Unit = CoroutineUtils.run {
         // 每日只运行一次，避免重复请求
@@ -3518,6 +3638,7 @@ class AntSesameCredit : ModelTask() {
             baseReason.isNotEmpty() -> baseReason
             else -> ""
         }
+        val effectTags = ExchangeEffectCatalog.tagsFor(ExchangeEffectCatalog.SOURCE_SESAME_GRAIN, name)
         return SesameExchangeCandidate(
             item = ExchangeItem(
                 id = templateId,
@@ -3529,7 +3650,15 @@ class AntSesameCredit : ModelTask() {
                     statusText = statusParts.joinToString("、")
                 ),
                 safety = safety,
-                safetyReason = safetyReason
+                safetyReason = safetyReason,
+                effectTags = effectTags,
+                displayMeta = ExchangeEffectCatalog.displayMeta(
+                    ExchangeEffectCatalog.SOURCE_SESAME_GRAIN,
+                    name,
+                    safety,
+                    safetyReason,
+                    effectTags
+                )
             ),
             templateId = templateId,
             pointNeeded = pointNeeded
@@ -3556,7 +3685,9 @@ class AntSesameCredit : ModelTask() {
     private fun exchangeSesameGift(templateId: String, name: String, point: String): Boolean {
         try {
             val detailResp = JSONObject(AntSesameCreditRpcCall.queryAwardDetail(templateId))
-            if (!ResChecker.checkRes(TAG, "芝麻粒兑换详情查询失败:", detailResp)) {
+            if (!ExchangeSafetyRules.isSuccessResponse(detailResp) &&
+                !ResChecker.checkRes(TAG, "芝麻粒兑换详情查询失败:", detailResp)
+            ) {
                 return false
             }
             val detailCandidate = detailResp.optJSONObject("data")
@@ -3574,13 +3705,15 @@ class AntSesameCredit : ModelTask() {
             val resString = AntSesameCreditRpcCall.obtainAward(templateId)
             val jo = JSONObject(resString)
 
-            if (ResChecker.checkRes(TAG, jo)) {
+            if (ExchangeSafetyRules.isSuccessResponse(jo) || ResChecker.checkRes(TAG, jo)) {
                 val recordId = jo.optJSONObject("data")?.optString("awardRecordId", "").orEmpty()
                 Log.sesame("芝麻粒兑换🛒[成功] ${detailCandidate.item.name} #消耗${point}粒")
                 if (recordId.isNotBlank()) {
                     runCatching {
                         val awardDetail = JSONObject(AntSesameCreditRpcCall.queryMyAwardDetail(recordId))
-                        if (ResChecker.checkRes(TAG, "芝麻粒兑换结果查询失败:", awardDetail)) {
+                        if (ExchangeSafetyRules.isSuccessResponse(awardDetail) ||
+                            ResChecker.checkRes(TAG, "芝麻粒兑换结果查询失败:", awardDetail)
+                        ) {
                             val awardStatus = awardDetail.optJSONObject("data")?.optString("status").orEmpty()
                             Log.sesame("芝麻粒兑换🛒结果[${detailCandidate.item.name}]#${awardStatus.ifBlank { "已领取" }}")
                         }

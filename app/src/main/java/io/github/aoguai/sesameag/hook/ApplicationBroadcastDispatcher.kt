@@ -3,6 +3,7 @@ package io.github.aoguai.sesameag.hook
 import android.content.Context
 import android.content.Intent
 import io.github.aoguai.sesameag.data.General
+import io.github.aoguai.sesameag.entity.MapperEntity
 import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
 import io.github.aoguai.sesameag.hook.keepalive.UnifiedScheduler
 import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleDefaults
@@ -12,12 +13,15 @@ import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleState
 import io.github.aoguai.sesameag.hook.keepalive.ScheduledTaskRouter
 import io.github.aoguai.sesameag.model.Model
 import io.github.aoguai.sesameag.task.antFarm.AntFarm
+import io.github.aoguai.sesameag.task.antForest.AntForest
 import io.github.aoguai.sesameag.task.antMember.AntMember
+import io.github.aoguai.sesameag.task.antSesameCredit.AntSesameCredit
 import io.github.aoguai.sesameag.task.antSports.AntSports
 import io.github.aoguai.sesameag.task.customTasks.CustomTask
 import io.github.aoguai.sesameag.task.customTasks.ManualTask
 import io.github.aoguai.sesameag.task.customTasks.ManualTaskModel
 import io.github.aoguai.sesameag.util.GlobalThreadPools.execute
+import io.github.aoguai.sesameag.util.JsonUtil
 import io.github.aoguai.sesameag.util.Log.record
 import io.github.aoguai.sesameag.util.TimeUtil
 import io.github.aoguai.sesameag.util.WorkflowRootGuard
@@ -425,7 +429,8 @@ internal object ApplicationBroadcastDispatcher {
                 target = target,
                 userId = result.userId.ifBlank { targetUserId },
                 success = result.success,
-                message = result.message
+                message = result.message,
+                options = result.options
             )
         }
     }
@@ -433,7 +438,8 @@ internal object ApplicationBroadcastDispatcher {
     private data class ExchangeOptionsRefreshResult(
         val success: Boolean,
         val message: String,
-        val userId: String = ""
+        val userId: String = "",
+        val options: List<MapperEntity> = emptyList()
     )
 
     private fun refreshExchangeOptionsInTarget(target: String, targetUserId: String): ExchangeOptionsRefreshResult {
@@ -459,7 +465,7 @@ internal object ApplicationBroadcastDispatcher {
 
         return try {
             UserMap.setCurrentUserId(currentUserId)
-            when (target) {
+            val options = when (target) {
                 ExchangeOptionsRefreshBridge.TARGET_MEMBER_POINT -> {
                     Model.getModel(AntMember::class.java)?.refreshMemberPointExchangeOptionsForRemote()
                         ?: return ExchangeOptionsRefreshResult(false, "会员模块未初始化", currentUserId)
@@ -475,14 +481,29 @@ internal object ApplicationBroadcastDispatcher {
                         ?: return ExchangeOptionsRefreshResult(false, "庄园模块未初始化", currentUserId)
                 }
 
+                ExchangeOptionsRefreshBridge.TARGET_FARM_IP_CHOUCHOULE -> {
+                    Model.getModel(AntFarm::class.java)?.refreshIpChouChouLeExchangeOptionsForRemote()
+                        ?: return ExchangeOptionsRefreshResult(false, "庄园模块未初始化", currentUserId)
+                }
+
                 ExchangeOptionsRefreshBridge.TARGET_SPORTS_ENERGY -> {
                     Model.getModel(AntSports::class.java)?.refreshSportsEnergyExchangeOptionsForRemote()
                         ?: return ExchangeOptionsRefreshResult(false, "运动模块未初始化", currentUserId)
                 }
 
+                ExchangeOptionsRefreshBridge.TARGET_FOREST_VITALITY -> {
+                    Model.getModel(AntForest::class.java)?.refreshVitalityExchangeOptionsForRemote()
+                        ?: return ExchangeOptionsRefreshResult(false, "森林模块未初始化", currentUserId)
+                }
+
+                ExchangeOptionsRefreshBridge.TARGET_SESAME_GRAIN -> {
+                    Model.getModel(AntSesameCredit::class.java)?.refreshSesameGrainExchangeOptionsForRemote()
+                        ?: return ExchangeOptionsRefreshResult(false, "芝麻信用模块未初始化", currentUserId)
+                }
+
                 else -> return ExchangeOptionsRefreshResult(false, "未知兑换列表刷新目标: $target", currentUserId)
             }
-            ExchangeOptionsRefreshResult(true, "刷新完成: $target", currentUserId)
+            ExchangeOptionsRefreshResult(true, "刷新完成: $target#${options.size}", currentUserId, options)
         } catch (t: Throwable) {
             io.github.aoguai.sesameag.util.Log.printStackTrace(TAG, "refreshExchangeOptionsInTarget err:", t)
             ExchangeOptionsRefreshResult(false, "刷新失败: ${t.message ?: t.javaClass.simpleName}", currentUserId)
@@ -495,15 +516,19 @@ internal object ApplicationBroadcastDispatcher {
         target: String,
         userId: String,
         success: Boolean,
-        message: String
+        message: String,
+        options: List<MapperEntity>
     ) {
         val ctx = context ?: ApplicationHook.appContext ?: return
         ctx.sendBroadcast(Intent(ApplicationHookConstants.BroadcastActions.REFRESH_EXCHANGE_OPTIONS_RESULT).apply {
+            setPackage(General.MODULE_PACKAGE_NAME)
             putExtra("requestId", requestId)
             putExtra("target", target)
             putExtra("userId", userId)
             putExtra("success", success)
             putExtra("message", message)
+            putExtra("optionCount", options.size)
+            putExtra("optionsJson", JsonUtil.formatJson(options, false))
             putExtra("timestamp", System.currentTimeMillis())
         })
     }

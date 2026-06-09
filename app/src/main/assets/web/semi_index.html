@@ -180,31 +180,93 @@
         /* 列表弹窗样式 */
         .list-item {
             display: flex;
-            align-items: center;
+            align-items: flex-start;
             justify-content: space-between;
             padding: 0.75rem 0;
             border-bottom: 0.0625rem solid var(--semi-color-border);
+            gap: 0.75rem;
         }
 
         .list-item-left {
             display: flex;
-            align-items: center;
+            align-items: flex-start;
             flex: 1;
             overflow: hidden;
+            min-width: 0;
+            cursor: pointer;
         }
 
         .list-item-name {
-            margin-left: 0.625rem;
             font-size: 0.9375rem;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
+            line-height: 1.45;
             color: var(--semi-color-text-0);
+            word-break: break-word;
+        }
+
+        .list-item-content {
+            margin-left: 0.625rem;
+            flex: 1;
+            min-width: 0;
+        }
+
+        .list-item-title-row {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 0.5rem;
+        }
+
+        .list-item-meta,
+        .list-item-effect,
+        .list-item-reason {
+            margin-top: 0.25rem;
+            font-size: 0.75rem;
+            line-height: 1.45;
+            color: var(--semi-color-text-2);
+            word-break: break-word;
+        }
+
+        .list-item-effect {
+            color: var(--semi-color-primary);
+        }
+
+        .list-item-reason {
+            color: var(--semi-color-warning);
+        }
+
+        .list-safety-badge {
+            flex-shrink: 0;
+            padding: 0.125rem 0.375rem;
+            border-radius: 0.25rem;
+            font-size: 0.75rem;
+            line-height: 1.4;
+            white-space: nowrap;
+        }
+
+        .list-safety-auto {
+            color: var(--semi-color-success);
+            background: var(--semi-color-success-light-default);
+        }
+
+        .list-safety-log {
+            color: var(--semi-color-warning);
+            background: var(--semi-color-warning-light-default);
+        }
+
+        .list-safety-unavailable {
+            color: var(--semi-color-danger);
+            background: var(--semi-color-danger-light-default);
+        }
+
+        .sheet-filter-row {
+            margin-top: 0.625rem;
+            overflow-x: auto;
         }
 
         .list-count-input {
             width: 5rem;
             margin-left: 0.625rem;
+            flex-shrink: 0;
         }
 
         .sheet-footer {
@@ -645,6 +707,13 @@
             FOREST: '森林玩法',
             STALL: '新村玩法'
         };
+        const SHEET_SAFETY_FILTERS = [
+            { key: 'all', label: '全部' },
+            { key: 'auto', label: '可自动兑换' },
+            { key: 'log_only', label: '仅提醒' },
+            { key: 'unavailable', label: '不可兑换' },
+            { key: 'effect', label: '有增益补兑' }
+        ];
         const FRIEND_LONG_PRESS_DELAY_MS = 650;
         const FRIEND_LONG_PRESS_MOVE_TOLERANCE = 12;
 
@@ -687,6 +756,25 @@
             if (!normalizedKey) return '';
             const label = FRIEND_CAPABILITY_LABELS[normalizedKey];
             return label ? `${label} (${normalizedKey})` : normalizedKey;
+        };
+
+        const getSemiChangeValue = (...args) => {
+            for (const arg of args) {
+                if (arg == null) continue;
+                if (typeof arg !== 'object') {
+                    return arg;
+                }
+                if (arg.target && 'value' in arg.target && arg.target.value != null) {
+                    return arg.target.value;
+                }
+                if (arg.currentTarget && 'value' in arg.currentTarget && arg.currentTarget.value != null) {
+                    return arg.currentTarget.value;
+                }
+                if ('value' in arg && arg.value != null) {
+                    return arg.value;
+                }
+            }
+            return args[0];
         };
 
         const buildFriendSheetIndex = (friends, groups) => {
@@ -1383,6 +1471,7 @@
             const [sheetConfig, setSheetConfig] = useState({ modelCode: '', fieldCode: '', type: '', title: '', desc: '' });
             const [sheetList, setSheetList] = useState([]); // 完整列表数据
             const [sheetSearch, setSheetSearch] = useState(''); // 搜索关键词
+            const [sheetSafetyFilter, setSheetSafetyFilter] = useState('all');
             const [sheetLoading, setSheetLoading] = useState(false);
             const [sheetVisibleLimit, setSheetVisibleLimit] = useState(120);
             const [selectedIds, setSelectedIds] = useState(new Set()); // 选中的ID集合
@@ -1461,14 +1550,14 @@
 
             useEffect(() => {
                 setSheetVisibleLimit(120);
-            }, [sheetSearch, sheetVisible]);
+            }, [sheetSearch, sheetSafetyFilter, sheetVisible]);
 
             useEffect(() => {
                 window.__onFieldOptionsResult = (payload) => {
                     const pending = sheetLoadTokenRef.current;
                     if (!pending || !payload || payload.requestId !== pending.requestId) return;
                     const selectedForSort = pending.selectedIds || new Set();
-                    const listData = normalizeSheetList(payload.expandValue);
+                    const listData = normalizeSheetList(payload.expandValue, pending.sheetConfig);
                     listData.sort((a, b) => {
                         const isA = selectedForSort.has(a.id);
                         const isB = selectedForSort.has(b.id);
@@ -1688,20 +1777,47 @@
 
             // --- 列表弹窗逻辑 (关键修改部分) ---
 
-            const normalizeSheetList = (rawList) => {
+            const isExchangeSheetConfig = (config) => {
+                const title = String(config?.title || '');
+                const fieldCode = String(config?.fieldCode || '');
+                return `${title} ${fieldCode}`.includes('兑换') ||
+                    fieldCode.toLowerCase().includes('exchange');
+            };
+
+            const normalizeSheetList = (rawList, config = sheetConfig) => {
                 if (!Array.isArray(rawList)) return [];
+                const shouldFallbackLogOnly = isExchangeSheetConfig(config);
                 return rawList.map(item => {
                     const id = String(item?.id ?? '').trim();
-                    const name = String(item?.name ?? item?.id ?? '').trim();
-                    return id ? { ...item, id, name: name || id } : null;
+                    const name = String(item?.rawName ?? item?.name ?? item?.id ?? '').trim();
+                    const rawSafety = String(item?.safety ?? '').trim().toUpperCase();
+                    const safety = rawSafety || (shouldFallbackLogOnly ? 'LOG_ONLY' : '');
+                    const effectTargets = Array.isArray(item?.effectTargets)
+                        ? item.effectTargets.map(target => String(target || '').trim()).filter(Boolean)
+                        : [];
+                    return id ? {
+                        ...item,
+                        id,
+                        name: name || id,
+                        sourceModule: String(item?.sourceModule ?? '').trim(),
+                        costText: String(item?.costText ?? '').trim(),
+                        statusText: String(item?.statusText ?? '').trim(),
+                        safety,
+                        safetyReason: String(item?.safetyReason ?? '').trim() ||
+                            (shouldFallbackLogOnly && !rawSafety ? '本地缓存项缺少安全分级，请刷新目标应用列表后再自动兑换' : ''),
+                        effectSummary: String(item?.effectSummary ?? '').trim(),
+                        effectTargets,
+                        triggerText: String(item?.triggerText ?? '').trim(),
+                        excludeReason: String(item?.excludeReason ?? '').trim()
+                    } : null;
                 }).filter(Boolean);
             };
 
-            const loadListSheetSyncFallback = (modelCode, fieldCode, selectedForSort) => {
+            const loadListSheetSyncFallback = (modelCode, fieldCode, selectedForSort, config) => {
                 window.requestAnimationFrame(() => {
                     window.setTimeout(() => {
                         try {
-                            const listData = normalizeSheetList(getFieldData(modelCode, fieldCode));
+                            const listData = normalizeSheetList(getFieldData(modelCode, fieldCode), config);
                             listData.sort((a, b) => {
                                 const isA = selectedForSort.has(a.id);
                                 const isB = selectedForSort.has(b.id);
@@ -1743,6 +1859,7 @@
                 setSheetConfig({ modelCode, fieldCode: code, type, title: name, desc: desc });
                 setSheetList([]);
                 setSheetSearch('');
+                setSheetSafetyFilter('all');
                 setSelectedIds(newSelectedIds);
                 setSelectedCounts(newSelectedCounts);
                 setSheetLoading(true);
@@ -1750,7 +1867,8 @@
                 setSheetVisible(true);
 
                 const requestId = `${modelCode}_${code}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-                sheetLoadTokenRef.current = { requestId, selectedIds: newSelectedIds };
+                const nextSheetConfig = { modelCode, fieldCode: code, type, title: name, desc: desc };
+                sheetLoadTokenRef.current = { requestId, selectedIds: newSelectedIds, sheetConfig: nextSheetConfig };
                 let asyncRequested = false;
                 if (window.HOOK && window.HOOK.requestFieldOptions) {
                     try {
@@ -1760,13 +1878,14 @@
                     }
                 }
                 if (!asyncRequested) {
-                    loadListSheetSyncFallback(modelCode, code, newSelectedIds);
+                    loadListSheetSyncFallback(modelCode, code, newSelectedIds, nextSheetConfig);
                 }
             };
 
             const closeListSheet = () => {
                 sheetLoadTokenRef.current = null;
                 setSheetLoading(false);
+                setSheetSafetyFilter('all');
                 setSheetVisible(false);
             };
 
@@ -1970,24 +2089,94 @@
                 </div>
             );
 
+            const getSheetSearchText = (item) => [
+                item.name,
+                item.sourceModule,
+                item.costText,
+                item.statusText,
+                item.safety,
+                item.safetyReason,
+                item.effectSummary,
+                ...(item.effectTargets || []),
+                item.triggerText,
+                item.excludeReason
+            ].filter(Boolean).join(' ').toLowerCase();
+
+            const matchesSheetSearch = (item) => {
+                const keyword = String(sheetSearch || '').trim().toLowerCase();
+                return !keyword || getSheetSearchText(item).includes(keyword);
+            };
+
+            const matchesSheetSafetyFilter = (item) => {
+                const filter = String(sheetSafetyFilter || 'all');
+                if (filter === 'all') return true;
+                const safetyText = String(item.safety || '').trim().toUpperCase();
+                const searchableText = getSheetSearchText(item);
+                const isExchangeSheet = `${sheetConfig.title || ''} ${sheetConfig.fieldCode || ''}`.includes('兑换') ||
+                    String(sheetConfig.fieldCode || '').toLowerCase().includes('exchange');
+                const hasLogOnlyText = searchableText.includes('仅提醒');
+                const hasUnavailableText = searchableText.includes('不可兑换');
+                const hasEffect = Boolean(item.effectSummary || (item.effectTargets || []).length > 0) ||
+                    searchableText.includes('补兑') ||
+                    searchableText.includes('用于：') ||
+                    searchableText.includes('用于:');
+                if (filter === 'effect') {
+                    return hasEffect;
+                }
+                if (filter === 'auto') return safetyText === 'AUTO';
+                if (filter === 'log_only') return safetyText === 'LOG_ONLY' || hasLogOnlyText ||
+                    (!safetyText && isExchangeSheet && !hasUnavailableText);
+                if (filter === 'unavailable') return safetyText === 'UNAVAILABLE' || hasUnavailableText;
+                return true;
+            };
+
+            const handleSheetSearchChange = (...args) => {
+                const value = getSemiChangeValue(...args);
+                setSheetSearch(value == null ? '' : String(value));
+            };
+
+            const handleSheetSafetyFilterChange = (...args) => {
+                const value = getSemiChangeValue(...args);
+                setSheetSafetyFilter(value == null ? 'all' : String(value));
+            };
+
+            const getFilteredSheetList = () => sheetList
+                .filter(matchesSheetSearch)
+                .filter(matchesSheetSafetyFilter);
+
+            const getSafetyBadge = (item) => {
+                if (!item.safety) return null;
+                if (item.safety === 'AUTO') {
+                    return { label: item.effectSummary ? '可自动/补兑' : '可自动兑换', className: 'list-safety-auto' };
+                }
+                if (item.safety === 'LOG_ONLY') {
+                    return { label: '仅提醒', className: 'list-safety-log' };
+                }
+                if (item.safety === 'UNAVAILABLE') {
+                    return { label: '不可兑换', className: 'list-safety-unavailable' };
+                }
+                return { label: item.safety, className: 'list-safety-log' };
+            };
+
             const toggleAll = () => {
-                const normalizedSearch = sheetSearch.toLowerCase();
-                const filteredList = sheetList
-                    .filter(item => item.name.toLowerCase().includes(normalizedSearch))
-                    .slice(0, sheetVisibleLimit);
+                const filteredList = getFilteredSheetList().slice(0, sheetVisibleLimit);
                 const allSelected = filteredList.every(item => selectedIds.has(item.id));
                 const newIds = new Set(selectedIds);
+                const nextCounts = { ...selectedCounts };
                 filteredList.forEach(item => {
                     if (allSelected) {
                         newIds.delete(item.id);
                     } else {
                         newIds.add(item.id);
-                        if (sheetConfig.type === 'SELECT_AND_COUNT' && selectedCounts[item.id] === undefined) {
-                            setSelectedCounts(prev => ({ ...prev, [item.id]: 1 }));
+                        if (sheetConfig.type === 'SELECT_AND_COUNT' && nextCounts[item.id] === undefined) {
+                            nextCounts[item.id] = 1;
                         }
                     }
                 });
                 setSelectedIds(newIds);
+                if (sheetConfig.type === 'SELECT_AND_COUNT') {
+                    setSelectedCounts(nextCounts);
+                }
             };
 
             // 渲染过滤后的列表 (注意：这里不再包含排序逻辑)
@@ -1995,7 +2184,7 @@
                 if (sheetLoading) {
                     return <div style={{ padding: '2rem 1rem', textAlign: 'center', color: 'var(--semi-color-text-2)' }}>正在获取列表，请稍候...</div>;
                 }
-                const filtered = sheetList.filter(item => item.name.toLowerCase().includes(sheetSearch.toLowerCase()));
+                const filtered = getFilteredSheetList();
 
                 if (filtered.length === 0) return <div style={{ padding: '1.25rem', textAlign: 'center', color: 'var(--semi-color-text-2)' }}>无数据</div>;
 
@@ -2004,11 +2193,30 @@
                     <React.Fragment>
                         {visible.map(item => {
                             const isChecked = selectedIds.has(item.id);
+                            const safetyBadge = getSafetyBadge(item);
+                            const metaParts = [item.sourceModule, item.costText, item.statusText].filter(Boolean);
+                            const reasonText = item.excludeReason || item.safetyReason;
+                            const effectText = item.effectSummary
+                                ? `用于：${item.effectSummary}${item.safety === 'AUTO' ? '（勾选后仅在缺货时补兑）' : ''}`
+                                : '';
                             return (
                                 <div key={item.id} className="list-item">
                                     <div className="list-item-left" onClick={() => toggleItem(item.id, !isChecked)}>
                                         <Checkbox checked={isChecked} style={{ pointerEvents: 'none' }} />
-                                        <span className="list-item-name">{item.name}</span>
+                                        <div className="list-item-content">
+                                            <div className="list-item-title-row">
+                                                <span className="list-item-name">{item.name}</span>
+                                                {safetyBadge ? (
+                                                    <span className={`list-safety-badge ${safetyBadge.className}`}>{safetyBadge.label}</span>
+                                                ) : null}
+                                            </div>
+                                            {metaParts.length > 0 ? (
+                                                <div className="list-item-meta">{metaParts.join(' · ')}</div>
+                                            ) : null}
+                                            {effectText ? <div className="list-item-effect">{effectText}</div> : null}
+                                            {item.triggerText ? <div className="list-item-meta">触发：{item.triggerText}</div> : null}
+                                            {reasonText ? <div className="list-item-reason">原因：{reasonText}</div> : null}
+                                        </div>
                                     </div>
                                     {sheetConfig.type === 'SELECT_AND_COUNT' && isChecked && (
                                         <InputNumber
@@ -2815,16 +3023,28 @@
                         <div style={{ padding: '0.625rem 1rem', borderBottom: '0.0625rem solid var(--semi-color-border)' }}>
                             <Input
                                 prefix={<IconSearch />}
-                                placeholder="搜索名称..."
+                                placeholder="搜索名称、来源、用途、触发点或原因..."
                                 value={sheetSearch}
                                 disabled={sheetLoading}
-                                onChange={setSheetSearch}
+                                onChange={handleSheetSearchChange}
                             />
+                            <div className="sheet-filter-row">
+                                <RadioGroup
+                                    type="button"
+                                    value={sheetSafetyFilter}
+                                    disabled={sheetLoading}
+                                    onChange={handleSheetSafetyFilterChange}
+                                >
+                                    {SHEET_SAFETY_FILTERS.map(filter => (
+                                        <Radio key={filter.key} value={filter.key}>{filter.label}</Radio>
+                                    ))}
+                                </RadioGroup>
+                            </div>
                             <div style={{ marginTop: '0.625rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                 <Checkbox onChange={toggleAll} checked={false} disabled={sheetLoading}>
                                     全选/反选 (当前可见)
                                 </Checkbox>
-                                <Text size="small" type="secondary">已选: {selectedIds.size} / 总数: {sheetList.length}</Text>
+                                <Text size="small" type="secondary">已选: {selectedIds.size} / 当前: {getFilteredSheetList().length} / 总数: {sheetList.length}</Text>
                             </div>
                         </div>
                         <div style={{ padding: '0 1rem 5.5rem', overflowY: 'auto', height: 'calc(100vh - 11.25rem)' }}>
