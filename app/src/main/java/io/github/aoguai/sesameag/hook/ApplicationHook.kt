@@ -1393,7 +1393,6 @@ class ApplicationHook {
 
             // 2. 下一次自定义唤醒（必要时跨日）
             UnifiedScheduler.cancelNamedTask("自定义唤醒任务")
-            UnifiedScheduler.cancelPersistentByName(context, "自定义唤醒任务")
             val nextWakeAt = wakeField.nextPointAt() ?: return
             val now = System.currentTimeMillis()
             val delay = nextWakeAt - now
@@ -1412,7 +1411,7 @@ class ApplicationHook {
                 name = "自定义唤醒任务",
                 kind = PersistentScheduleKind.GLOBAL_WAKEUP,
                 triggerAtMs = nextWakeAt,
-                dedupeKey = "wakeup_$timeToken",
+                dedupeKey = "wakeup_custom",
                 payloadJson = """{"waken_time":"$timeToken","wake_type":"custom","launch_target":true}""",
                 toleranceMs = PersistentScheduleDefaults.DEFAULT_TOLERANCE_MS,
                 ownerUserId = AccountSessionCoordinator.currentUserId() ?: currentUid,
@@ -1424,6 +1423,13 @@ class ApplicationHook {
                     ApplicationHookEntry.onWakeupCustom(timeToken)
                     setWakenAtTimeAlarm()
                 }
+            } else {
+                UnifiedScheduler.cancelPersistentByNameExceptDedupeKey(
+                    context,
+                    "自定义唤醒任务",
+                    "wakeup_custom",
+                    silent = true
+                )
             }
             return
         }

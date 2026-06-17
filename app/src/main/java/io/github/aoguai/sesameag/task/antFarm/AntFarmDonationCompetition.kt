@@ -10,6 +10,7 @@ import io.github.aoguai.sesameag.util.DataStore
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.ResChecker
 import io.github.aoguai.sesameag.util.TimeUtil
+import io.github.aoguai.sesameag.util.UserDataStoreManager
 import io.github.aoguai.sesameag.util.maps.UserMap
 import kotlinx.coroutines.delay
 import org.json.JSONArray
@@ -38,7 +39,8 @@ private data class DonationAwardSnapshot(
     val currentLevelName: String,
     val starsToHighest: Int,
     val totalStarsToHighest: Int,
-    val allRewardsReceived: Boolean
+    val allRewardsReceived: Boolean,
+    val hasUnclaimedAwards: Boolean = false
 )
 
 private data class StableDonationPlan(
@@ -60,6 +62,11 @@ private data class DonationRankTarget(
 
 internal fun AntFarm.handleDonationCompetition() {
     if (donationCompetition?.value != true) return
+
+    val store = UserDataStoreManager.getCurrentInstance()
+    if (store?.hasPersistentFlag("AntFarm::DonationCompetitionFinished") == true) {
+        return
+    }
 
     if (receiveDonationCompetitionAward?.value == true &&
         !Status.hasFlagToday(StatusFlags.FLAG_FARM_DONATION_COMPETITION_AWARD_RECEIVED)
@@ -100,6 +107,28 @@ internal fun AntFarm.handleDonationCompetition() {
                 "进入捐蛋排位赛失败: ${formatFarmHighRiskFailure("enterDonationCompetitionRank", jo, classification)}"
             )
             return
+        }
+
+        val activityConf = jo.optJSONObject("donationCompetitionActivityConf")
+        val seasonEndTime = activityConf?.optLong("endTime") ?: 0L
+        if (seasonEndTime in 1..now) {
+            Log.record(TAG, "🏁 当前赛季已于 ${TimeUtil.getFormatTime(seasonEndTime, "yyyy-MM-dd HH:mm:ss")} 结束，停止处理")
+            return
+        }
+
+        val snapshot = queryDonationAwardSnapshot()
+        if (snapshot != null) {
+            if (snapshot.starsToHighest <= 0 && !snapshot.hasUnclaimedAwards) {
+                Log.record(TAG, "🏆 已到达最高段位并拿满奖励，本赛季不再参与排名竞争")
+                if (seasonEndTime > now) {
+                    Log.record(TAG, "📅 已设置持久化拦截，本赛季结束前将不再运行捐蛋排位赛")
+                    store?.setPersistentFlag("AntFarm::DonationCompetitionFinished", seasonEndTime)
+                }
+                return
+            }
+            if (receiveDonationCompetitionAward?.value == true && snapshot.starsToHighest > 0) {
+                checkAndClaimProgressAwards(jo, snapshot.starsToHighest)
+            }
         }
 
         scheduleDonationCompetitionTask(endCal.timeInMillis)
@@ -160,7 +189,7 @@ private fun AntFarm.receiveCompetitionAwards(): Int {
         val endTime = jo.optJSONObject("donationCompetitionActivityConf")?.optLong("endTime") ?: 0L
 
         Log.record(TAG, "--- 🏆 排位赛赛季简报 ---")
-        Log.record(TAG, "📅 赛季结束：${TimeUtil.getCommonDate(endTime)}")
+        Log.record(TAG, "📅 赛季结束：${TimeUtil.getFormatTime(endTime, "yyyy-MM-dd HH:mm:ss")}")
         Log.record(TAG, "📈 当前段位：$currentLevelName")
         Log.record(TAG, "🏹 下一段位：$nextLevelName (差 ${starsToNext}🌟)")
         Log.record(TAG, "👑 最高段位：$highestLevelName (总差距 ${starsToHighest}🌟)")
@@ -219,8 +248,9 @@ private fun AntFarm.isStableDonationCompetitionMode(): Boolean {
 }
 
 private fun AntFarm.hasCompletedStableDonationCompetition(): Boolean {
+    if (UserDataStoreManager.getCurrentInstance()?.hasPersistentFlag("AntFarm::DonationCompetitionFinished") == true) return true
     val snapshot = queryDonationAwardSnapshot() ?: return false
-    if (!snapshot.allRewardsReceived || snapshot.starsToHighest > 0) return false
+    if (snapshot.hasUnclaimedAwards || snapshot.starsToHighest > 0) return false
     Log.record(TAG, "排位赛稳定模式：最高段位奖励已领取完成，跳过排位赛处理")
     return true
 }
@@ -257,15 +287,20 @@ private fun parseDonationAwardSnapshot(jo: JSONObject): DonationAwardSnapshot? {
     var totalStarsToHighest = 0
     var validAwardCount = 0
     var receivedAwardCount = 0
+    var hasUnclaimed = false
 
     for (i in 0 until awardList.length()) {
         val levelItem = awardList.optJSONObject(i) ?: continue
         val upNum = levelItem.optInt("levelStarUpNum", 0)
+        val status = levelItem.optString("status")
         if (levelItem.optString("rightsId").isNotBlank()) {
             validAwardCount++
-            if (levelItem.optString("status").equals("received", ignoreCase = true)) {
+            if (status.equals("received", ignoreCase = true)) {
                 receivedAwardCount++
             }
+        }
+        if (status.equals("unreceived", ignoreCase = true)) {
+            hasUnclaimed = true
         }
         if (upNum >= TOP_LEVEL_STAR_SENTINEL) continue
 
@@ -284,7 +319,8 @@ private fun parseDonationAwardSnapshot(jo: JSONObject): DonationAwardSnapshot? {
         currentLevelName = currentLevelName,
         starsToHighest = starsToHighest,
         totalStarsToHighest = totalStarsToHighest,
-        allRewardsReceived = validAwardCount > 0 && receivedAwardCount == validAwardCount
+        allRewardsReceived = validAwardCount > 0 && receivedAwardCount == validAwardCount,
+        hasUnclaimedAwards = hasUnclaimed
     )
 }
 
@@ -1001,4 +1037,63 @@ private fun AntFarm.fetchCuisineListForCompetition(): JSONArray? {
         Log.printStackTrace(TAG, "fetchCuisineListForCompetition err:", e)
         null
     }
+}
+
+/**
+ * 专门处理累计捐蛋进度奖励
+ * @return 本次领取的星星总数
+ */
+private fun AntFarm.checkAndClaimProgressAwards(rankJo: JSONObject, starsToHighest: Int): Int {
+    if (receiveDonationCompetitionAward?.value != true) return 0
+    try {
+        val progress = rankJo.optJSONObject("seasonDonationProgress") ?: return 0
+        val nodes = progress.optJSONArray("nodes") ?: return 0
+
+        var unreceivedStars = 0
+        for (i in 0 until nodes.length()) {
+            val node = nodes.getJSONObject(i)
+            val awardNum = node.optInt("awardNum")
+            if (node.optString("awardType") == "STAR") {
+                if (node.optString("status").equals("UNRECEIVED", ignoreCase = true)) {
+                    unreceivedStars += awardNum
+                }
+            }
+        }
+
+        if (unreceivedStars <= 0) return 0
+
+        val now = System.currentTimeMillis()
+        val activityConf = rankJo.optJSONObject("donationCompetitionActivityConf")
+        val endTime = activityConf?.optLong("endTime") ?: 0L
+
+        // 如果当前时间已经超过赛季结束时间，绝对不允许调用领奖接口
+        if (endTime in 1..now) return 0
+
+        // 判定是否进入赛季最后一天 (结束当天的 00:00:00 至 结束时间点)
+        val isLastDay = TimeUtil.isSameDay(now, endTime)
+
+        // 判定：加上今日捐赠保底获得的 1 🌟，待领取的星星足以让你直接满级
+        val isKillShot = unreceivedStars >= (starsToHighest - 1)
+
+        if (isKillShot || isLastDay) {
+            if (isLastDay && !isKillShot) {
+                Log.record(TAG, "📅 赛季收官：当前已进入最后一天，领取累计捐蛋奖励 (待领: $unreceivedStars 🌟)")
+            } else {
+                val msg = if (unreceivedStars >= starsToHighest) "可直接直达巅峰" else "加上今日保底 1🌟 可直达巅峰"
+                Log.record(TAG, "🎯 累计捐蛋奖励：当前差 ${starsToHighest}🌟，待领 ${unreceivedStars}🌟，$msg！")
+            }
+
+            val res = AntFarmRpcCall.receiveDonationCompetitionProgressAward()
+            if (ResChecker.checkRes(TAG, res)) {
+                Log.record(TAG, "🎉 成功领取赛季累计进度奖励 (+$unreceivedStars 🌟)")
+                receiveCompetitionAwards()
+                return unreceivedStars
+            }
+        } else {
+            Log.record(TAG, "⏳ 进度奖暂存：当前差 ${starsToHighest}🌟，待领 ${unreceivedStars}🌟，尚未达到满级临界点，暂不领取")
+        }
+    } catch (e: Exception) {
+        Log.printStackTrace(TAG, "checkAndClaimProgressAwards err:", e)
+    }
+    return 0
 }
