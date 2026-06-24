@@ -2,9 +2,11 @@ package io.github.aoguai.sesameag.task.antForest
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.core.type.TypeReference
-import io.github.aoguai.sesameag.util.DataStore
+import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.MyUtils
+import io.github.aoguai.sesameag.util.UserDataStore
+import io.github.aoguai.sesameag.util.UserDataStoreManager
 import io.github.aoguai.sesameag.util.maps.UserMap
 import java.util.Calendar
 
@@ -21,15 +23,23 @@ data class RebornWeeklyState(
 
 object RebornEnergyWeeklyPersistence {
     private const val TAG = "RebornEnergyWeekly"
-    private const val KEY_PREFIX = "reborn_energy_weekly_state_"
+    private const val STORE_KEY = "reborn_energy_weekly_state"
 
-    private fun getDataStoreKey(): String {
-        val currentUid = UserMap.currentUid
-        return if (currentUid.isNullOrEmpty()) {
-            "${KEY_PREFIX}default"
-        } else {
-            "${KEY_PREFIX}$currentUid"
-        }
+    private fun currentUserStore(): UserDataStore? {
+        val currentUid = AccountSessionCoordinator.currentUserId() ?: UserMap.currentUid
+        return UserDataStoreManager.getInstance(currentUid)
+    }
+
+    private fun newState(configSignature: String, weekStart: Long): RebornWeeklyState {
+        return RebornWeeklyState(
+            weekStart = weekStart,
+            configSignature = configSignature,
+            completed = false,
+            completedAt = 0L,
+            lastScanAt = 0L,
+            lastScanFoundProtectable = false,
+            lastScanLimitReached = false
+        )
     }
 
     fun getWeekStartTimestamp(now: Long = System.currentTimeMillis()): Long {
@@ -46,23 +56,18 @@ object RebornEnergyWeeklyPersistence {
     }
 
     fun loadOrInit(configSignature: String, now: Long = System.currentTimeMillis()): RebornWeeklyState {
-        val dataStoreKey = getDataStoreKey()
+        val store = currentUserStore()
         val typeRef = object : TypeReference<RebornWeeklyState>() {}
-
-        val state = DataStore.getOrCreate(dataStoreKey, typeRef)
         val weekStart = getWeekStartTimestamp(now)
+        if (store == null) {
+            return newState(configSignature, weekStart)
+        }
+
+        val state = store.getOrCreate(STORE_KEY, typeRef)
 
         if (state.weekStart != weekStart || state.configSignature != configSignature) {
-            val newState = RebornWeeklyState(
-                weekStart = weekStart,
-                configSignature = configSignature,
-                completed = false,
-                completedAt = 0L,
-                lastScanAt = 0L,
-                lastScanFoundProtectable = false,
-                lastScanLimitReached = false
-            )
-            DataStore.put(dataStoreKey, newState)
+            val newState = newState(configSignature, weekStart)
+            store.put(STORE_KEY, newState)
             Log.forest("🔄 复活能量周轮状态已重置(weekStart=$weekStart)")
             return newState
         }
@@ -76,7 +81,7 @@ object RebornEnergyWeeklyPersistence {
         limitReached: Boolean,
         completed: Boolean
     ): RebornWeeklyState {
-        val dataStoreKey = getDataStoreKey()
+        val store = currentUserStore()
         val state = loadOrInit(configSignature, scanAt)
 
         val newState = state.copy(
@@ -86,7 +91,7 @@ object RebornEnergyWeeklyPersistence {
             lastScanFoundProtectable = foundProtectable,
             lastScanLimitReached = limitReached
         )
-        DataStore.put(dataStoreKey, newState)
+        store?.put(STORE_KEY, newState)
         return newState
     }
 }

@@ -19,6 +19,7 @@ import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
 import io.github.aoguai.sesameag.hook.ApplicationHook
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.hook.Toast
+import io.github.aoguai.sesameag.hook.keepalive.PersistentLaunchPolicy
 import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleDefaults
 import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleKind
 import io.github.aoguai.sesameag.hook.keepalive.UnifiedScheduler
@@ -63,7 +64,6 @@ import io.github.aoguai.sesameag.task.exchange.ExchangeReplenisher
 import io.github.aoguai.sesameag.task.exchange.ExchangeSafety
 import io.github.aoguai.sesameag.task.exchange.ExchangeSafetyRules
 import io.github.aoguai.sesameag.util.CoroutineUtils
-import io.github.aoguai.sesameag.util.DataStore
 import io.github.aoguai.sesameag.util.FriendGuard
 import io.github.aoguai.sesameag.util.GlobalThreadPools
 import io.github.aoguai.sesameag.util.LogChannel
@@ -72,11 +72,13 @@ import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.MyUtils
 import io.github.aoguai.sesameag.util.RandomUtil
 import io.github.aoguai.sesameag.util.ResChecker
+import io.github.aoguai.sesameag.util.RpcOfflineRisk
 import io.github.aoguai.sesameag.util.TaskBlacklist
 import io.github.aoguai.sesameag.util.TimeCounter
 import io.github.aoguai.sesameag.util.TimeTriggerEvaluator
 import io.github.aoguai.sesameag.util.TimeTriggerParseOptions
 import io.github.aoguai.sesameag.util.TimeUtil
+import io.github.aoguai.sesameag.util.UserDataStoreManager
 import io.github.aoguai.sesameag.util.friend.FriendCapabilityRecorder
 import io.github.aoguai.sesameag.util.friend.FriendRepository
 import io.github.aoguai.sesameag.util.maps.IdMapManager
@@ -96,6 +98,13 @@ import java.util.Objects
 import java.util.Random
 import kotlin.math.abs
 import kotlin.math.min
+
+private const val SPECIAL_FOOD_USE_FARM_FOOD_RPC = "com.alipay.antfarm.useFarmFood"
+
+internal enum class SpecialFoodGuardDecision {
+    ALLOW,
+    LOG_ONLY
+}
 
 @Suppress("unused", "EnumEntryName", "EnumEntryName", "EnumEntryName", "EnumEntryName")
 class AntFarm : ModelTask() {
@@ -1027,6 +1036,32 @@ class AntFarm : ModelTask() {
         return "farm_child_${owner}::$childId"
     }
 
+    private fun currentUserDataStore() = UserDataStoreManager.getInstance(
+        AccountSessionCoordinator.currentUserId() ?: UserMap.currentUid
+    )
+
+    private fun bigEaterUsedCountKey(today: String): String {
+        return "$BIG_EATER_USED_COUNT_KEY_PREFIX$today"
+    }
+
+    private fun getBigEaterUsedCount(today: String): Int {
+        return currentUserDataStore()?.get(bigEaterUsedCountKey(today), Int::class.javaObjectType) ?: 0
+    }
+
+    private fun putBigEaterUsedCount(today: String, count: Int) {
+        currentUserDataStore()?.put(bigEaterUsedCountKey(today), count)
+    }
+
+    private fun getFarmAnswerCache(): MutableMap<String, String> {
+        return currentUserDataStore()
+            ?.getOrCreate<MutableMap<String, String>>(FARM_ANSWER_CACHE_KEY)
+            ?: mutableMapOf()
+    }
+
+    private fun putFarmAnswerCache(cache: Map<String, String>) {
+        currentUserDataStore()?.put(FARM_ANSWER_CACHE_KEY, cache)
+    }
+
     internal fun registerPersistentChildTask(
         childId: String,
         group: String,
@@ -1042,12 +1077,11 @@ class AntFarm : ModelTask() {
                 .put("child_kind", PERSISTENT_CHILD_KIND)
                 .put("child_id", childId)
                 .put("group", group)
-                .put("launch_target", true)
             ownerFarmId?.takeIf { it.isNotBlank() }?.let { payload.put("farm_id", it) }
             ownerUserId?.let { payload.put("owner_user_id", it) }
             payload.put("session_epoch", AccountSessionCoordinator.currentSessionEpoch())
 
-            UnifiedScheduler.schedulePersistentTrigger(
+            val schedule = UnifiedScheduler.schedulePersistentTrigger(
                 context = context,
                 name = "庄园子任务:$group",
                 kind = PersistentScheduleKind.MODULE_CHILD,
@@ -1058,6 +1092,9 @@ class AntFarm : ModelTask() {
                 ownerUserId = ownerUserId,
                 sessionEpoch = AccountSessionCoordinator.currentSessionEpoch()
             )
+            if (PersistentLaunchPolicy.isFrontLaunchDisabled(schedule.lastError)) {
+                Log.farm("庄园持久子任务[$group][$childId]已因禁止系统调度前台拉起目标应用降级为仅进程存活时等待，需手动打开目标应用后恢复")
+            }
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "注册庄园持久子任务失败[$group][$childId]", t)
         }
@@ -1544,7 +1581,7 @@ class AntFarm : ModelTask() {
                     ExchangeOptionsRefreshBridge.TARGET_FARM_IP_CHOUCHOULE
                 )
                 if (cachedRows.isNotEmpty()) {
-                    Log.farm("IP抽抽乐商店💸目标应用未就绪，设置页使用结构化缓存列表#${cachedRows.size}")
+                    Log.farm("IP抽抽乐商店💸目标应用未就绪，设置页先展示上次缓存列表；请打开目标应用后再刷新#${cachedRows.size}")
                     return cachedRows
                 }
                 val legacyRows = AntFarmIPChouChouLeBenefit.getList()
@@ -1614,7 +1651,7 @@ class AntFarm : ModelTask() {
                     UserMap.currentUid,
                     ExchangeOptionsRefreshBridge.TARGET_FARM_PARADISE
                 )
-                Log.farm("小鸡乐园币💸目标应用未就绪，设置页使用结构化缓存列表#${cachedRows.size}")
+                Log.farm("小鸡乐园币💸目标应用未就绪，设置页先展示上次缓存列表；请打开目标应用后再刷新#${cachedRows.size}")
                 return cachedRows
             }
             val refreshResult = ExchangeOptionsRefreshBridge.requestRefreshOptions(
@@ -2057,7 +2094,12 @@ class AntFarm : ModelTask() {
                             Log.farm("特殊食品今日已使用${usedToday}个，达到每日上限${dailyLimit}个，跳过")
                         } else {
                             val remainingDailyQuota = if (dailyLimit > 0) dailyLimit - usedToday else -1
-                            useSpecialFood(cuisineList, remainingDailyQuota)
+                            useSpecialFood(
+                                cuisineList = cuisineList,
+                                maxUsage = remainingDailyQuota,
+                                guardDecision = resolveSpecialFoodGuardDecision("庄园自动链路"),
+                                guardScene = "庄园自动链路"
+                            )
                         }
                     }
                 }
@@ -2149,18 +2191,14 @@ class AntFarm : ModelTask() {
                 Log.farm("服务端标记已使用加饭卡，跳过使用")
                 // 这里可选：尝试与本地计数对齐（仅在计数为0时+1，避免重复累加）
                 val today = LocalDate.now().toString()
-                val uid = UserMap.currentUid
-                val usedKey = "AF_BIG_EATER_USED_COUNT|$uid|$today"
-                val usedCount = DataStore.get(usedKey, Int::class.java) ?: 0
+                val usedCount = getBigEaterUsedCount(today)
                 if (usedCount == 0) {
-                    DataStore.put(usedKey, 1)
+                    putBigEaterUsedCount(today, 1)
                 }
             } else {
-                // 使用 DataStore 记录“当日已用次数”，每日上限为 2 次（按账号维度）
+                // 使用 UserDataStore 记录“当日已用次数”，每日上限为 2 次（按账号维度）
                 val today = LocalDate.now().toString()
-                val uid = UserMap.currentUid
-                val usedKey = "AF_BIG_EATER_USED_COUNT|$uid|$today"
-                val usedCount = DataStore.get(usedKey, Int::class.java) ?: 0
+                val usedCount = getBigEaterUsedCount(today)
 
                 if (usedCount >= 2) {
                     Log.farm("今日加饭卡已使用${usedCount}/2，跳过使用")
@@ -2168,7 +2206,7 @@ class AntFarm : ModelTask() {
                     when (useFarmToolDetailed(ownerFarmId, ToolType.BIG_EATER_TOOL)) {
                         FarmToolUseResult.SUCCESS -> {
                             Log.farm("使用道具🎭[加饭卡]！")
-                            DataStore.put(usedKey, usedCount + 1)
+                            putBigEaterUsedCount(today, usedCount + 1)
                             // 刷新状态
                             syncAnimalStatus(ownerFarmId)
                         }
@@ -2648,13 +2686,18 @@ class AntFarm : ModelTask() {
         }
 
         val eggGap = (requiredEggCount - harvestBenevolenceScore).coerceAtLeast(0.0)
+        val guardDecision = resolveSpecialFoodGuardDecision("普通捐蛋补蛋")
         val usedCount = useSpecialFood(
             cuisineList = cuisineList,
             maxUsage = remainingDailyQuota,
-            targetEggGap = eggGap
+            targetEggGap = eggGap,
+            guardDecision = guardDecision,
+            guardScene = "普通捐蛋补蛋"
         )
         if (usedCount <= 0) {
-            Log.farm("普通捐蛋蛋数不足，特殊食品调用未成功，停止补蛋")
+            if (guardDecision == SpecialFoodGuardDecision.ALLOW) {
+                Log.farm("普通捐蛋蛋数不足，特殊食品调用未成功，停止补蛋")
+            }
             return false
         }
 
@@ -2911,7 +2954,7 @@ class AntFarm : ModelTask() {
         try {
             val today = TimeUtil.getDateStr2()
             val tomorrow = TimeUtil.getDateStr2(1)
-            val farmAnswerCache = DataStore.getOrCreate<MutableMap<String, String>>(FARM_ANSWER_CACHE_KEY) as MutableMap<String, String>
+            val farmAnswerCache = getFarmAnswerCache()
             cleanOldAnswers(farmAnswerCache, today)
             // 检查是否今天已经答过题
             if (Status.hasFlagToday(StatusFlags.FLAG_FARM_QUESTION_ANSWERED)) {
@@ -2989,7 +3032,7 @@ class AntFarm : ModelTask() {
                 } else {
                     AnswerAI.removeCachedAnswer(title, LogChannel.FARM.loggerName)
                     if (farmAnswerCache.remove(cacheKey) != null) {
-                        DataStore.put(FARM_ANSWER_CACHE_KEY, farmAnswerCache)
+                        putFarmAnswerCache(farmAnswerCache)
                     }
                 }
                 Log.farm("饲料任务答题：" + (if (correct) "正确" else "错误") + "领取饲料［" + extInfo.getString("award") + "g］")
@@ -3011,7 +3054,7 @@ class AntFarm : ModelTask() {
     private fun updateTomorrowAnswerCache(operationConfigList: JSONArray, date: String?) {
         try {
             Log.farm("updateTomorrowAnswerCache 开始更新缓存")
-            val farmAnswerCache = DataStore.getOrCreate<MutableMap<String, String>>(FARM_ANSWER_CACHE_KEY)
+            val farmAnswerCache = getFarmAnswerCache()
             for (j in 0..<operationConfigList.length()) {
                 val operationConfig = operationConfigList.getJSONObject(j)
                 val type = operationConfig.getString("type")
@@ -3028,7 +3071,7 @@ class AntFarm : ModelTask() {
                     }
                 }
             }
-            DataStore.put(FARM_ANSWER_CACHE_KEY, farmAnswerCache)
+            putFarmAnswerCache(farmAnswerCache)
             Log.farm("updateTomorrowAnswerCache 缓存更新完毕")
         } catch (e: Exception) {
             Log.printStackTrace(TAG, "updateTomorrowAnswerCache 错误:", e)
@@ -3047,7 +3090,7 @@ class AntFarm : ModelTask() {
             val todayInt = convertDateToInt(today) // 如 "2025-04-05" → 20250405
             // 设置保留天数（例如7天）
             val daysToKeep = 7
-            val cleanedMap: MutableMap<String?, String?> = HashMap()
+            val cleanedMap: MutableMap<String, String> = HashMap()
             for (entry in farmAnswerCache.entries) {
                 val key: String = entry.key
                 if (key.contains("|")) {
@@ -3063,7 +3106,7 @@ class AntFarm : ModelTask() {
                     }
                 }
             }
-            DataStore.put(FARM_ANSWER_CACHE_KEY, cleanedMap)
+            putFarmAnswerCache(cleanedMap)
             Log.farm("cleanOldAnswers 清理缓存完毕")
         } catch (e: Exception) {
             Log.printStackTrace(TAG, "cleanOldAnswers error:", e)
@@ -3754,6 +3797,7 @@ class AntFarm : ModelTask() {
     internal fun extractFarmRpcErrorCode(jo: JSONObject): String {
         return jo.optString("resultCode")
             .ifBlank { jo.optString("errorCode") }
+            .ifBlank { jo.optString("error") }
             .ifBlank { jo.optString("code") }
             .ifBlank { jo.optString("resultStatus") }
     }
@@ -3766,6 +3810,7 @@ class AntFarm : ModelTask() {
             .ifBlank { jo.optString("errorMsg") }
             .ifBlank { jo.optString("errorMessage") }
             .ifBlank { jo.optString("resultMsg") }
+            .ifBlank { jo.optString("message") }
             .ifBlank { jo.toString() }
     }
 
@@ -3792,6 +3837,7 @@ class AntFarm : ModelTask() {
                 TaskRpcFailureType.TERMINAL_DONE
 
             code == "331" ||
+                code == "1009" ||
                 isFarmTaskQuotaReachedResponse(jo) ||
                 code == "CAMP_TRIGGER_ERROR" ||
                 code.contains("LIMIT", ignoreCase = true) ||
@@ -5343,6 +5389,82 @@ class AntFarm : ModelTask() {
         val refreshed: Boolean
     )
 
+    private data class SpecialFoodRiskContext(
+        val sourceMethod: String,
+        val sourceCode: String,
+        val sourceMessage: String
+    )
+
+    internal fun resolveSpecialFoodGuardDecision(
+        guardScene: String,
+        allowRiskAction: Boolean = false
+    ): SpecialFoodGuardDecision {
+        if (allowRiskAction) {
+            Log.farm("特殊食品风险守门：scene=$guardScene decision=ALLOW reason=显式允许场景执行")
+            return SpecialFoodGuardDecision.ALLOW
+        }
+        return SpecialFoodGuardDecision.LOG_ONLY
+    }
+
+    private fun buildSpecialFoodGuardSummary(
+        usageLabel: String,
+        guardScene: String,
+        decision: SpecialFoodGuardDecision,
+        totalInventory: Int,
+        plannedUsage: Int,
+        remainingTarget: Double,
+        reason: String
+    ): String {
+        val targetText = if (remainingTarget > SPECIAL_FOOD_PRODUCE_EPS) {
+            " targetEggGap=${formatSpecialFoodProduce(remainingTarget)}颗"
+        } else {
+            ""
+        }
+        return "$usageLabel 风险守门：scene=$guardScene decision=${decision.name} inventory=$totalInventory planned=$plannedUsage$targetText reason=$reason"
+    }
+
+    private fun isSpecialFoodRiskFailure(
+        jo: JSONObject,
+        authLikeSnapshot: ApplicationHookConstants.AuthLikeOfflineSnapshot?
+    ): Boolean {
+        val code = extractFarmRpcErrorCode(jo)
+        val riskContext = resolveSpecialFoodRiskContext(jo, authLikeSnapshot)
+        return code == "1009" ||
+            riskContext.sourceCode == "1009" ||
+            RpcOfflineRisk.isOfflineRisk(riskContext.sourceCode, riskContext.sourceMessage) ||
+            (code == "I07" && riskContext.sourceMethod == SPECIAL_FOOD_USE_FARM_FOOD_RPC && authLikeSnapshot != null)
+    }
+
+    private fun logSpecialFoodRiskStopCurrentRound(
+        guardScene: String,
+        jo: JSONObject,
+        authLikeSnapshot: ApplicationHookConstants.AuthLikeOfflineSnapshot?
+    ) {
+        val riskContext = resolveSpecialFoodRiskContext(jo, authLikeSnapshot)
+        Log.farm(
+            "庄园特殊食品风控：module=蚂蚁庄园 action=$guardScene rpc=${riskContext.sourceMethod} " +
+                "originalCode=${riskContext.sourceCode.ifBlank { "<blank>" }} " +
+                "originalMsg=${riskContext.sourceMessage.ifBlank { "<blank>" }} decision=STOP_CURRENT_ROUND"
+        )
+    }
+
+    private fun resolveSpecialFoodRiskContext(
+        jo: JSONObject,
+        authLikeSnapshot: ApplicationHookConstants.AuthLikeOfflineSnapshot?
+    ): SpecialFoodRiskContext {
+        return SpecialFoodRiskContext(
+            sourceMethod = jo.optString("offlineSourceMethod")
+                .ifBlank { authLikeSnapshot?.method.orEmpty() }
+                .ifBlank { SPECIAL_FOOD_USE_FARM_FOOD_RPC },
+            sourceCode = jo.optString("offlineSourceCode")
+                .ifBlank { authLikeSnapshot?.code.orEmpty() }
+                .ifBlank { extractFarmRpcErrorCode(jo) },
+            sourceMessage = jo.optString("offlineSourceMessage")
+                .ifBlank { authLikeSnapshot?.message.orEmpty() }
+                .ifBlank { extractFarmRpcMessage(jo) }
+        )
+    }
+
     /**
      * 使用特殊美食 - 批量模式（支持连吃10个）
      * @param cuisineList 待使用的美食列表
@@ -5356,7 +5478,9 @@ class AntFarm : ModelTask() {
         usageLimitFlag: String = StatusFlags.FLAG_FARM_SPECIAL_FOOD_LIMIT,
         usageDailyLimit: Int = useSpecialFoodCount?.value ?: -1,
         usageLabel: String = "特殊食品",
-        targetEggGap: Double = 0.0
+        targetEggGap: Double = 0.0,
+        guardDecision: SpecialFoodGuardDecision = SpecialFoodGuardDecision.LOG_ONLY,
+        guardScene: String = "庄园自动链路"
     ): Int {
         var usedCount = 0
         try {
@@ -5403,6 +5527,24 @@ class AntFarm : ModelTask() {
                 Log.farm("美食处理：待消耗总量 $remainingToEat")
             }
 
+            when (guardDecision) {
+                SpecialFoodGuardDecision.LOG_ONLY -> {
+                    Log.farm(
+                        buildSpecialFoodGuardSummary(
+                            usageLabel = usageLabel,
+                            guardScene = guardScene,
+                            decision = guardDecision,
+                            totalInventory = totalInventory,
+                            plannedUsage = remainingToEat,
+                            remainingTarget = remainingTarget,
+                            reason = "自动链路默认不直接执行useFarmFood"
+                        )
+                    )
+                    return 0
+                }
+                SpecialFoodGuardDecision.ALLOW -> Unit
+            }
+
             while (remainingToEat > 0 && stockList.isNotEmpty()) {
                 if (targetMode && remainingTarget <= SPECIAL_FOOD_PRODUCE_EPS) {
                     break
@@ -5421,7 +5563,8 @@ class AntFarm : ModelTask() {
                     plan = plan,
                     stockList = stockList,
                     remainingTarget = if (targetMode) remainingTarget else null,
-                    usageLabel = usageLabel
+                    usageLabel = usageLabel,
+                    guardScene = guardScene
                 )
                 if (!batchResult.success) {
                     break
@@ -5718,7 +5861,8 @@ class AntFarm : ModelTask() {
         plan: SpecialFoodPlan,
         stockList: MutableList<SpecialFoodStock>,
         remainingTarget: Double?,
-        usageLabel: String
+        usageLabel: String,
+        guardScene: String
     ): SpecialFoodBatchResult {
         val usedNames = formatSpecialFoodUses(plan.uses)
         val usedCount = countSpecialFoodUses(plan.uses)
@@ -5743,10 +5887,14 @@ class AntFarm : ModelTask() {
         val res = AntFarmRpcCall.useFarmFood(currentBatchArray)
         val joRes = JSONObject(res)
         if (!ResChecker.checkRes(TAG, joRes)) {
-            val memo = joRes.optString("memo").ifBlank { joRes.optString("resultDesc", joRes.toString()) }
-            val resultCode = joRes.optString("resultCode")
+            val memo = extractFarmRpcMessage(joRes)
+            val resultCode = extractFarmRpcErrorCode(joRes)
             val staleStock = resultCode == "A06" || memo.contains("高级饲料持有不足") || memo.contains("持有不足")
             val classification = classifyFarmRpcFailure(joRes)
+            val authLikeSnapshot = ApplicationHookConstants.getLatestAuthLikeOfflineSnapshot()
+            if (isSpecialFoodRiskFailure(joRes, authLikeSnapshot)) {
+                logSpecialFoodRiskStopCurrentRound(guardScene, joRes, authLikeSnapshot)
+            }
             Log.farm(
                 "美食使用失败，停止后续操作: ${formatFarmHighRiskFailure("useFarmFood", joRes, classification)}"
             )
@@ -7767,6 +7915,7 @@ class AntFarm : ModelTask() {
 
         private const val RPC_LIST_FARM_TOOL = "com.alipay.antfarm.listFarmTool"
 
+        private const val BIG_EATER_USED_COUNT_KEY_PREFIX = "antFarmBigEaterUsedCount::"
         private const val FARM_ANSWER_CACHE_KEY = "farmAnswerQuestionCache"
     }
 
@@ -7843,7 +7992,12 @@ class AntFarm : ModelTask() {
                 if (AnimalFeedStatus.SLEEPY.name == ownerAnimal.animalFeedStatus) {
                     Log.farm("❌ 小鸡正在睡觉，无法使用美食")
                 } else {
-                    val usedCount = useSpecialFood(cuisineList, count)
+                    val usedCount = useSpecialFood(
+                        cuisineList = cuisineList,
+                        maxUsage = count,
+                        guardDecision = resolveSpecialFoodGuardDecision("手动使用特殊美食", allowRiskAction = true),
+                        guardScene = "手动使用特殊美食"
+                    )
                     if (usedCount > 0) {
                         Log.farm("✅ 手动使用特殊美食任务处理完毕，实际使用${usedCount}个")
                     } else {

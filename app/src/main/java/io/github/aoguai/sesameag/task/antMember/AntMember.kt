@@ -270,6 +270,18 @@ class AntMember : ModelTask() {
         val canMarkDone: Boolean
     )
 
+    private data class GameCenterPlatformTaskSnapshot(
+        val taskId: String,
+        val title: String,
+        val subTitle: String,
+        val status: String,
+        val buttonText: String,
+        val needSignUp: Boolean,
+        val gameId: String,
+        val appId: String,
+        val pointAmount: Int
+    )
+
     private val insuredTaskCenterConfigs = listOf(
         InsuredTaskCenterConfig("AP16236844", "TASK_LIST", "GIFT_GOLD_NORMAL_TASK_CONTROL"),
         InsuredTaskCenterConfig("AP19236833", "TOP_LIST", "GIFT_GOLD_TOP_TASK_CONTROL"),
@@ -762,7 +774,7 @@ class AntMember : ModelTask() {
                     UserMap.currentUid,
                     ExchangeOptionsRefreshBridge.TARGET_MEMBER_POINT
                 )
-                Log.member("会员积分🎐目标应用未就绪，设置页使用结构化缓存列表#${cachedRows.size}")
+                Log.member("会员积分🎐目标应用未就绪，设置页先展示上次缓存列表；请打开目标应用后再刷新#${cachedRows.size}")
                 return cachedRows
             }
             val refreshResult = ExchangeOptionsRefreshBridge.requestRefreshOptions(
@@ -934,7 +946,7 @@ class AntMember : ModelTask() {
                     UserMap.currentUid,
                     ExchangeOptionsRefreshBridge.TARGET_BEAN_RIGHT
                 )
-                Log.member("安心豆🫘目标应用未就绪，设置页使用结构化缓存列表#${cachedRows.size}")
+                Log.member("安心豆🫘目标应用未就绪，设置页先展示上次缓存列表；请打开目标应用后再刷新#${cachedRows.size}")
                 return cachedRows
             }
             val refreshResult = ExchangeOptionsRefreshBridge.requestRefreshOptions(
@@ -1588,7 +1600,7 @@ class AntMember : ModelTask() {
         override fun isBlacklisted(item: TaskFlowItem): Boolean {
             val blacklisted = super<TaskFlowAdapter>.isBlacklisted(item)
             if (blacklisted) {
-                logMemberTaskSkipOnce(item, "黑名单任务，跳过")
+                logMemberTaskSkipOnce(item, "任务在自动跳过列表(黑名单)中，跳过")
             }
             return blacklisted
         }
@@ -1910,7 +1922,7 @@ class AntMember : ModelTask() {
             val adBizId = resolveMemberAdTaskBizId(taskProcessObject, simpleTaskConfig)
             val taskConfigId = resolveCurrentMemberTaskConfigId(taskProcessObject) ?: continue
             if (skipBlacklisted && isMemberTaskInBlacklist(taskConfigId, title)) {
-                Log.member("会员任务[$title]#黑名单任务，跳过")
+                Log.member("会员任务[$title]#任务在自动跳过列表(黑名单)中，跳过")
                 continue
             }
             if (!isWhitelistedMemberTaskConfigId(taskConfigId, adBizId.isNotEmpty())) {
@@ -3058,7 +3070,7 @@ class AntMember : ModelTask() {
             }
 
             if (isBlacklisted(item)) {
-                logInsuredTaskSkipOnce(item, "黑名单任务，跳过")
+                logInsuredTaskSkipOnce(item, "任务在自动跳过列表(黑名单)中，跳过")
                 return true
             }
 
@@ -3772,11 +3784,11 @@ class AntMember : ModelTask() {
         if (loggedUnsupportedMemberTaskIds.size > MEMBER_TASK_UNSUPPORTED_LOG_LIMIT) {
             if (!unsupportedMemberTaskOverflowLogged) {
                 unsupportedMemberTaskOverflowLogged = true
-                Log.member("会员任务#更多未纳入白名单闭环任务已加入黑名单并省略日志")
+                Log.member("会员任务#更多未纳入自动闭环白名单的任务已加入自动跳过列表(黑名单)，并省略后续重复日志")
             }
             return
         }
-        Log.member("会员任务[$taskTitle]#未纳入白名单闭环，已加入黑名单($detail)")
+        Log.member("会员任务[$taskTitle]#未纳入自动闭环白名单，已加入自动跳过列表(黑名单)($detail)")
     }
 
     private fun isMemberTaskInBlacklist(taskConfigId: String, taskTitle: String): Boolean {
@@ -4955,6 +4967,7 @@ class AntMember : ModelTask() {
             var signInResult = DailyTaskProcessResult.UNKNOWN_FAILURE
             var platformTaskResult = DailyTaskProcessResult.UNKNOWN_FAILURE
             var pointBallResult = DailyTaskProcessResult.UNKNOWN_FAILURE
+            var p2eTaskResult = DailyTaskProcessResult.UNKNOWN_FAILURE
             var p2eSignInResult = DailyTaskProcessResult.UNKNOWN_FAILURE
 
             // 1. 查询签到状态并尝试签到
@@ -5079,7 +5092,14 @@ class AntMember : ModelTask() {
                 Log.printStackTrace(TAG, "enableGameCenter.point err:", th)
             }
 
-            // 4. 游戏中心赚现金签到
+            // 4. 游戏中心赚现金任务
+            try {
+                p2eTaskResult = runGameCenterP2eTaskFlow()
+            } catch (th: Throwable) {
+                Log.printStackTrace(TAG, "enableGameCenter.p2eTasks err:", th)
+            }
+
+            // 5. 游戏中心赚现金签到
             try {
                 p2eSignInResult = doGameCenterP2eSignIn()
             } catch (th: Throwable) {
@@ -5090,6 +5110,7 @@ class AntMember : ModelTask() {
                     signInResult,
                     platformTaskResult,
                     pointBallResult,
+                    p2eTaskResult,
                     p2eSignInResult
                 ).all { it == DailyTaskProcessResult.HANDLED }
             ) {
@@ -5097,6 +5118,21 @@ class AntMember : ModelTask() {
             }
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, t)
+        }
+    }
+
+    private fun runGameCenterP2eTaskFlow(): DailyTaskProcessResult {
+        val adapter = GameCenterP2eTaskFlowAdapter()
+        val runResult = TaskFlowEngine(adapter, roundSleepMs = 500L).run()
+        if (adapter.taskCount == 0) {
+            Log.member("游戏中心🎮[赚现金暂无任务模块]")
+        } else if (adapter.availableTaskCount == 0) {
+            Log.member("游戏中心🎮[赚现金无待处理任务]")
+        }
+        return when {
+            adapter.queryFailed || adapter.hasBlockingFailure -> DailyTaskProcessResult.UNKNOWN_FAILURE
+            adapter.hasRetryableFailure || runResult.stopped -> DailyTaskProcessResult.RETRYABLE_FAILURE
+            else -> DailyTaskProcessResult.HANDLED
         }
     }
 
@@ -5183,7 +5219,7 @@ class AntMember : ModelTask() {
                         status = status,
                         type = if (task.optBoolean("needSignUp", false)) "SIGNUP_TASK" else "PLATFORM_TASK",
                         actionType = "doTaskSend",
-                        blacklistKeys = listOf(taskId, title).filter { it.isNotBlank() },
+                        blacklistKeys = buildGameCenterPlatformBlacklistKeys(taskId, task),
                         raw = task,
                         progress = "pointAmount=${task.optInt("pointAmount", 0)}"
                     )
@@ -5223,9 +5259,24 @@ class AntMember : ModelTask() {
         override fun isBlacklisted(item: TaskFlowItem): Boolean {
             val blacklisted = super<TaskFlowAdapter>.isBlacklisted(item)
             if (blacklisted) {
-                logSkipOnce(item, "黑名单任务，跳过")
+                logSkipOnce(item, "任务在自动跳过列表(黑名单)中，跳过")
             }
             return blacklisted
+        }
+
+        override fun blacklist(item: TaskFlowItem, result: TaskFlowActionResult) {
+            val task = item.raw ?: JSONObject()
+            val persistKeys = buildGameCenterPlatformPersistKeys(item.id, task)
+            if (persistKeys.isEmpty()) {
+                super<TaskFlowAdapter>.blacklist(item, result)
+                return
+            }
+            val primaryKey = persistKeys.first()
+            if (result.code.isNotBlank()) {
+                TaskBlacklist.autoAddToBlacklist(moduleName, primaryKey, errorCode = result.code)
+            }
+            TaskBlacklist.addToBlacklist(moduleName, primaryKey)
+            persistKeys.drop(1).forEach { TaskBlacklist.addToBlacklist(moduleName, it) }
         }
 
         override fun signup(item: TaskFlowItem): TaskFlowActionResult {
@@ -5308,35 +5359,223 @@ class AntMember : ModelTask() {
             Log.error(TAG, message)
         }
 
+        private fun buildGameCenterPlatformBlacklistKeys(taskId: String, task: JSONObject): List<String> {
+            val snapshot = toGameCenterPlatformTaskSnapshot(taskId, task)
+            val stableKeys = LinkedHashSet<String>()
+            buildGameCenterPlatformPersistKeys(taskId, task).forEach(stableKeys::add)
+            listOf(
+                snapshot.gameId,
+                snapshot.appId,
+                snapshot.title,
+                snapshot.subTitle,
+                snapshot.taskId
+            ).filter { it.isNotBlank() }.forEach(stableKeys::add)
+            return stableKeys.toList()
+        }
+
+        private fun buildGameCenterPlatformPersistKeys(taskId: String, task: JSONObject): List<String> {
+            val snapshot = toGameCenterPlatformTaskSnapshot(taskId, task)
+            return LinkedHashSet<String>().apply {
+                buildStableGameCenterPlatformKey(snapshot.gameId, snapshot.title, snapshot.subTitle)?.let(::add)
+                buildStableGameCenterPlatformKey(snapshot.appId, snapshot.title, snapshot.subTitle)?.let(::add)
+                buildGameCenterPlatformTaskIdKey(snapshot.taskId, snapshot.title)?.let(::add)
+            }.toList()
+        }
+
+        private fun buildStableGameCenterPlatformKey(identifier: String, title: String, subTitle: String): String? {
+            if (identifier.isBlank() || title.isBlank() || subTitle.isBlank()) {
+                return null
+            }
+            return "$identifier|$title|$subTitle"
+        }
+
+        private fun buildGameCenterPlatformTaskIdKey(taskId: String, title: String): String? {
+            if (taskId.isBlank() || title.isBlank() || taskId == title) {
+                return null
+            }
+            return "$taskId|$title"
+        }
+
+        private fun toGameCenterPlatformTaskSnapshot(taskId: String, task: JSONObject): GameCenterPlatformTaskSnapshot {
+            val title = task.optString("title").ifBlank {
+                task.optString("subTitle").ifBlank { taskId }
+            }
+            return GameCenterPlatformTaskSnapshot(
+                taskId = taskId,
+                title = title,
+                subTitle = task.optString("subTitle"),
+                status = task.optString("taskStatus"),
+                buttonText = task.optString("buttonText"),
+                needSignUp = task.optBoolean("needSignUp", false),
+                gameId = task.optString("gameId"),
+                appId = task.optString("appId"),
+                pointAmount = task.optInt("pointAmount", 0)
+            )
+        }
+
+        private fun findGameCenterPlatformTaskById(response: JSONObject, taskId: String): GameCenterPlatformTaskSnapshot? {
+            val data = response.optJSONObject("data") ?: return null
+            val platformTaskModule = data.optJSONObject("gameTaskModule")
+                ?: data.optJSONObject("platformTaskModule")
+                ?: return null
+            val platformTaskList = platformTaskModule.optJSONArray("gameTaskList")
+                ?: platformTaskModule.optJSONArray("platformTaskList")
+                ?: return null
+            for (i in 0 until platformTaskList.length()) {
+                val task = platformTaskList.optJSONObject(i) ?: continue
+                if (taskId == task.optString("taskId")) {
+                    return toGameCenterPlatformTaskSnapshot(taskId, task)
+                }
+            }
+            return null
+        }
+
+        private fun isGameCenterPlatformTaskTerminal(snapshot: GameCenterPlatformTaskSnapshot): Boolean {
+            return snapshot.status.uppercase(Locale.ROOT) in setOf(
+                "DONE",
+                "FINISHED",
+                "COMPLETED",
+                "COMPLETE",
+                "SUCCESS",
+                "RECEIVED"
+            ) || snapshot.buttonText.contains("领取")
+        }
+
+        private fun buildGameCenterPlatformRecheckDetail(
+            item: TaskFlowItem,
+            snapshot: GameCenterPlatformTaskSnapshot?
+        ): String {
+            val baseDetail = gameCenterTaskActionDetail(item, "send+recheck")
+            if (snapshot == null) {
+                return "$baseDetail recheckTask=MISSING"
+            }
+            return "$baseDetail recheckStatus=${snapshot.status.ifBlank { "UNKNOWN" }}" +
+                " recheckButton=${snapshot.buttonText.ifBlank { "UNKNOWN" }}" +
+                " recheckTitle=${snapshot.title.ifBlank { "UNKNOWN" }}" +
+                " recheckSubTitle=${snapshot.subTitle.ifBlank { "UNKNOWN" }}"
+        }
+
+        private fun buildGameCenterPlatformFakeSuccessMessage(
+            item: TaskFlowItem,
+            snapshot: GameCenterPlatformTaskSnapshot
+        ): String {
+            return "doTaskSend仅ACK，复查仍未完成" +
+                "(before=${item.status.ifBlank { "UNKNOWN" }}" +
+                ",after=${snapshot.status.ifBlank { "UNKNOWN" }}" +
+                ",button=${snapshot.buttonText.ifBlank { "UNKNOWN" }})"
+        }
+
+        private fun buildGameCenterPlatformCombinedRaw(sendResponse: String, recheckRaw: String): String {
+            return "send=$sendResponse recheck=$recheckRaw"
+        }
+
+        private fun buildUnsupportedGameCenterGameplayResult(item: TaskFlowItem): TaskFlowActionResult? {
+            if (!isRealGameCenterGameplayTask(item)) {
+                return null
+            }
+            return TaskFlowActionResult.failure(
+                failureType = TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE,
+                code = "UNSUPPORTED_GAMEPLAY_TASK",
+                message = "普通真实游戏任务无稳定RPC闭环，跳过doTaskSend伪成功链路",
+                rpc = "<none>",
+                raw = item.raw?.toString().orEmpty(),
+                detail = gameCenterTaskActionDetail(item, "precheck")
+            )
+        }
+
+        private fun isRealGameCenterGameplayTask(item: TaskFlowItem): Boolean {
+            val task = item.raw ?: return false
+            if (!task.optString("actionType").equals("NORMAL", ignoreCase = true)) {
+                return false
+            }
+            if (task.optBoolean("needSignUp", false)) {
+                return false
+            }
+            if (task.optString("buttonText") != "去完成") {
+                return false
+            }
+            val gameId = task.optString("gameId")
+            val appId = task.optString("appId")
+            val jumpLink = task.optString("jumpLink")
+            if (gameId.isBlank() || appId.isBlank() || !jumpLink.contains("platformapi/startapp", ignoreCase = true)) {
+                return false
+            }
+            val taskText = "${item.title} ${task.optString("subTitle")}"
+            return containsAny(
+                taskText,
+                "通过",
+                "完成",
+                "击杀",
+                "挑战",
+                "订单",
+                "庙会",
+                "夜市",
+                "主线",
+                "boss"
+            )
+        }
+
         private fun sendGameCenterTask(item: TaskFlowItem): TaskFlowActionResult {
-            val response = AntMemberRpcCall.doTaskSend(item.id)
-            val responseObject = JSONObject(response)
-            if (!ResChecker.checkRes(TAG, responseObject)) {
+            buildUnsupportedGameCenterGameplayResult(item)?.let { return it }
+
+            val sendResponse = AntMemberRpcCall.doTaskSend(item.id)
+            val sendResponseObject = JSONObject(sendResponse)
+            if (!ResChecker.checkRes(TAG, sendResponseObject)) {
                 return gameCenterTaskFailureResult(
                     item = item,
-                    responseObject = responseObject,
-                    rawResponse = response,
+                    responseObject = sendResponseObject,
+                    rawResponse = sendResponse,
                     rpc = "AntMemberRpcCall.doTaskSend"
                 )
             }
-            val resultStatus = responseObject.optJSONObject("data")?.optString("taskStatus").orEmpty()
-            if (resultStatus == "SIGNUP_COMPLETE" || resultStatus == "NOT_DONE") {
-                return TaskFlowActionResult.failure(
-                    failureType = TaskRpcFailureType.RETRYABLE_RPC,
-                    code = "STATUS_UNCHANGED",
-                    message = "任务状态未变更",
-                    rpc = "AntMemberRpcCall.doTaskSend",
-                    raw = response,
-                    detail = gameCenterTaskActionDetail(item, "send"),
+
+            // doTaskSend 在最新抓包里经常只返回 transport ACK，必须立刻复查任务列表确认真实进度。
+            val recheckResponse = query()
+            val recheckRaw = recheckResponse.optString("_rawResponse", recheckResponse.toString())
+            if (!isQuerySuccess(recheckResponse)) {
+                val recheckFailure = gameCenterTaskFailureResult(
+                    item = item,
+                    responseObject = recheckResponse,
+                    rawResponse = recheckRaw,
+                    rpc = "AntMemberRpcCall.queryGameCenterTaskList"
+                )
+                return recheckFailure.copy(
+                    rpc = "AntMemberRpcCall.doTaskSend+AntMemberRpcCall.queryGameCenterTaskList",
+                    raw = buildGameCenterPlatformCombinedRaw(sendResponse, recheckRaw),
+                    detail = buildGameCenterPlatformRecheckDetail(item, null),
                     stopCurrentRound = true
                 )
             }
-            val task = item.raw ?: JSONObject()
-            val title = task.optString("subTitle").ifBlank { item.title }
-            val pointAmount = task.optInt("pointAmount", 0)
+
+            val snapshot = findGameCenterPlatformTaskById(recheckResponse, item.id)
+            if (snapshot == null) {
+                return TaskFlowActionResult.failure(
+                    failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                    code = "POST_SEND_QUERY_MISS",
+                    message = "doTaskSend后复查未找到目标任务",
+                    rpc = "AntMemberRpcCall.doTaskSend+AntMemberRpcCall.queryGameCenterTaskList",
+                    raw = buildGameCenterPlatformCombinedRaw(sendResponse, recheckRaw),
+                    detail = buildGameCenterPlatformRecheckDetail(item, null),
+                    stopCurrentRound = true
+                )
+            }
+
+            if (!isGameCenterPlatformTaskTerminal(snapshot)) {
+                return TaskFlowActionResult.failure(
+                    failureType = TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE,
+                    code = "FAKE_SUCCESS",
+                    message = buildGameCenterPlatformFakeSuccessMessage(item, snapshot),
+                    rpc = "AntMemberRpcCall.doTaskSend+AntMemberRpcCall.queryGameCenterTaskList",
+                    raw = buildGameCenterPlatformCombinedRaw(sendResponse, recheckRaw),
+                    detail = buildGameCenterPlatformRecheckDetail(item, snapshot),
+                    stopCurrentRound = true
+                )
+            }
+
+            val title = snapshot.subTitle.ifBlank { snapshot.title }
             Log.member(
-                "游戏中心🎮任务[$title]#完成,奖励${pointAmount}玩乐豆" +
-                    if (task.optBoolean("needSignUp", false)) "(签到任务)" else ""
+                "游戏中心🎮任务[$title]#完成,奖励${snapshot.pointAmount}玩乐豆" +
+                    if (snapshot.needSignUp) "(签到任务)" else ""
             )
             return TaskFlowActionResult.success()
         }
@@ -5345,6 +5584,320 @@ class AntMember : ModelTask() {
             val key = "$reason|${item.id}"
             if (loggedSkipKeys.add(key)) {
                 Log.member("游戏中心🎮任务[${item.title}]#$reason")
+            }
+        }
+    }
+
+    private inner class GameCenterP2eTaskFlowAdapter : TaskFlowAdapter {
+        override val moduleName: String = memberTaskBlacklistModule
+        override val flowName: String = "游戏中心🎮赚现金任务"
+
+        var queryFailed: Boolean = false
+            private set
+        var hasBlockingFailure: Boolean = false
+            private set
+        var hasRetryableFailure: Boolean = false
+            private set
+        var taskCount: Int = 0
+            private set
+        var availableTaskCount: Int = 0
+            private set
+
+        private val signedUpTaskIds = LinkedHashSet<String>()
+        private val completedTaskIds = LinkedHashSet<String>()
+        private val receivedTaskIds = LinkedHashSet<String>()
+        private val loggedSkipKeys = LinkedHashSet<String>()
+        private val sessionId = System.currentTimeMillis().toString()
+
+        override fun query(): JSONObject {
+            return try {
+                val raw = AntMemberRpcCall.queryGameCenterP2eTaskList(sessionId)
+                val response = JSONObject(raw)
+                response
+                    .put("_taskFlowQuerySuccess", ResChecker.checkRes(TAG, response))
+                    .put("_rawResponse", raw)
+            } catch (t: Throwable) {
+                JSONObject()
+                    .put("_taskFlowQuerySuccess", false)
+                    .put("resultView", "查询异常:${t.message}")
+            }
+        }
+
+        override fun isQuerySuccess(response: JSONObject): Boolean {
+            queryFailed = !response.optBoolean("_taskFlowQuerySuccess", false)
+            return !queryFailed
+        }
+
+        override fun extractItems(response: JSONObject): List<TaskFlowItem> {
+            val data = response.optJSONObject("data") ?: return emptyList()
+            val exposedTaskList = data.optJSONObject("exposedTaskModuleVO")
+                ?.optJSONArray("exposedTaskList")
+                ?: JSONArray()
+            reportGameCenterP2eExposedTasks(exposedTaskList)
+
+            val items = mutableListOf<TaskFlowItem>()
+            appendGameCenterP2eTasks(items, exposedTaskList)
+            val gameTaskList = data.optJSONObject("platformGameTaskModule")
+                ?.optJSONArray("gameTaskList")
+                ?: JSONArray()
+            appendGameCenterP2eTasks(items, gameTaskList)
+            taskCount = max(taskCount, items.size)
+            availableTaskCount = items.count { item ->
+                when (mapPhase(item)) {
+                    TaskFlowPhase.REWARD_READY,
+                    TaskFlowPhase.READY_TO_COMPLETE,
+                    TaskFlowPhase.SIGNUP_REQUIRED,
+                    TaskFlowPhase.SIGNUP_COMPLETE -> true
+                    else -> false
+                }
+            }
+            return items
+        }
+
+        override fun mapPhase(item: TaskFlowItem): TaskFlowPhase {
+            if (item.id in receivedTaskIds) {
+                return TaskFlowPhase.TERMINAL
+            }
+            val status = item.status.uppercase(Locale.ROOT)
+            val buttonText = item.raw?.optString("buttonText").orEmpty()
+            if (status in setOf("COMPLETED", "COMPLETE", "FINISHED") || buttonText.contains("领取")) {
+                return TaskFlowPhase.REWARD_READY
+            }
+            if (!isGameCenterP2eAutoTask(item)) {
+                return TaskFlowPhase.UNSUPPORTED
+            }
+            if (item.id in completedTaskIds) {
+                return TaskFlowPhase.TERMINAL
+            }
+            return when (status) {
+                "UN_SIGNUP",
+                "NONE_SIGNUP" -> if (item.raw?.optBoolean("needSignUp", false) == true && item.id !in signedUpTaskIds) {
+                    TaskFlowPhase.SIGNUP_REQUIRED
+                } else {
+                    TaskFlowPhase.READY_TO_COMPLETE
+                }
+                "SIGNUP_COMPLETED",
+                "SIGNUP_COMPLETE" -> TaskFlowPhase.SIGNUP_COMPLETE
+                "NOT_DONE",
+                "IN_COMPLETE",
+                "PROCESSING" -> TaskFlowPhase.READY_TO_COMPLETE
+                "RECEIVED",
+                "DONE",
+                "SUCCESS" -> TaskFlowPhase.TERMINAL
+                else -> TaskFlowPhase.UNKNOWN
+            }
+        }
+
+        override fun shouldSkip(item: TaskFlowItem): Boolean {
+            val phase = mapPhase(item)
+            if (item.id in receivedTaskIds ||
+                (item.id in completedTaskIds && phase != TaskFlowPhase.REWARD_READY)
+            ) {
+                return true
+            }
+            if (phase == TaskFlowPhase.UNSUPPORTED) {
+                blacklistUnsupportedP2eTask(item)
+                return true
+            }
+            val raw = item.raw ?: JSONObject()
+            if ((phase == TaskFlowPhase.REWARD_READY ||
+                    phase == TaskFlowPhase.READY_TO_COMPLETE ||
+                    phase == TaskFlowPhase.SIGNUP_REQUIRED ||
+                    phase == TaskFlowPhase.SIGNUP_COMPLETE) &&
+                raw.optString("taskToken").isBlank()
+            ) {
+                logSkipOnce(item, "缺少taskToken，跳过")
+                return true
+            }
+            return false
+        }
+
+        override fun isBlacklisted(item: TaskFlowItem): Boolean {
+            val blacklisted = super<TaskFlowAdapter>.isBlacklisted(item)
+            if (blacklisted) {
+                logSkipOnce(item, "任务在自动跳过列表(黑名单)中，跳过")
+            }
+            return blacklisted
+        }
+
+        override fun signup(item: TaskFlowItem): TaskFlowActionResult {
+            val raw = item.raw ?: JSONObject()
+            val response = AntMemberRpcCall.gameCenterP2ePlatformTaskSignUp(item.id, raw.optString("taskToken"))
+            val responseObject = JSONObject(response)
+            if (!ResChecker.checkRes(TAG, responseObject)) {
+                return gameCenterTaskFailureResult(
+                    item = item,
+                    responseObject = responseObject,
+                    rawResponse = response,
+                    rpc = "AntMemberRpcCall.gameCenterP2ePlatformTaskSignUp"
+                )
+            }
+            Log.member("游戏中心🎮赚现金任务[${item.title}]#报名完成")
+            return TaskFlowActionResult.success(refreshAfterAction = true)
+        }
+
+        override fun complete(item: TaskFlowItem): TaskFlowActionResult {
+            return completeGameCenterP2eTask(item)
+        }
+
+        override fun send(item: TaskFlowItem): TaskFlowActionResult {
+            return completeGameCenterP2eTask(item)
+        }
+
+        override fun receive(item: TaskFlowItem): TaskFlowActionResult {
+            val raw = item.raw ?: JSONObject()
+            val response = AntMemberRpcCall.gameCenterP2eTaskReceive(raw)
+            val responseObject = JSONObject(response)
+            if (!ResChecker.checkRes(TAG, responseObject)) {
+                return gameCenterTaskFailureResult(
+                    item = item,
+                    responseObject = responseObject,
+                    rawResponse = response,
+                    rpc = "AntMemberRpcCall.gameCenterP2eTaskReceive"
+                )
+            }
+            val amount = raw.opt("goldCoinAmount")?.toString().orEmpty()
+            Log.member("游戏中心🎮赚现金任务[${item.title}]#领取成功" + if (amount.isNotBlank()) "#金币+$amount" else "")
+            return TaskFlowActionResult.success(refreshAfterAction = true)
+        }
+
+        override fun actionKey(item: TaskFlowItem, action: TaskFlowAction): String {
+            return "${action.logName}:${item.id}:${item.status}:${item.type}"
+        }
+
+        override fun afterSuccess(item: TaskFlowItem, action: TaskFlowAction, result: TaskFlowActionResult) {
+            when (action) {
+                TaskFlowAction.SIGNUP -> signedUpTaskIds.add(item.id)
+                TaskFlowAction.COMPLETE,
+                TaskFlowAction.SEND -> completedTaskIds.add(item.id)
+                TaskFlowAction.RECEIVE -> receivedTaskIds.add(item.id)
+            }
+        }
+
+        override fun afterFailure(
+            item: TaskFlowItem,
+            action: TaskFlowAction,
+            result: TaskFlowActionResult,
+            decision: TaskFlowDecision
+        ) {
+            when (decision) {
+                TaskFlowDecision.RETRY_LATER -> hasRetryableFailure = true
+                TaskFlowDecision.LOG_ONLY -> hasBlockingFailure = true
+                TaskFlowDecision.MARK_HANDLED -> receivedTaskIds.add(item.id)
+                TaskFlowDecision.STOP_TODAY_OR_CURRENT_CHAIN,
+                TaskFlowDecision.BLACKLIST -> Unit
+            }
+        }
+
+        override fun onAllTasksDone(snapshot: TaskFlowSnapshot) {
+            logInfo("游戏中心🎮[赚现金任务已处理完成：${snapshot.completedTasks}/${snapshot.totalTasks}]")
+        }
+
+        override fun onQueryFailed(response: JSONObject) {
+            val msg = response.optString("errorMsg")
+                .ifBlank { response.optString("resultView") }
+                .ifBlank { response.optString("resultDesc") }
+                .ifBlank { response.optString("_rawResponse", response.toString()) }
+            Log.error("$TAG.enableGameCenter.p2eTasks", "游戏中心🎮[赚现金任务列表查询失败]#$msg")
+        }
+
+        override fun onUnknownPhase(item: TaskFlowItem, phase: TaskFlowPhase) {
+            hasBlockingFailure = true
+            Log.error(
+                "$TAG.enableGameCenter.p2eTasks",
+                "游戏中心🎮赚现金任务[${item.title}]未知状态 taskId=${item.id} status=${item.status} raw=${item.raw}"
+            )
+        }
+
+        override fun logInfo(message: String) {
+            Log.member(message)
+        }
+
+        override fun logError(message: String) {
+            Log.error(TAG, message)
+        }
+
+        private fun completeGameCenterP2eTask(item: TaskFlowItem): TaskFlowActionResult {
+            val raw = item.raw ?: JSONObject()
+            val response = AntMemberRpcCall.gameCenterP2ePlatformTaskComplete(item.id, raw.optString("taskToken"))
+            val responseObject = JSONObject(response)
+            if (!ResChecker.checkRes(TAG, responseObject)) {
+                return gameCenterTaskFailureResult(
+                    item = item,
+                    responseObject = responseObject,
+                    rawResponse = response,
+                    rpc = "AntMemberRpcCall.gameCenterP2ePlatformTaskComplete"
+                )
+            }
+            Log.member("游戏中心🎮赚现金任务[${item.title}]#完成")
+            return TaskFlowActionResult.success(refreshAfterAction = true)
+        }
+
+        private fun appendGameCenterP2eTasks(items: MutableList<TaskFlowItem>, taskList: JSONArray) {
+            for (i in 0 until taskList.length()) {
+                val task = taskList.optJSONObject(i) ?: continue
+                val taskId = task.optString("taskId")
+                if (taskId.isBlank()) {
+                    continue
+                }
+                val title = task.optString("title")
+                    .ifBlank { task.optString("subTitle") }
+                    .ifBlank { taskId }
+                val taskType = task.optString("taskType")
+                val actionType = task.optString("actionType")
+                items.add(
+                    TaskFlowItem(
+                        id = taskId,
+                        title = title,
+                        status = task.optString("taskStatus"),
+                        type = taskType,
+                        actionType = actionType,
+                        blacklistKeys = listOf(taskId, title, taskType, actionType).filter { it.isNotBlank() },
+                        raw = task,
+                        progress = "goldCoinAmount=${task.optInt("goldCoinAmount", 0)}"
+                    )
+                )
+            }
+        }
+
+        private fun reportGameCenterP2eExposedTasks(taskList: JSONArray) {
+            if (taskList.length() == 0) {
+                return
+            }
+            runCatching {
+                val response = AntMemberRpcCall.reportGameCenterP2eExposedTasks(taskList)
+                val responseObject = JSONObject(response)
+                if (!ResChecker.checkRes(TAG, responseObject)) {
+                    Log.member("游戏中心🎮赚现金任务曝光上报失败:${buildGameCenterRpcMessage(responseObject, response)}")
+                }
+            }.onFailure {
+                Log.printStackTrace(TAG, "reportGameCenterP2eExposedTasks err:", it)
+            }
+        }
+
+        private fun isGameCenterP2eAutoTask(item: TaskFlowItem): Boolean {
+            val raw = item.raw ?: return false
+            return raw.optString("taskType").equals("PLATFORM_TRAN_TASK", ignoreCase = true) &&
+                raw.optString("actionType").equals("VIEW_TASK", ignoreCase = true)
+        }
+
+        private fun blacklistUnsupportedP2eTask(item: TaskFlowItem) {
+            val raw = item.raw ?: JSONObject()
+            val reason = when {
+                raw.optString("taskType").equals("GAME_TRAN_TASK", ignoreCase = true) ->
+                    "真实游戏通关/订单任务无自动闭环"
+                raw.optString("actionType").equals("LIGHT_AD_TASK", ignoreCase = true) ->
+                    "P2E广告任务无稳定完成闭环，仅处理已完成领奖"
+                else -> "未验证的P2E任务类型"
+            }
+            TaskBlacklist.addToBlacklist(moduleName, item.id, item.title)
+            logSkipOnce(item, "当前暂无稳定自动完成闭环，已加入自动跳过列表(黑名单):$reason")
+        }
+
+        private fun logSkipOnce(item: TaskFlowItem, reason: String) {
+            val key = "$reason|${item.id}"
+            if (loggedSkipKeys.add(key)) {
+                Log.member("游戏中心🎮赚现金任务[${item.title}]#$reason")
             }
         }
     }
@@ -5367,7 +5920,11 @@ class AntMember : ModelTask() {
     private fun gameCenterTaskActionDetail(item: TaskFlowItem, action: String): String {
         val task = item.raw ?: JSONObject()
         return "taskId=${item.id.ifBlank { "UNKNOWN" }} taskName=${item.title.ifBlank { "UNKNOWN" }} " +
+            "subTitle=${task.optString("subTitle").ifBlank { "UNKNOWN" }} " +
             "status=${item.status.ifBlank { "UNKNOWN" }} action=$action " +
+            "gameId=${task.optString("gameId").ifBlank { "UNKNOWN" }} " +
+            "appId=${task.optString("appId").ifBlank { "UNKNOWN" }} " +
+            "buttonText=${task.optString("buttonText").ifBlank { "UNKNOWN" }} " +
             "needSignUp=${task.optBoolean("needSignUp", false)} pointAmount=${task.optInt("pointAmount", 0)}"
     }
 
@@ -6294,6 +6851,7 @@ class AntMember : ModelTask() {
 
             // 用于存储 ID -> Name 的映射
             val stickerNameMap = mutableMapOf<String, String>()
+            val stickerConfigIdMap = mutableMapOf<String, String>()
             val allStickerIds = mutableListOf<String>()
 
             for (i in 0 until canReceivePageList.length()) {
@@ -6306,6 +6864,7 @@ class AntMember : ModelTask() {
                     if (id.isNotEmpty()) {
                         allStickerIds.add(id)
                         stickerNameMap[id] = name.ifEmpty { "未知贴纸" }
+                        stickerConfigIdMap[id] = stickerObj.optString("stickerConfigId")
                     }
                 }
             }
@@ -6314,7 +6873,12 @@ class AntMember : ModelTask() {
                 Log.member("贴纸扫描：暂无可领取的贴纸")
             } else {
                 // 2. 领取阶段
-                val collectResp = AntMemberRpcCall.receiveSticker(year, month, allStickerIds)
+                val collectResp = AntMemberRpcCall.receiveSticker(
+                    year,
+                    month,
+                    allStickerIds,
+                    allStickerIds.mapNotNull { stickerConfigIdMap[it]?.takeIf { configId -> configId.isNotBlank() } }
+                )
 
                 val collectJson = JSONObject(collectResp)
                 if (!ResChecker.checkRes(TAG, collectJson)) {
@@ -6629,7 +7193,7 @@ class AntMember : ModelTask() {
 
     companion object {
         private val TAG: String = AntMember::class.java.getSimpleName()
-        private const val memberTaskBlacklistModule = "支付宝会员"
+        private const val memberTaskBlacklistModule = "会员"
         private const val insuredTaskBlacklistModule = "蚂蚁保"
         private const val memberFloatingBallAdTaskTitle = "会员浮球广告浏览任务"
         private const val MERCHANT_EXAM_TASK_CODE = "JYMWDDJF_TASK"
@@ -7065,7 +7629,7 @@ class AntMember : ModelTask() {
             override fun isBlacklisted(item: TaskFlowItem): Boolean {
                 val blacklisted = super<TaskFlowAdapter>.isBlacklisted(item)
                 if (blacklisted) {
-                    logSkipOnce(item, "黑名单任务，跳过")
+                    logSkipOnce(item, "任务在自动跳过列表(黑名单)中，跳过")
                 }
                 return blacklisted
             }
@@ -7756,7 +8320,7 @@ class AntMember : ModelTask() {
             if (TaskBlacklist.isTaskInBlacklist(memberTaskBlacklistModule, title) ||
                 TaskBlacklist.isTaskInBlacklist(memberTaskBlacklistModule, taskCode)
             ) {
-                Log.member("商家服务🏬[$title]#黑名单任务，停止执行")
+                Log.member("商家服务🏬[$title]#任务在自动跳过列表(黑名单)中，停止执行")
                 return@run false
             }
 

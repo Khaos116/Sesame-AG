@@ -29,6 +29,7 @@ import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.MyUtils
 import io.github.aoguai.sesameag.util.RandomUtil
 import io.github.aoguai.sesameag.util.ResChecker
+import io.github.aoguai.sesameag.util.RpcOfflineRisk
 import io.github.aoguai.sesameag.util.TaskBlacklist
 import io.github.aoguai.sesameag.util.maps.UserMap
 import org.json.JSONArray
@@ -45,6 +46,9 @@ class AntOrchard : ModelTask() {
         private const val LEYUAN_DAILY_TASK_SCENE_CODE = "ANTORCHARD_LEYUAN_DAILY_TASK"
         private const val TAOBAO_VISIT_SCENE_CODE = "972"
         private const val TAOBAO_VISIT_TASK_GROUP_ID = "12172"
+        private const val TAOBAO_LIMIT_BALLOON_TASK_ID = "TAOBAO_LIMIT_BALLOON"
+        private const val TAOBAO_LIMIT_BALLOON_TITLE = "农场限时福利"
+        private const val ORCHARD_JUMP_TYPE_NEED_CHECK = "NEED_CHECK"
         private val LEYUAN_AWARD_TASK_TYPES = setOf("DAILY_LEYUAN_QIANDAO", "DAILY_GAME_ZADAN*20")
         private val SUPPORTED_TAOBAO_LIMIT_BALLOON_IDS = setOf("TAOBAO_LIMIT", "TAOBAO")
         private val SUPPORTED_TAOBAO_VISIT_SOURCES = setOf("task_visit", "visittask")
@@ -78,7 +82,6 @@ class AntOrchard : ModelTask() {
     private lateinit var executeInterval: IntegerModelField
     internal lateinit var receiveSevenDayGift: BooleanModelField
     internal lateinit var receiveOrchardTaskAward: BooleanModelField
-    // {{ 修改：分离果树和摇钱树的施肥次数配置 }}
     internal lateinit var orchardSpreadManureCountMain: IntegerModelField
     internal lateinit var orchardSpreadManureCountYeb: IntegerModelField
 
@@ -122,7 +125,6 @@ class AntOrchard : ModelTask() {
                 "自动领取芭芭农场任务奖励，包括肥料等常规收益。"
             ).also { receiveOrchardTaskAward = it }
         )
-        // {{ 修改：添加果树和摇钱树的独立设置项 }}
         modelFields.addField(
             IntegerModelField("orchardSpreadManureCount", "果树 | 每日施肥次数", 0, -1, null).withDesc(
                 "每日给果树施肥的次数；施肥可推进成熟并产出庄园食材。-1 表示施肥到当日上限。"
@@ -190,7 +192,6 @@ class AntOrchard : ModelTask() {
     internal fun orchardSpreadManure() {
         try {
             val modeSet = plantModeField.value
-            // {{ 修改：分别获取两个配置的上限值 }}
             val targetLimitMain = orchardSpreadManureCountMain.value ?: 0
             val targetLimitYeb = orchardSpreadManureCountYeb.value ?: 0
 
@@ -262,7 +263,6 @@ class AntOrchard : ModelTask() {
                     ?: Int.MAX_VALUE
                 val batchSpreadInfo = orchardIndexData.optJSONObject("batchSpreadInfo")
 
-                // {{ 修改：适配不同场景的肥料数据结构 }}
                 val taobaoData = JSONObject(taobaoDataStr)
                 val accountInfo = if (isMain) {
                     taobaoData.optJSONObject("gameInfo")?.optJSONObject("accountInfo")
@@ -327,8 +327,7 @@ class AntOrchard : ModelTask() {
                 val spreadJson = JSONObject(spreadResponse)
                 val resultCode = spreadJson.optString("resultCode")
 
-                // 摇钱树特有逻辑：达到上限停止
-                // {{ 修改：增加 P13 状态码判定 (摇钱树施肥已达当日上限) }}
+                // 摇钱树明确返回当日上限时直接停止，避免继续重复施肥。
                 if ((resultCode == "P14" || resultCode == "P13") && !isMain) {
                     Log.orchard("$sceneName 已达持仓金额上限/次数上限，停止施肥")
                     return
@@ -350,10 +349,8 @@ class AntOrchard : ModelTask() {
                 if (spreadTaobaoDataStr.isNotEmpty()) {
                     val spreadTaobaoData = JSONObject(spreadTaobaoDataStr)
 
-                    // 尝试从服务端获取今日次数，如果不准确(或服务端没返回)则手动累加
                     var dailyCount = 0
 
-                    // {{ 修改：针对不同场景解析统计数据 }}
                     if (isMain && spreadTaobaoData.has("statistics")) {
                         dailyCount = spreadTaobaoData.getJSONObject("statistics").optInt("dailyAppWateringCount")
                     } else if (!isMain) {
@@ -369,7 +366,6 @@ class AntOrchard : ModelTask() {
 
                     Status.setIntFlagToday(statusKey, totalWatered)
 
-                    // {{ 修改：提取进度文本，统一日志格式 }}
                     var stageText = ""
                     if (isMain) {
                         stageText = spreadTaobaoData.optJSONObject("currentStage")?.optString("stageText") ?: ""
@@ -1213,26 +1209,44 @@ class AntOrchard : ModelTask() {
     private fun classifyOrchardTaskFailure(response: JSONObject): TaskRpcFailureType {
         val errorCode = extractOrchardRpcErrorCode(response)
         val message = extractOrchardRpcMessage(response)
+        val riskSignals = buildOrchardRiskSignalText(response)
 
         return when {
             containsAny(message, "已领取", "已经领取", "重复领取", "重复领奖", "重复完成", "已完成", "任务已完结", "任务已结束") ->
                 TaskRpcFailureType.TERMINAL_DONE
 
+            RpcOfflineRisk.isAdTrafficRisk(response) ->
+                TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE
+
             errorCode in ORCHARD_BUSINESS_LIMIT_CODES ||
                 errorCode.contains("LIMIT", ignoreCase = true) ||
-                containsAny(message, "上限", "限制", "受限", "不可领取", "次数超过限制", "风控", "风险") ->
+                containsAny(
+                    riskSignals,
+                    "上限",
+                    "限制",
+                    "受限",
+                    "不可领取",
+                    "次数超过限制",
+                    "风控",
+                    "风险",
+                    ORCHARD_JUMP_TYPE_NEED_CHECK,
+                    "captcha",
+                    "verify",
+                    "访问异常",
+                    "验证码"
+                ) ->
                 TaskRpcFailureType.BUSINESS_LIMIT
 
             errorCode in ORCHARD_UNSUPPORTED_RPC_CODES ||
-                containsAny(message, "不支持rpc调用", "不支持RPC完成") ->
+                containsAny(riskSignals, "不支持rpc调用", "不支持RPC完成", "未确认终态", "无稳定闭环", "FAKE_SUCCESS") ->
                 TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE
 
             errorCode in ORCHARD_NON_RETRYABLE_INVALID_CODES ||
-                containsAny(message, "参数错误", "任务ID非法", "任务全局配置不存在") ->
+                containsAny(riskSignals, "参数错误", "任务ID非法", "任务全局配置不存在") ->
                 TaskRpcFailureType.NON_RETRYABLE_INVALID
 
             errorCode in ORCHARD_RETRYABLE_RPC_CODES ||
-                containsAny(message, "稍后", "繁忙", "系统出错", "系统繁忙", "频繁", "重试") ||
+                containsAny(riskSignals, "稍后", "繁忙", "系统出错", "系统繁忙", "频繁", "重试") ||
                 isMarkedRetryable(response) ->
                 TaskRpcFailureType.RETRYABLE_RPC
 
@@ -1354,7 +1368,7 @@ class AntOrchard : ModelTask() {
         }
         return TaskFlowActionResult.failure(
             failureType = failureType,
-            code = extractOrchardRpcErrorCode(response),
+            code = extractOrchardFailureCode(response),
             message = extractOrchardRpcMessage(response),
             rpc = rpc,
             raw = response.toString(),
@@ -1381,11 +1395,37 @@ class AntOrchard : ModelTask() {
         )
     }
 
+    private fun buildOrchardXLightGateFailure(item: TaskFlowItem, response: JSONObject): TaskFlowActionResult? {
+        if (!RpcOfflineRisk.isAdTrafficRisk(response)) {
+            return null
+        }
+        return buildOrchardTaskFailureResult(
+            response = response,
+            taskId = item.id,
+            title = item.title,
+            action = "xlightPlugin",
+            rpc = "XLightRpcCall.xlightPlugin",
+            item = item
+        )
+    }
+
+    private fun extractOrchardFailureCode(response: JSONObject): String {
+        val code = extractOrchardRpcErrorCode(response)
+        return if (code.isBlank() && RpcOfflineRisk.isAdTrafficRisk(response)) {
+            "AD_TRAFFIC_RISK"
+        } else {
+            code
+        }
+    }
+
     private fun extractOrchardRpcErrorCode(response: JSONObject): String {
         return response.optString("resultCode")
             .ifBlank { response.optString("errorCode") }
             .ifBlank { response.optString("code") }
             .ifBlank { response.optString("resultStatus") }
+            .ifBlank { response.optString("retCode") }
+            .ifBlank { response.optString("sspErrorCode") }
+            .ifBlank { response.optString("errCode") }
     }
 
     private fun extractOrchardRpcMessage(response: JSONObject): String {
@@ -1393,9 +1433,26 @@ class AntOrchard : ModelTask() {
             .ifBlank { response.optString("desc") }
             .ifBlank { response.optString("resultDesc") }
             .ifBlank { response.optString("errorMsg") }
+            .ifBlank { response.optString("sspErrorMsg") }
             .ifBlank { response.optString("resultMsg") }
             .ifBlank { response.optString("errorMessage") }
             .ifBlank { response.toString() }
+    }
+
+    private fun buildOrchardRiskSignalText(response: JSONObject): String {
+        return buildString {
+            append(extractOrchardRpcErrorCode(response))
+            append(' ')
+            append(extractOrchardRpcMessage(response))
+            append(' ')
+            append(response.optString("retCode"))
+            append(' ')
+            append(response.optString("sspErrorCode"))
+            append(' ')
+            append(response.optString("sspErrorMsg"))
+            append(' ')
+            append(response.toString())
+        }
     }
 
     private fun isMarkedRetryable(response: JSONObject): Boolean {
@@ -1406,6 +1463,21 @@ class AntOrchard : ModelTask() {
 
     private fun containsAny(text: String, vararg keywords: String): Boolean {
         return keywords.any { keyword -> text.contains(keyword, ignoreCase = true) }
+    }
+
+    private fun isOrchardTaskBlacklisted(taskId: String, title: String = ""): Boolean {
+        if (TaskBlacklist.isTaskInBlacklist(ORCHARD_TASK_BLACKLIST_MODULE, taskId)) {
+            return true
+        }
+        if (title.isNotBlank() && TaskBlacklist.isTaskInBlacklist(ORCHARD_TASK_BLACKLIST_MODULE, title)) {
+            return true
+        }
+        return title.isNotBlank() &&
+            TaskBlacklist.isTaskInBlacklist(ORCHARD_TASK_BLACKLIST_MODULE, "$taskId|$title")
+    }
+
+    private fun addOrchardTaskToBlacklist(taskId: String, title: String) {
+        TaskBlacklist.addToBlacklist(ORCHARD_TASK_BLACKLIST_MODULE, taskId, title)
     }
 
     private fun isTaobaoVisitTask(task: JSONObject): Boolean {
@@ -1568,6 +1640,14 @@ class AntOrchard : ModelTask() {
             }
 
             val responseJson = JSONObject(response)
+            val xlightGateFailure = buildOrchardXLightGateFailure(item, responseJson)
+            if (xlightGateFailure != null) {
+                Log.orchard(
+                    "农场浏览任务⏭️[$title] 第${round}轮第${pageNo}页命中广告风控信号: " +
+                        xlightGateFailure.message.ifBlank { xlightGateFailure.code }
+                )
+                return OrchardBrowseRoundResult(finishedCount, xlightGateFailure)
+            }
             val playingResult = responseJson.optJSONObject("resData")?.optJSONObject("playingResult")
                 ?: responseJson.optJSONObject("playingResult")
             if (playingResult == null) {
@@ -2017,6 +2097,10 @@ class AntOrchard : ModelTask() {
 
     internal fun syncTaobaoLimitBalloon() {
         try {
+            if (isOrchardTaskBlacklisted(TAOBAO_LIMIT_BALLOON_TASK_ID, TAOBAO_LIMIT_BALLOON_TITLE)) {
+                Log.orchard("$TAOBAO_LIMIT_BALLOON_TITLE 已在黑名单中，跳过自动推进")
+                return
+            }
             val lazyIndexResp = JSONObject(
                 AntOrchardRpcCall.orchardLazyIndex(currentPlantScene.ifBlank { "main" }, ORCHARD_SOURCE)
             )
@@ -2033,6 +2117,7 @@ class AntOrchard : ModelTask() {
                 .takeIf { it.isNotBlank() }
                 ?.let { JSONObject(it) }
             val balloonScene = extendJson?.optString("balloonScene").orEmpty()
+            val jumpType = extendJson?.optString("jumpType").orEmpty()
             val taobaoExchangeChestInfo = extendJson?.optJSONObject("taobaoExchangeChestInfo")
             val actionType = taobaoExchangeChestInfo?.optString("actionType").orEmpty()
 
@@ -2043,8 +2128,23 @@ class AntOrchard : ModelTask() {
                 return
             }
             if (status != "INIT" && status != "TODO") return
+            if (jumpType == ORCHARD_JUMP_TYPE_NEED_CHECK) {
+                Log.orchard(
+                    "农场限时福利🎈 classification=BUSINESS_LIMIT decision=STOP_TODAY_OR_CURRENT_CHAIN " +
+                        "taskId=$TAOBAO_LIMIT_BALLOON_TASK_ID activityId=$activityId balloonScene=$balloonScene " +
+                        "jumpType=$jumpType action=$actionType reason=命中人工校验信号，当前无稳定自动闭环"
+                )
+                addOrchardTaskToBlacklist(TAOBAO_LIMIT_BALLOON_TASK_ID, TAOBAO_LIMIT_BALLOON_TITLE)
+                return
+            }
             if (actionType == "SYSTEM_SWITCH") {
-                Log.orchard("农场限时福利🎈识别 action=$actionType，按已抓到的 RPC 继续触发 START 并同步 QUERY_BALLOON_COOPER")
+                Log.orchard(
+                    "农场限时福利🎈 classification=UNSUPPORTED_NO_CLOSURE decision=BLACKLIST " +
+                        "taskId=$TAOBAO_LIMIT_BALLOON_TASK_ID activityId=$activityId balloonScene=$balloonScene " +
+                        "action=$actionType reason=最新抓包仅确认START与QUERY，未发现稳定自动闭环"
+                )
+                addOrchardTaskToBlacklist(TAOBAO_LIMIT_BALLOON_TASK_ID, TAOBAO_LIMIT_BALLOON_TITLE)
+                return
             }
 
             val startResp = JSONObject(
@@ -2184,6 +2284,9 @@ class AntOrchard : ModelTask() {
                     }
                     "VISIT" -> {
                         val displayCfg = child.optJSONObject("taskDisplayConfig") ?: continue
+                        val childTitle = displayCfg.optString("title")
+                            .ifBlank { child.optString("taskName") }
+                            .ifBlank { childTaskId }
                         val targetUrl = displayCfg.optString("targetUrl", "")
                         if (targetUrl.isEmpty()) continue
 
@@ -2192,23 +2295,24 @@ class AntOrchard : ModelTask() {
                         val finalSpaceCode = spaceCodeFeeds ?: UrlUtil.getParamValue(targetUrl, "spaceCodeFeeds") ?: ""
                         if (finalSpaceCode.isEmpty()) continue
 
-                        val pageFrom = "ch_url-https://render.alipay.com/p/yuyan/180020010001263018/game.html"
-                        val session = "u_41ba1_2f33e"
-                        val r = XLightRpcCall.xlightPlugin(finalUrl, pageFrom, session, finalSpaceCode)
-                        val jr = JSONObject(r)
+                        if (isOrchardTaskBlacklisted(childTaskId, childTitle) ||
+                            isOrchardTaskBlacklisted(groupId, childTitle)
+                        ) {
+                            Log.orchard("农场限时福利⏭️[$childTitle]#任务在自动跳过列表(黑名单)中，跳过")
+                            continue
+                        }
 
-                        val playingResult = jr.optJSONObject("resData")?.optJSONObject("playingResult") ?: jr.optJSONObject("playingResult")
-                        if (playingResult == null) continue
-
-                        val playingBizId = playingResult.optString("playingBizId", "")
-                        val eventRewardDetail = playingResult.optJSONObject("eventRewardDetail")
-                        val infoListArray = eventRewardDetail?.optJSONArray("eventRewardInfoList")
-                        if (infoListArray == null || infoListArray.length() == 0) continue
-
-                        val playEventInfo = infoListArray.getJSONObject(0)
-                        val finishResult = XLightRpcCall.finishTask(playingBizId, playEventInfo, sceneCode, groupId)
-                        if (ResChecker.checkRes(TAG, JSONObject(finishResult))) {
-                            Log.orchard("浏览广告任务完成")
+                        Log.error(
+                            TAG,
+                            "农场限时福利[$childTitle] classification=UNSUPPORTED_NO_CLOSURE " +
+                                "decision=BLACKLIST taskId=$childTaskId action=xlightPlugin " +
+                                "rpc=<none> code=UNSUPPORTED_XLIGHT_LIMITED_CHALLENGE " +
+                                "msg=限时福利浏览广告任务缺少稳定自动闭环，跳过硬编码session链路 " +
+                                "sceneCode=$sceneCode groupId=$groupId spaceCode=$finalSpaceCode"
+                        )
+                        addOrchardTaskToBlacklist(childTaskId, childTitle)
+                        if (groupId.isNotBlank()) {
+                            addOrchardTaskToBlacklist(groupId, childTitle)
                         }
                     }
                 }
