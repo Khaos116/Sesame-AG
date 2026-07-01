@@ -168,9 +168,6 @@ object ModelFieldTodayStateResolver {
             "AntMember.enableGoldTicketConsume" ->
                 flag(StatusFlags.FLAG_ANTMEMBER_GOLD_TICKET_CONSUME_DONE, "今日黄金票提取已处理")
 
-            "AntMember.CollectStickers" ->
-                flag(StatusFlags.FLAG_ANTMEMBER_STICKER, "今日贴纸已领取")
-
             "AntSports.sportsTasks" ->
                 allFlags(
                     StatusFlags.FLAG_ANTSPORTS_DAILY_TASKS_DONE,
@@ -389,9 +386,6 @@ object ModelFieldTodayStateResolver {
 
     private fun fishPondAutoFishState(modelFields: ModelFields): ModelFieldTodayState {
         return when {
-            Status.hasFlagToday(StatusFlags.FLAG_ANTFISHPOND_EXCHANGE_REACHED) ->
-                inactive("福气鱼池已达到兑换条件，等待补抓兑换 RPC")
-
             Status.hasFlagToday(StatusFlags.FLAG_ANTFISHPOND_RISK_TOKEN_MISSING) ->
                 inactive("缺少 fishpondAngle riskToken，今日已跳过自动钓鱼")
 

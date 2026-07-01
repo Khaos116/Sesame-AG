@@ -123,9 +123,6 @@ object StatusFlags {
     /** 今日会员任务因风控/离线止损，不再继续刷新 */
     const val FLAG_ANTMEMBER_MEMBER_TASK_RISK_STOP_TODAY: String = "AntMember::memberTaskRiskStopToday"
 
-    /** 今日贴纸领取任务 */
-    const val FLAG_ANTMEMBER_STICKER: String = "Flag_AntMember_Sticker"
-
     /** 会员积分权益兑换：今日已完成权益列表刷新/扫描 */
     const val FLAG_ANTMEMBER_MEMBER_BENEFIT_REFRESH_DONE: String = "memberBenefit::refresh"
 
@@ -291,9 +288,6 @@ object StatusFlags {
 
     /** 福气鱼池：今日稳定任务已无可执行项 */
     const val FLAG_ANTFISHPOND_TASKS_DONE = "AntFishPond::tasksDone"
-
-    /** 福气鱼池：已达到兑换条件 */
-    const val FLAG_ANTFISHPOND_EXCHANGE_REACHED = "AntFishPond::exchangeReached"
 
     /** 福气鱼池：缺少 fishpondAngle riskToken */
     const val FLAG_ANTFISHPOND_RISK_TOKEN_MISSING = "AntFishPond::riskTokenMissing"
