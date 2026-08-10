@@ -245,6 +245,16 @@ object Log {
     }
 
     @JvmStatic
+    fun youthPrivilege(msg: String) {
+        business(LogChannel.YOUTH_PRIVILEGE, msg)
+    }
+
+    @JvmStatic
+    fun mybank(msg: String) {
+        business(LogChannel.MYBANK, msg)
+    }
+
+    @JvmStatic
     fun fishpond(msg: String) {
         business(LogChannel.FISHPOND, msg)
     }

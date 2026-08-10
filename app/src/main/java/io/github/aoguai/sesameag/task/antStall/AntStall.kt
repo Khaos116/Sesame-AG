@@ -9,16 +9,19 @@ import io.github.aoguai.sesameag.hook.ApplicationHook
 import io.github.aoguai.sesameag.hook.keepalive.PersistentLaunchPolicy
 import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleDefaults
 import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleKind
+import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleRegistry
 import io.github.aoguai.sesameag.hook.keepalive.UnifiedScheduler
 import io.github.aoguai.sesameag.model.ModelFields
 import io.github.aoguai.sesameag.model.ModelGroup
-import io.github.aoguai.sesameag.model.withDesc
 import io.github.aoguai.sesameag.model.modelFieldExt.BooleanModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.ChoiceModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.FriendSelectionModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.IntegerModelField
+import io.github.aoguai.sesameag.model.withDesc
 import io.github.aoguai.sesameag.task.ModelTask
 import io.github.aoguai.sesameag.task.TaskStatus
+import io.github.aoguai.sesameag.task.antOrchard.UrlUtil
+import io.github.aoguai.sesameag.task.common.DeferredReason
 import io.github.aoguai.sesameag.task.common.TaskFlowAction
 import io.github.aoguai.sesameag.task.common.TaskFlowActionResult
 import io.github.aoguai.sesameag.task.common.TaskFlowAdapter
@@ -28,16 +31,17 @@ import io.github.aoguai.sesameag.task.common.TaskFlowItem
 import io.github.aoguai.sesameag.task.common.TaskFlowPhase
 import io.github.aoguai.sesameag.task.common.TaskFlowSnapshot
 import io.github.aoguai.sesameag.task.common.TaskRpcFailureType
-import io.github.aoguai.sesameag.task.antOrchard.UrlUtil
 import io.github.aoguai.sesameag.util.FriendGuard
 import io.github.aoguai.sesameag.util.GlobalThreadPools
 import io.github.aoguai.sesameag.util.JsonUtil
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.RandomUtil
-import io.github.aoguai.sesameag.util.RpcOfflineRisk
 import io.github.aoguai.sesameag.util.ResChecker
+import io.github.aoguai.sesameag.util.RpcOfflineRisk
+import io.github.aoguai.sesameag.util.TaskBlacklist
 import io.github.aoguai.sesameag.util.TimeCounter
 import io.github.aoguai.sesameag.util.TimeUtil
+import io.github.aoguai.sesameag.util.WakeLockManager
 import io.github.aoguai.sesameag.util.friend.FriendCapabilityRecorder
 import io.github.aoguai.sesameag.util.maps.UserMap
 import org.json.JSONArray
@@ -58,7 +62,7 @@ class AntStall : ModelTask() {
         DAILY_QA,
         INVITE_REGISTER,
         XLIGHT,
-        ELEME_TOKEN
+        ELEME_TOKEN,
     }
 
     /**
@@ -66,7 +70,10 @@ class AntStall : ModelTask() {
      * @property userId 用户ID
      * @property hot 热度值
      */
-    private data class Seat(val userId: String, val hot: Int)
+    private data class Seat(
+        val userId: String,
+        val hot: Int,
+    )
 
     private data class StallXlightTaskConfig(
         val pageUrl: String,
@@ -77,17 +84,17 @@ class AntStall : ModelTask() {
         val iepTaskType: String,
         val rounds: Int,
         val positionExtMap: JSONObject,
-        val usePagedSearchInfo: Boolean
+        val usePagedSearchInfo: Boolean,
     )
 
     private data class StallXlightTaskConfigResult(
         val config: StallXlightTaskConfig? = null,
-        val failure: TaskFlowActionResult? = null
+        val failure: TaskFlowActionResult? = null,
     )
 
     private data class StallXlightRoundResult(
         val finishedCount: Int,
-        val failure: TaskFlowActionResult? = null
+        val failure: TaskFlowActionResult? = null,
     )
 
     // 配置字段
@@ -118,8 +125,11 @@ class AntStall : ModelTask() {
     private lateinit var stallAssistFriend: BooleanModelField
     private lateinit var assistFriendList: FriendSelectionModelField
     private val handledTaskFinishes = LinkedHashSet<String>()
+    private val stateConfirmationTaskFinishes = LinkedHashSet<String>()
+    private val businessLimitedTaskFinishes = LinkedHashSet<String>()
     private val handledTaskAwards = LinkedHashSet<String>()
     private val loggedTaskMessages = LinkedHashSet<String>()
+    private var stallTasksDoneInvalidatedThisRun = false
 
     override fun getName(): String = "新村"
 
@@ -128,41 +138,45 @@ class AntStall : ModelTask() {
     override fun getIcon(): String = "AntStall.png"
 
     private fun persistentStallDedupeKey(childId: String): String {
-        val owner = AccountSessionCoordinator.currentUserId()?.takeIf { it.isNotBlank() }
-            ?: UserMap.currentUid?.takeIf { it.isNotBlank() }
-            ?: "default"
-        return "stall_child_${owner}::$childId"
+        val owner =
+            AccountSessionCoordinator.currentUserId()?.takeIf { it.isNotBlank() }
+                ?: UserMap.currentUid?.takeIf { it.isNotBlank() }
+                ?: "default"
+        return "stall_child_$owner::$childId"
     }
 
     internal fun registerPersistentChildTask(
         childId: String,
         group: String,
         triggerAtMs: Long,
-        extraPayload: JSONObject = JSONObject()
+        extraPayload: JSONObject = JSONObject(),
     ) {
         val context = ApplicationHook.appContext ?: return
         if (triggerAtMs <= System.currentTimeMillis()) return
         try {
-            val ownerUserId = AccountSessionCoordinator.currentUserId()?.takeIf { it.isNotBlank() }
-                ?: UserMap.currentUid?.takeIf { it.isNotBlank() }
-            val payload = JSONObject(extraPayload.toString())
-                .put("child_kind", PERSISTENT_CHILD_KIND)
-                .put("child_id", childId)
-                .put("group", group)
+            val ownerUserId =
+                AccountSessionCoordinator.currentUserId()?.takeIf { it.isNotBlank() }
+                    ?: UserMap.currentUid?.takeIf { it.isNotBlank() }
+            val payload =
+                JSONObject(extraPayload.toString())
+                    .put("child_kind", PERSISTENT_CHILD_KIND)
+                    .put("child_id", childId)
+                    .put("group", group)
             ownerUserId?.let { payload.put("owner_user_id", it) }
             payload.put("session_epoch", AccountSessionCoordinator.currentSessionEpoch())
 
-            val schedule = UnifiedScheduler.schedulePersistentTrigger(
-                context = context,
-                name = "新村子任务:$group",
-                kind = PersistentScheduleKind.MODULE_CHILD,
-                triggerAtMs = triggerAtMs,
-                dedupeKey = persistentStallDedupeKey(childId),
-                payloadJson = payload.toString(),
-                toleranceMs = PersistentScheduleDefaults.DEFAULT_TOLERANCE_MS,
-                ownerUserId = ownerUserId,
-                sessionEpoch = AccountSessionCoordinator.currentSessionEpoch()
-            )
+            val schedule =
+                UnifiedScheduler.schedulePersistentTrigger(
+                    context = context,
+                    name = "新村子任务:$group",
+                    kind = PersistentScheduleKind.MODULE_CHILD,
+                    triggerAtMs = triggerAtMs,
+                    dedupeKey = persistentStallDedupeKey(childId),
+                    payloadJson = payload.toString(),
+                    toleranceMs = PersistentScheduleDefaults.DEFAULT_TOLERANCE_MS,
+                    ownerUserId = ownerUserId,
+                    sessionEpoch = AccountSessionCoordinator.currentSessionEpoch(),
+                )
             if (PersistentLaunchPolicy.isFrontLaunchDisabled(schedule.lastError)) {
                 Log.stall("新村持久子任务[$group][$childId]已因禁止系统调度前台拉起目标应用降级为仅进程存活时等待，需手动打开目标应用后恢复")
             }
@@ -175,7 +189,13 @@ class AntStall : ModelTask() {
         UnifiedScheduler.cancelPersistentByDedupeKey(ApplicationHook.appContext, persistentStallDedupeKey(childId))
     }
 
-    internal fun triggerPersistentChildTask(childId: String, group: String, payloadJson: String, source: String): Boolean {
+    internal fun triggerPersistentChildTask(
+        childId: String,
+        group: String,
+        payloadJson: String,
+        source: String,
+        scheduleId: String,
+    ): Boolean {
         val payload = runCatching { JSONObject(payloadJson.ifBlank { "{}" }) }.getOrDefault(JSONObject())
         val ownerUserId = payload.optString("owner_user_id").trim()
         val payloadSessionEpoch = payload.optLong("session_epoch", 0L)
@@ -193,16 +213,40 @@ class AntStall : ModelTask() {
             return true
         }
         GlobalThreadPools.execute {
-            runPersistentChildTask(childId, group, payload, source, currentOwnerUserId.orEmpty(), payloadSessionEpoch)
+            PersistentScheduleRegistry.markRunning(scheduleId)
+            val executionLease =
+                ApplicationHook.appContext?.let { context ->
+                    WakeLockManager.acquire(
+                        context = context,
+                        timeoutMs = PersistentScheduleDefaults.TASK_EXECUTION_WAKELOCK_MS,
+                        source = "stall_persistent_child",
+                        scheduleId = scheduleId,
+                    )
+                }
+            try {
+                runPersistentChildTask(childId, group, payload, source, currentOwnerUserId.orEmpty(), payloadSessionEpoch)
+                PersistentScheduleRegistry.markFired(ApplicationHook.appContext, scheduleId)
+            } catch (t: Throwable) {
+                Log.printStackTrace(TAG, "新村持久子任务执行失败[$group][$childId]", t)
+                PersistentScheduleRegistry.markFailed(
+                    ApplicationHook.appContext,
+                    scheduleId,
+                    t.message ?: t.javaClass.name,
+                )
+            } finally {
+                executionLease?.close()
+            }
         }
         return true
     }
 
-    private fun isPersistentChildSessionCurrent(ownerUserId: String, sessionEpoch: Long): Boolean {
-        return ownerUserId.isNotBlank() &&
+    private fun isPersistentChildSessionCurrent(
+        ownerUserId: String,
+        sessionEpoch: Long,
+    ): Boolean =
+        ownerUserId.isNotBlank() &&
             sessionEpoch > 0L &&
             AccountSessionCoordinator.isCurrentSession(ownerUserId, sessionEpoch)
-    }
 
     private fun runPersistentChildTask(
         childId: String,
@@ -210,202 +254,227 @@ class AntStall : ModelTask() {
         payload: JSONObject,
         source: String,
         ownerUserId: String,
-        sessionEpoch: Long
+        sessionEpoch: Long,
     ) {
-        try {
-            if (!isPersistentChildSessionCurrent(ownerUserId, sessionEpoch)) {
-                Log.stall("新村持久子任务[$group][$childId]会话已切换，取消执行: owner=$ownerUserId session=$sessionEpoch")
-                return
-            }
-            Log.stall("新村持久子任务触发[$group][$childId] source=$source")
-            cancelPersistentChildTask(childId)
-            when (group) {
-                "SB" -> runSendBackPersistentTask(childId, payload)
-                "SH" -> runCloseShopPersistentTask(childId, payload)
-                else -> Log.stall("未知新村持久子任务[$group][$childId]，跳过")
-            }
-        } catch (t: Throwable) {
-            Log.printStackTrace(TAG, "新村持久子任务执行失败[$group][$childId]", t)
+        if (!isPersistentChildSessionCurrent(ownerUserId, sessionEpoch)) {
+            Log.stall("新村持久子任务[$group][$childId]会话已切换，取消执行: owner=$ownerUserId session=$sessionEpoch")
+            return
+        }
+        Log.stall("新村持久子任务触发[$group][$childId] source=$source")
+        when (group) {
+            "SB" -> runSendBackPersistentTask(childId, payload)
+            "SH" -> runCloseShopPersistentTask(childId, payload)
+            else -> Log.stall("未知新村持久子任务[$group][$childId]，跳过")
         }
     }
 
-    override fun getFields(): ModelFields {
-        return ModelFields().apply {
-            addField(BooleanModelField("stallAutoOpen", "摆摊 | 开启", false).withDesc(
-                "自动把空闲小摊派到好友村庄摆摊；关闭后不会执行摆摊流程。"
-            ).also { stallAutoOpen = it })
+    override fun getFields(): ModelFields =
+        ModelFields().apply {
+            addField(
+                BooleanModelField("stallAutoOpen", "摆摊 | 开启", false)
+                    .withDesc(
+                        "自动把空闲小摊派到好友村庄摆摊；关闭后不会执行摆摊流程。",
+                    ).also { stallAutoOpen = it },
+            )
             addField(
                 ChoiceModelField(
                     "stallOpenType",
                     "摆摊 | 动作",
                     StallOpenType.OPEN,
-                    StallOpenType.nickNames
+                    StallOpenType.nickNames,
                 ).withDesc("决定“摆摊 | 好友列表”是作为允许名单还是排除名单。需开启“摆摊 | 开启”。")
-                    .also { stallOpenType = it })
+                    .also { stallOpenType = it },
+            )
             addField(
                 FriendSelectionModelField(
                     "stallOpenList",
-                    "摆摊 | 好友列表"
+                    "摆摊 | 好友列表",
                 ).withDesc("配置摆摊规则作用的好友村庄名单。需开启“摆摊 | 开启”。")
-                    .also { stallOpenList = it })
+                    .also { stallOpenList = it },
+            )
             addField(
                 BooleanModelField(
                     "stallAutoClose",
                     "收摊 | 开启",
-                    false
+                    false,
                 ).withDesc("按设定摆摊时长自动收回自己的小摊，并可衔接再次摆摊。")
-                    .also { stallAutoClose = it })
+                    .also { stallAutoClose = it },
+            )
             addField(
                 IntegerModelField(
                     "stallSelfOpenTime",
                     "收摊 | 摆摊时长(分钟)",
                     120,
                     0,
-                    null
+                    null,
                 ).withDesc("单个摊位摆出多久后自动收摊；需开启“收摊 | 开启”。")
-                    .also { stallSelfOpenTime = it })
+                    .also { stallSelfOpenTime = it },
+            )
             addField(
                 BooleanModelField(
                     "stallAutoTicket",
                     "贴罚单 | 开启",
-                    false
+                    false,
                 ).withDesc("自动巡逻并给符合条件的好友小摊贴罚单。")
-                    .also { stallAutoTicket = it })
+                    .also { stallAutoTicket = it },
+            )
             addField(
                 ChoiceModelField(
                     "stallTicketType",
                     "贴罚单 | 动作",
                     StallTicketType.DONT_TICKET,
-                    StallTicketType.nickNames
+                    StallTicketType.nickNames,
                 ).withDesc("决定“贴罚单 | 好友列表”是贴还是跳过。需开启“贴罚单 | 开启”。")
-                    .also { stallTicketType = it })
+                    .also { stallTicketType = it },
+            )
             addField(
                 FriendSelectionModelField(
                     "stallTicketList",
-                    "贴罚单 | 好友列表"
+                    "贴罚单 | 好友列表",
                 ).withDesc("配置贴罚单规则作用的好友名单。需开启“贴罚单 | 开启”。")
-                    .also { stallTicketList = it })
+                    .also { stallTicketList = it },
+            )
             addField(
                 BooleanModelField(
                     "stallThrowManure",
                     "丢肥料 | 开启",
-                    false
+                    false,
                 ).withDesc("按名单规则自动给动态中的好友丢肥料。")
-                    .also { stallThrowManure = it })
+                    .also { stallThrowManure = it },
+            )
             addField(
                 ChoiceModelField(
                     "stallThrowManureType",
                     "丢肥料 | 动作",
                     StallThrowManureType.DONT_THROW,
-                    StallThrowManureType.nickNames
+                    StallThrowManureType.nickNames,
                 ).withDesc("决定“丢肥料 | 好友列表”是丢还是跳过。需开启“丢肥料 | 开启”。")
-                    .also { stallThrowManureType = it })
+                    .also { stallThrowManureType = it },
+            )
             addField(
                 FriendSelectionModelField(
                     "stallThrowManureList",
-                    "丢肥料 | 好友列表"
+                    "丢肥料 | 好友列表",
                 ).withDesc("配置丢肥料规则作用的好友名单。需开启“丢肥料 | 开启”。")
-                    .also { stallThrowManureList = it })
+                    .also { stallThrowManureList = it },
+            )
             addField(
                 BooleanModelField(
                     "stallInviteShop",
                     "邀请摆摊 | 开启",
-                    false
+                    false,
                 ).withDesc("自家有空位或请走别人后，自动邀请好友来你家摆摊。")
-                    .also { stallInviteShop = it })
+                    .also { stallInviteShop = it },
+            )
             addField(
                 ChoiceModelField(
                     "stallInviteShopType",
                     "邀请摆摊 | 动作",
                     StallInviteShopType.INVITE,
-                    StallInviteShopType.nickNames
+                    StallInviteShopType.nickNames,
                 ).withDesc("决定“邀请摆摊 | 好友列表”是邀请还是排除。需开启“邀请摆摊 | 开启”。")
-                    .also { stallInviteShopType = it })
+                    .also { stallInviteShopType = it },
+            )
             addField(
                 FriendSelectionModelField(
                     "stallInviteShopList",
-                    "邀请摆摊 | 好友列表"
+                    "邀请摆摊 | 好友列表",
                 ).withDesc("配置允许自动邀请来摆摊的好友名单。需开启“邀请摆摊 | 开启”。")
-                    .also { stallInviteShopList = it })
+                    .also { stallInviteShopList = it },
+            )
             addField(
                 BooleanModelField(
                     "stallAllowOpenReject",
                     "请走小摊 | 开启",
-                    false
+                    false,
                 ).withDesc("按时长、黑白名单规则自动请走占位小摊。")
-                    .also { stallAllowOpenReject = it })
+                    .also { stallAllowOpenReject = it },
+            )
             addField(
                 IntegerModelField(
                     "stallAllowOpenTime",
                     "请走小摊 | 允许摆摊时长(分钟)",
                     121,
                     0,
-                    null
+                    null,
                 ).withDesc("好友在你家摆摊超过该时长后会被自动请走；白名单除外。需开启“请走小摊 | 开启”。")
-                    .also { stallAllowOpenTime = it })
+                    .also { stallAllowOpenTime = it },
+            )
             addField(
                 FriendSelectionModelField(
                     "stallWhiteList",
-                    "请走小摊 | 白名单(超时也不赶)"
+                    "请走小摊 | 白名单(超时也不赶)",
                 ).withDesc("这些好友即使超时也不会被请走。需开启“请走小摊 | 开启”。")
-                    .also { stallWhiteList = it })
+                    .also { stallWhiteList = it },
+            )
             addField(
                 FriendSelectionModelField(
                     "stallBlackList",
-                    "请走小摊 | 黑名单(不超时也赶)"
+                    "请走小摊 | 黑名单(不超时也赶)",
                 ).withDesc("这些好友即使未超时也会被立即请走。需开启“请走小摊 | 开启”。")
-                    .also { stallBlackList = it })
-            addField(BooleanModelField("stallAutoTask", "新村任务 | 开启", false).withDesc(
-                "执行新村签到、可自动完成的每日任务及部分特殊任务。"
-            ).also { stallAutoTask = it })
+                    .also { stallBlackList = it },
+            )
+            addField(
+                BooleanModelField("stallAutoTask", "新村任务 | 开启", false)
+                    .withDesc(
+                        "执行新村签到、可自动完成的每日任务及部分特殊任务。",
+                    ).also { stallAutoTask = it },
+            )
             addField(
                 BooleanModelField(
                     "stallReceiveAward",
                     "新村任务 | 领奖",
-                    false
+                    false,
                 ).withDesc("自动领取已完成新村任务的奖励。建议配合“新村任务 | 开启”一起开启。")
-                    .also { stallReceiveAward = it })
-            addField(
-                BooleanModelField("stallDonate", "公益捐赠 | 开启", false).withDesc(
-                    "金币满足条件时自动向新村公益项目捐赠。"
-                ).also { stallDonate = it }
+                    .also { stallReceiveAward = it },
             )
             addField(
-                BooleanModelField("roadmap", "新村进度 | 进入下一村", false).withDesc(
-                    "发现可解锁的新村时自动进入打卡，每个村每天只处理一次。"
-                ).also { roadmap = it }
+                BooleanModelField("stallDonate", "公益捐赠 | 开启", false)
+                    .withDesc(
+                        "金币满足条件时自动向新村公益项目捐赠。",
+                    ).also { stallDonate = it },
+            )
+            addField(
+                BooleanModelField("roadmap", "新村进度 | 进入下一村", false)
+                    .withDesc(
+                        "发现可解锁的新村时自动进入打卡，每个村每天只处理一次。",
+                    ).also { roadmap = it },
             )
             addField(
                 BooleanModelField(
                     "stallInviteRegister",
                     "新村任务 | 邀请好友开通",
-                    false
+                    false,
                 ).withDesc("在自动任务中尝试邀请指定好友开通蚂蚁新村。需开启“新村任务 | 开启”。")
-                    .also { stallInviteRegister = it })
+                    .also { stallInviteRegister = it },
+            )
             addField(
                 FriendSelectionModelField(
                     "stallInviteRegisterList",
-                    "新村任务 | 邀请好友列表"
+                    "新村任务 | 邀请好友列表",
                 ).withDesc("仅邀请列表中的好友开通新村。需开启“新村任务 | 邀请好友开通”。")
-                    .also { stallInviteRegisterList = it })
+                    .also { stallInviteRegisterList = it },
+            )
             addField(
-                BooleanModelField("stallAssistFriend", "好友助力 | 开启", false).withDesc(
-                    "按好友助力列表自动执行新村助力；关闭后不会发起助力。"
-                ).also { stallAssistFriend = it }
+                BooleanModelField("stallAssistFriend", "好友助力 | 开启", false)
+                    .withDesc(
+                        "按好友助力列表自动执行新村助力；关闭后不会发起助力。",
+                    ).also { stallAssistFriend = it },
             )
             addField(
                 FriendSelectionModelField(
                     "assistFriendList",
-                    "好友助力 | 好友列表"
+                    "好友助力 | 好友列表",
                 ).withDesc("配置允许自动新村助力的好友列表。需开启“好友助力 | 开启”。")
-                    .also { assistFriendList = it })
+                    .also { assistFriendList = it },
+            )
         }
-    }
 
     override fun runJava() {
         try {
             val tc = TimeCounter(TAG)
             Log.stall("执行开始-${getName()}")
+            stallTasksDoneInvalidatedThisRun = false
 
             val homeResponse = AntStallRpcCall.home()
             val homeJson = JSONObject(homeResponse)
@@ -463,31 +532,53 @@ class AntStall : ModelTask() {
             // 自动任务
             if (stallAutoTask.value == true) {
                 handledTaskFinishes.clear()
+                stateConfirmationTaskFinishes.clear()
+                businessLimitedTaskFinishes.clear()
                 handledTaskAwards.clear()
                 loggedTaskMessages.clear()
-                taskList()
-                tc.countDebug("自动任务第一次")
-                GlobalThreadPools.sleepCompat(500)
-                taskList()
-                tc.countDebug("自动任务第二次")
+                val taskHandledToday =
+                    Status.hasFlagToday(StatusFlags.FLAG_ANTSTALL_TASKS_DONE) &&
+                        !stallTasksDoneInvalidatedThisRun
+                if (!taskHandledToday) {
+                    val firstTaskRefreshMarkedDone = taskList(allowMarkDone = true)
+                    tc.countDebug("自动任务第一次")
+                    if (!firstTaskRefreshMarkedDone) {
+                        GlobalThreadPools.sleepCompat(500)
+                        taskList(allowMarkDone = true)
+                        tc.countDebug("自动任务第二次")
+                    }
+                }
             }
 
             // 新村助力
             if (stallAssistFriend.value == true) {
-                assistFriend()
+                if (assistFriend()) {
+                    markStallTasksDoneInvalidated()
+                }
                 tc.countDebug("新村助力")
             }
 
             // 自动捐赠
             if (stallDonate.value == true && Status.canStallDonateToday()) {
-                donate()
+                if (donate()) {
+                    markStallTasksDoneInvalidated()
+                }
                 tc.countDebug("自动捐赠")
             }
 
             // 进入下一村
             if (roadmap.value == true) {
-                roadmap()
+                if (roadmap()) {
+                    markStallTasksDoneInvalidated()
+                }
                 tc.countDebug("自动进入下一村")
+            }
+
+            if (stallAutoTask.value == true &&
+                (stallTasksDoneInvalidatedThisRun || !Status.hasFlagToday(StatusFlags.FLAG_ANTSTALL_TASKS_DONE))
+            ) {
+                taskList(skipIfHandledToday = false, allowMarkDone = true)
+                tc.countDebug("自动任务最终刷新")
             }
 
             // 贴罚单
@@ -495,7 +586,6 @@ class AntStall : ModelTask() {
                 pasteTicket()
                 tc.countDebug("贴罚单")
             }
-
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "home err:", t)
         } finally {
@@ -511,7 +601,7 @@ class AntStall : ModelTask() {
         seatId: String,
         shopId: String,
         shopUserId: String,
-        sentUserId: MutableSet<String>
+        sentUserId: MutableSet<String>,
     ) {
         try {
             val preResponse = AntStallRpcCall.shopSendBackPre(billNo, seatId, shopId, shopUserId)
@@ -538,7 +628,6 @@ class AntStall : ModelTask() {
             if (stallInviteShop.value == true) {
                 inviteOpen(seatId, sentUserId)
             }
-
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "sendBack err:", t)
         }
@@ -547,7 +636,10 @@ class AntStall : ModelTask() {
     /**
      * @brief 邀请开店
      */
-    private fun inviteOpen(seatId: String, sentUserId: MutableSet<String>) {
+    private fun inviteOpen(
+        seatId: String,
+        sentUserId: MutableSet<String>,
+    ) {
         try {
             val response = AntStallRpcCall.rankInviteOpen()
             val json = JSONObject(response)
@@ -587,9 +679,10 @@ class AntStall : ModelTask() {
                         sentUserId.add(friendUserId)
                         return
                     } else {
-                        Log.stall("邀请[${UserMap.getMaskName(friendUserId)}]开店失败: ${
+                        Log.stall(
+                            "邀请[${UserMap.getMaskName(friendUserId)}]开店失败: ${
                                 inviteJson.optString("errorMessage")
-                            }"
+                            }",
                         )
                     }
                 }
@@ -645,8 +738,7 @@ class AntStall : ModelTask() {
 
                 // 白名单跳过
                 if (stallWhiteList.containsConfigured(rentLastUser)) {
-                    Log.stall("好友[${UserMap.getMaskName(rentLastUser)}]在白名单中,跳过请走。"
-                    )
+                    Log.stall("好友[${UserMap.getMaskName(rentLastUser)}]在白名单中,跳过请走。")
                     continue
                 }
 
@@ -655,8 +747,7 @@ class AntStall : ModelTask() {
 
                 // 黑名单直接赶走
                 if (stallBlackList.containsConfigured(rentLastUser)) {
-                    Log.stall("好友[${UserMap.getMaskName(rentLastUser)}]在黑名单中,立即请走。"
-                    )
+                    Log.stall("好友[${UserMap.getMaskName(rentLastUser)}]在黑名单中,立即请走。")
                     sendBack(rentLastBill, seatId, rentLastShop, rentLastUser, sentUserId)
                     continue
                 }
@@ -672,20 +763,22 @@ class AntStall : ModelTask() {
                 } else {
                     val taskId = "SB|$seatId"
                     if (!hasChildTask(taskId)) {
-                        addChildTask(ChildModelTask(taskId, "SB", {
-                            cancelPersistentChildTask(taskId)
-                            if (stallAllowOpenReject.value == true) {
-                                if (!FriendGuard.shouldSkipFriend(rentLastUser, TAG, "请走小摊")) {
-                                    sendBack(
-                                        rentLastBill,
-                                        seatId,
-                                        rentLastShop,
-                                        rentLastUser,
-                                        sentUserId
-                                    )
+                        addChildTask(
+                            ChildModelTask(taskId, "SB", {
+                                cancelPersistentChildTask(taskId)
+                                if (stallAllowOpenReject.value == true) {
+                                    if (!FriendGuard.shouldSkipFriend(rentLastUser, TAG, "请走小摊")) {
+                                        sendBack(
+                                            rentLastBill,
+                                            seatId,
+                                            rentLastShop,
+                                            rentLastUser,
+                                            sentUserId,
+                                        )
+                                    }
                                 }
-                            }
-                        }, endTime))
+                            }, endTime),
+                        )
                         registerPersistentChildTask(
                             taskId,
                             "SB",
@@ -695,9 +788,9 @@ class AntStall : ModelTask() {
                                 .put("rent_last_bill", rentLastBill)
                                 .put("rent_last_shop", rentLastShop)
                                 .put("rent_last_user", rentLastUser)
-                                .put("biz_start_time", bizStartTime)
+                                .put("biz_start_time", bizStartTime),
                         )
-                        Log.stall("添加蹲点请走⛪在[${TimeUtil.getCommonDate(endTime)}]执行")
+                        Log.stall("新村请走已交给定时子任务⛪将在[${TimeUtil.getCommonDate(endTime)}]执行")
                     }
                 }
             }
@@ -706,14 +799,18 @@ class AntStall : ModelTask() {
         }
     }
 
-    private fun runSendBackPersistentTask(childId: String, payload: JSONObject) {
+    private fun runSendBackPersistentTask(
+        childId: String,
+        payload: JSONObject,
+    ) {
         if (stallAllowOpenReject.value != true) {
             Log.stall("新村持久请走[$childId]触发时功能已关闭，跳过")
             return
         }
-        val targetSeatId = payload.optString("seat_id").trim().ifBlank {
-            childId.substringAfter("SB|", "")
-        }
+        val targetSeatId =
+            payload.optString("seat_id").trim().ifBlank {
+                childId.substringAfter("SB|", "")
+            }
         val expectedUserId = payload.optString("rent_last_user").trim()
         if (targetSeatId.isBlank()) {
             Log.stall("新村持久请走[$childId]缺少 seat_id，跳过")
@@ -726,14 +823,16 @@ class AntStall : ModelTask() {
             Log.error(TAG, "persistent sendBack home err: $homeResponse")
             return
         }
-        val seatsMap = homeJson.optJSONObject("seatsMap") ?: run {
-            Log.stall("新村持久请走[$childId]未查询到摊位信息，跳过")
-            return
-        }
-        val seat = findSeatById(seatsMap, targetSeatId) ?: run {
-            Log.stall("新村持久请走[$childId]未找到摊位[$targetSeatId]，跳过")
-            return
-        }
+        val seatsMap =
+            homeJson.optJSONObject("seatsMap") ?: run {
+                Log.stall("新村持久请走[$childId]未查询到摊位信息，跳过")
+                return
+            }
+        val seat =
+            findSeatById(seatsMap, targetSeatId) ?: run {
+                Log.stall("新村持久请走[$childId]未找到摊位[$targetSeatId]，跳过")
+                return
+            }
         if (seat.optString("status") != "BUSY") {
             Log.stall("新村持久请走[$childId]摊位已非占用状态，跳过")
             return
@@ -760,7 +859,7 @@ class AntStall : ModelTask() {
                     .put("rent_last_bill", seat.optString("rentLastBill"))
                     .put("rent_last_shop", seat.optString("rentLastShop"))
                     .put("rent_last_user", currentUserId)
-                    .put("biz_start_time", bizStartTime)
+                    .put("biz_start_time", bizStartTime),
             )
             Log.stall("新村持久请走[$childId]尚未到点，重排到[${TimeUtil.getCommonDate(endTime)}]")
             return
@@ -771,11 +870,14 @@ class AntStall : ModelTask() {
             targetSeatId,
             seat.optString("rentLastShop"),
             currentUserId,
-            collectOccupiedStallUsers(seatsMap)
+            collectOccupiedStallUsers(seatsMap),
         )
     }
 
-    private fun findSeatById(seatsMap: JSONObject, seatId: String): JSONObject? {
+    private fun findSeatById(
+        seatsMap: JSONObject,
+        seatId: String,
+    ): JSONObject? {
         for (i in 1..2) {
             val seat = seatsMap.optJSONObject("GUEST_0$i") ?: continue
             if (seat.optString("seatId") == seatId) {
@@ -807,14 +909,21 @@ class AntStall : ModelTask() {
             val coinsMap = seat.getJSONObject("coinsMap")
             val master = coinsMap.getJSONObject("MASTER")
             val assetId = master.getString("assetId")
-            val settleCoinText = master.getJSONObject("money").opt("amount")?.toString()?.trim().orEmpty()
+            val settleCoinText =
+                master
+                    .getJSONObject("money")
+                    .opt("amount")
+                    ?.toString()
+                    ?.trim()
+                    .orEmpty()
             if (settleCoinText.isBlank()) {
                 return
             }
-            val settleCoin = runCatching { BigDecimal(settleCoinText) }.getOrElse {
-                Log.error(TAG, "settle err: invalid settleCoin=$settleCoinText")
-                return
-            }
+            val settleCoin =
+                runCatching { BigDecimal(settleCoinText) }.getOrElse {
+                    Log.error(TAG, "settle err: invalid settleCoin=$settleCoinText")
+                    return
+                }
             val fullShow = master.getBoolean("fullShow")
 
             if (fullShow || settleCoin > BigDecimal("100")) {
@@ -870,16 +979,18 @@ class AntStall : ModelTask() {
                 } else {
                     val taskId = "SH|$shopId"
                     if (!hasChildTask(taskId)) {
-                        addChildTask(ChildModelTask(taskId, "SH", {
-                            cancelPersistentChildTask(taskId)
-                            if (stallAutoClose.value == true) {
-                                shopClose(shopId, rentLastBill, rentLastUser)
-                            }
-                            GlobalThreadPools.sleepCompat(300L)
-                            if (stallAutoOpen.value == true) {
-                                openShop()
-                            }
-                        }, shopTime))
+                        addChildTask(
+                            ChildModelTask(taskId, "SH", {
+                                cancelPersistentChildTask(taskId)
+                                if (stallAutoClose.value == true) {
+                                    shopClose(shopId, rentLastBill, rentLastUser)
+                                }
+                                GlobalThreadPools.sleepCompat(300L)
+                                if (stallAutoOpen.value == true) {
+                                    openShop()
+                                }
+                            }, shopTime),
+                        )
                         registerPersistentChildTask(
                             taskId,
                             "SH",
@@ -888,9 +999,9 @@ class AntStall : ModelTask() {
                                 .put("shop_id", shopId)
                                 .put("rent_last_bill", rentLastBill)
                                 .put("rent_last_user", rentLastUser)
-                                .put("gmt_last_rent", gmtLastRent)
+                                .put("gmt_last_rent", gmtLastRent),
                         )
-                        Log.stall("添加蹲点收摊⛪在[${TimeUtil.getCommonDate(shopTime)}]执行")
+                        Log.stall("新村收摊已交给定时子任务⛪将在[${TimeUtil.getCommonDate(shopTime)}]执行")
                     }
                 }
             }
@@ -899,10 +1010,14 @@ class AntStall : ModelTask() {
         }
     }
 
-    private fun runCloseShopPersistentTask(childId: String, payload: JSONObject) {
-        val targetShopId = payload.optString("shop_id").trim().ifBlank {
-            childId.substringAfter("SH|", "")
-        }
+    private fun runCloseShopPersistentTask(
+        childId: String,
+        payload: JSONObject,
+    ) {
+        val targetShopId =
+            payload.optString("shop_id").trim().ifBlank {
+                childId.substringAfter("SH|", "")
+            }
         val expectedBillNo = payload.optString("rent_last_bill").trim()
         if (targetShopId.isBlank()) {
             Log.stall("新村持久收摊[$childId]缺少 shop_id，跳过")
@@ -935,7 +1050,7 @@ class AntStall : ModelTask() {
                                     .put("shop_id", targetShopId)
                                     .put("rent_last_bill", rentLastBill)
                                     .put("rent_last_user", shop.optString("rentLastUser"))
-                                    .put("gmt_last_rent", gmtLastRent)
+                                    .put("gmt_last_rent", gmtLastRent),
                             )
                             Log.stall("新村持久收摊[$childId]尚未到点，重排到[${TimeUtil.getCommonDate(shopTime)}]")
                             return
@@ -954,7 +1069,10 @@ class AntStall : ModelTask() {
         }
     }
 
-    private fun findOpenShopById(shopList: JSONArray?, shopId: String): JSONObject? {
+    private fun findOpenShopById(
+        shopList: JSONArray?,
+        shopId: String,
+    ): JSONObject? {
         if (shopList == null) return null
         for (i in 0 until shopList.length()) {
             val shop = shopList.optJSONObject(i) ?: continue
@@ -994,8 +1112,7 @@ class AntStall : ModelTask() {
             }
 
             Log.stall("找到 ${shopIds.size} 个空闲小摊,开始寻找好友村庄...")
-            rankCoinDonate(shopIds)
-
+            rankDonateCount(shopIds)
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "openShop err:", t)
         }
@@ -1004,46 +1121,62 @@ class AntStall : ModelTask() {
     /**
      * @brief 获取好友排行榜
      */
-    private fun rankCoinDonate(shopIds: Queue<String>) {
+    private fun rankDonateCount(shopIds: Queue<String>) {
         try {
-            val response = AntStallRpcCall.rankCoinDonate()
-            val json = JSONObject(response)
-
-            if (!ResChecker.checkRes(TAG, json)) {
-                Log.error(TAG, "rankCoinDonate err: $response")
-                return
-            }
-
-            val friendRankList = json.getJSONArray("friendRankList")
             val seats = mutableListOf<Seat>()
+            val seenStartNumbers = mutableSetOf<Int>()
+            var startNum = 0
 
-            for (i in 0 until friendRankList.length()) {
-                val friendRank = friendRankList.getJSONObject(i)
-                if (!friendRank.getBoolean("canOpenShop")) continue
-
-                val userId = friendRank.getString("userId")
-                var isStallOpen = stallOpenList.contains(userId)
-                if (stallOpenType.value == StallOpenType.CLOSE) {
-                    isStallOpen = !isStallOpen
+            while (seenStartNumbers.add(startNum)) {
+                val response = AntStallRpcCall.rankDonateCount(startNum)
+                val json = JSONObject(response)
+                if (!ResChecker.checkRes(TAG, json)) {
+                    Log.error(TAG, "rankDonateCount err: $response")
+                    return
                 }
 
-                if (isStallOpen) {
-                    val hot = friendRank.getInt("hot")
-                    seats.add(Seat(userId, hot))
+                val friendRankList = json.optJSONArray("friendRankList") ?: JSONArray()
+                for (i in 0 until friendRankList.length()) {
+                    val friendRank = friendRankList.optJSONObject(i) ?: continue
+                    if (!friendRank.optBoolean("canOpenShop")) continue
+
+                    val userId = friendRank.optString("userId").trim()
+                    if (userId.isBlank()) continue
+
+                    var isStallOpen = stallOpenList.contains(userId)
+                    if (stallOpenType.value == StallOpenType.CLOSE) {
+                        isStallOpen = !isStallOpen
+                    }
+                    if (isStallOpen) {
+                        seats.add(Seat(userId, friendRank.optInt("hot")))
+                    }
                 }
+
+                if (!json.optBoolean("hasNext")) {
+                    break
+                }
+                val nextStartNum = json.optInt("nextStartNum", -1)
+                if (nextStartNum <= startNum) {
+                    Log.error(TAG, "rankDonateCount pagination err: startNum=$startNum nextStartNum=$nextStartNum raw=$json")
+                    break
+                }
+                startNum = nextStartNum
             }
 
             friendHomeOpen(seats, shopIds)
-
         } catch (t: Throwable) {
-            Log.printStackTrace(TAG, "rankCoinDonate err:", t)
+            Log.printStackTrace(TAG, "rankDonateCount err:", t)
         }
     }
 
     /**
      * @brief 在好友村庄开店
      */
-    private fun openShop(seatId: String, userId: String, shopId: String) {
+    private fun openShop(
+        seatId: String,
+        userId: String,
+        shopId: String,
+    ) {
         try {
             val response = AntStallRpcCall.shopOpen(seatId, userId, shopId)
             val json = JSONObject(response)
@@ -1059,7 +1192,10 @@ class AntStall : ModelTask() {
     /**
      * @brief 访问好友主页并开店
      */
-    private fun friendHomeOpen(seats: List<Seat>, shopIds: Queue<String>) {
+    private fun friendHomeOpen(
+        seats: List<Seat>,
+        shopIds: Queue<String>,
+    ) {
         val sortedSeats = seats.sortedByDescending { it.hot }
         val currentUid = UserMap.currentUid
 
@@ -1085,32 +1221,37 @@ class AntStall : ModelTask() {
                     continue
                 }
 
-                val targetSeatId = when {
-                    guest1.getBoolean("canOpenShop") -> guest1.getString("seatId")
-                    guest2.getBoolean("canOpenShop") -> guest2.getString("seatId")
-                    else -> null
-                }
+                val targetSeatId =
+                    when {
+                        guest1.getBoolean("canOpenShop") -> guest1.getString("seatId")
+                        guest2.getBoolean("canOpenShop") -> guest2.getString("seatId")
+                        else -> null
+                    }
                 if (targetSeatId == null) {
                     continue
                 }
                 val shopId = shopIds.poll() ?: return
                 openShop(targetSeatId, userId, shopId)
-
             } catch (t: Throwable) {
                 Log.printStackTrace(TAG, t)
             }
         }
     }
 
-    private fun queryFriendHomeIfAvailable(userId: String, sceneName: String): JSONObject? {
+    private fun queryFriendHomeIfAvailable(
+        userId: String,
+        sceneName: String,
+    ): JSONObject? {
         if (FriendGuard.shouldSkipFriend(userId, TAG, sceneName)) {
             return null
         }
         val response = AntStallRpcCall.friendHome(userId)
         val json = JSONObject(response)
-        val reason = json.optString("resultDesc")
-            .ifEmpty { json.optString("errorMessage") }
-            .ifEmpty { json.optString("memo") }
+        val reason =
+            json
+                .optString("resultDesc")
+                .ifEmpty { json.optString("errorMessage") }
+                .ifEmpty { json.optString("memo") }
         if (
             json.optString("resultCode") == "NEED_UPGRADE_VILLAGE" ||
             reason.contains("未开通") ||
@@ -1121,7 +1262,7 @@ class AntStall : ModelTask() {
                 "STALL",
                 FriendCapabilityState.NOT_OPEN,
                 "AntStall.friendHome",
-                reason.ifEmpty { json.optString("resultCode") }
+                reason.ifEmpty { json.optString("resultCode") },
             )
             Log.stall("$sceneName 跳过[${UserMap.getMaskName(userId) ?: userId}]：${reason.ifEmpty { "对方未开通蚂蚁新村或当前不可访问" }}")
             return null
@@ -1137,7 +1278,11 @@ class AntStall : ModelTask() {
     /**
      * @brief 关闭商店
      */
-    private fun shopClose(shopId: String, billNo: String, userId: String) {
+    private fun shopClose(
+        shopId: String,
+        billNo: String,
+        userId: String,
+    ) {
         try {
             val preResponse = AntStallRpcCall.preShopClose(shopId, billNo)
             val preJson = JSONObject(preResponse)
@@ -1155,14 +1300,13 @@ class AntStall : ModelTask() {
                 Log.stall(
                     "蚂蚁新村⛪收取在[${UserMap.getMaskName(userId)}]的摊位获得${
                         income.getString(
-                            "amount"
+                            "amount",
                         )
-                    }"
+                    }",
                 )
             } else {
                 Log.error(TAG, "shopClose err: $closeResponse")
             }
-
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "shopClose err:", t)
         }
@@ -1171,17 +1315,97 @@ class AntStall : ModelTask() {
     /**
      * @brief 处理任务列表
      */
-    private fun taskList() {
+    private fun taskList(
+        skipIfHandledToday: Boolean = true,
+        allowMarkDone: Boolean = true,
+    ): Boolean {
         try {
-            TaskFlowEngine(StallTaskFlowAdapter(), roundSleepMs = 500L).run()
+            val adapter = StallTaskFlowAdapter(skipIfHandledToday)
+            val result = TaskFlowEngine(adapter, roundSleepMs = 500L).run()
+            if (allowMarkDone && !result.stopped && adapter.canMarkTasksDone()) {
+                Status.setFlagToday(StatusFlags.FLAG_ANTSTALL_TASKS_DONE)
+                stallTasksDoneInvalidatedThisRun = false
+                return true
+            }
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "taskList err:", t)
         }
+        return false
     }
 
-    private inner class StallTaskFlowAdapter : TaskFlowAdapter {
+    private fun buildStallTaskItems(response: JSONObject): List<TaskFlowItem> {
+        val items = mutableListOf<TaskFlowItem>()
+        val signListModel = response.optJSONObject("signListModel")
+        if (signListModel != null && !signListModel.optBoolean("currentKeySigned", true)) {
+            items.add(
+                TaskFlowItem(
+                    id = STALL_SIGN_TASK_TYPE,
+                    title = "新村签到",
+                    status = TaskStatus.TODO.name,
+                    type = STALL_SIGN_TASK_TYPE,
+                    actionType = "SIGN",
+                    blacklistKeys = emptyList(),
+                    raw = JSONObject().put("signListModel", signListModel),
+                ),
+            )
+        }
+
+        val taskModels = response.optJSONArray("taskModels") ?: return items
+        for (i in 0 until taskModels.length()) {
+            val task = taskModels.optJSONObject(i) ?: continue
+            val taskType = task.optString("taskType").trim()
+            if (taskType.isBlank()) {
+                continue
+            }
+            val bizInfo = parseStallBizInfo(task.opt("bizInfo"))
+            val taskTitle = getStallTaskTitle(task, bizInfo, taskType)
+            val taskStatus = task.optString("taskStatus").trim()
+            val actionType =
+                bizInfo.optString("actionType").trim().ifBlank {
+                    task.optString("actionType").trim()
+                }
+            val awardCount =
+                bizInfo.optString("awardCount").trim().ifBlank {
+                    task.optString("awardCount").trim()
+                }
+            val raw =
+                JSONObject()
+                    .put("task", task)
+                    .put("bizInfo", bizInfo)
+                    .put("taskKey", buildStallTaskKey(taskType))
+                    .put("awardCount", awardCount)
+
+            items.add(
+                TaskFlowItem(
+                    id = taskType,
+                    title = taskTitle,
+                    status = taskStatus,
+                    type = taskType,
+                    actionType = actionType,
+                    blacklistKeys = listOf(taskType, taskTitle).filter { it.isNotBlank() },
+                    raw = raw,
+                    progress = "actionType=${actionType.ifBlank { "UNKNOWN" }} award=$awardCount",
+                ),
+            )
+        }
+        return items
+    }
+
+    private inner class StallTaskFlowAdapter(
+        private val skipIfHandledToday: Boolean,
+    ) : TaskFlowAdapter {
+        private var querySucceeded = false
+        private var latestItems: List<TaskFlowItem> = emptyList()
+        private var unknownPhaseSeen = false
+        private var unknownFailureSeen = false
+
         override val moduleName: String = STALL_TASK_BLACKLIST_MODULE
         override val flowName: String = "新村任务"
+
+        override fun isFlowHandledToday(): Boolean =
+            skipIfHandledToday &&
+                Status.hasFlagToday(StatusFlags.FLAG_ANTSTALL_TASKS_DONE) &&
+                !stallTasksDoneInvalidatedThisRun
 
         override fun query(): JSONObject {
             val response = AntStallRpcCall.taskList()
@@ -1191,61 +1415,13 @@ class AntStall : ModelTask() {
         }
 
         override fun isQuerySuccess(response: JSONObject): Boolean {
-            return ResChecker.checkRes(TAG, response)
+            querySucceeded = ResChecker.checkRes(TAG, response)
+            return querySucceeded
         }
 
         override fun extractItems(response: JSONObject): List<TaskFlowItem> {
-            val items = mutableListOf<TaskFlowItem>()
-            val signListModel = response.optJSONObject("signListModel")
-            if (signListModel != null && !signListModel.optBoolean("currentKeySigned", true)) {
-                items.add(
-                    TaskFlowItem(
-                        id = STALL_SIGN_TASK_TYPE,
-                        title = "新村签到",
-                        status = TaskStatus.TODO.name,
-                        type = STALL_SIGN_TASK_TYPE,
-                        actionType = "SIGN",
-                        blacklistKeys = emptyList(),
-                        raw = JSONObject().put("signListModel", signListModel)
-                    )
-                )
-            }
-
-            val taskModels = response.optJSONArray("taskModels") ?: return items
-            for (i in 0 until taskModels.length()) {
-                val task = taskModels.optJSONObject(i) ?: continue
-                val taskType = task.optString("taskType").trim()
-                if (taskType.isBlank()) {
-                    continue
-                }
-                val bizInfo = parseStallBizInfo(task.opt("bizInfo"))
-                val taskTitle = getStallTaskTitle(task, bizInfo, taskType)
-                val taskStatus = task.optString("taskStatus").trim()
-                val actionType = bizInfo.optString("actionType").trim().ifBlank {
-                    task.optString("actionType").trim()
-                }
-                val awardCount = bizInfo.optString("awardCount").trim().ifBlank {
-                    task.optString("awardCount").trim()
-                }
-                val raw = JSONObject()
-                    .put("task", task)
-                    .put("bizInfo", bizInfo)
-                    .put("taskKey", buildStallTaskKey(taskType))
-                    .put("awardCount", awardCount)
-
-                items.add(
-                    TaskFlowItem(
-                        id = taskType,
-                        title = taskTitle,
-                        status = taskStatus,
-                        type = taskType,
-                        actionType = actionType,
-                        blacklistKeys = listOf(taskType, taskTitle).filter { it.isNotBlank() },
-                        raw = raw,
-                        progress = "actionType=${actionType.ifBlank { "UNKNOWN" }} award=$awardCount"
-                    )
-                )
-            }
+            val items = buildStallTaskItems(response)
+            latestItems = items
             return items
         }
 
@@ -1272,6 +1448,10 @@ class AntStall : ModelTask() {
             if (handledTaskAwards.contains(taskKey) && phase == TaskFlowPhase.REWARD_READY) {
                 return true
             }
+            if (stateConfirmationTaskFinishes.contains(taskKey) && phase == TaskFlowPhase.READY_TO_COMPLETE) {
+                logStallTaskOnce("新村任务⛪[${item.title}]前置已触发，等待下次执行确认")
+                return true
+            }
             if (handledTaskFinishes.contains(taskKey) && phase == TaskFlowPhase.READY_TO_COMPLETE) {
                 return true
             }
@@ -1287,9 +1467,11 @@ class AntStall : ModelTask() {
                 return true
             }
             if (phase == TaskFlowPhase.UNSUPPORTED) {
+                val taskId = item.id.ifBlank { item.title }
+                TaskBlacklist.addToBlacklist(moduleName, taskId, item.title)
                 logStallTaskOnce(
-                    "新村任务⛪[${item.title}]暂不支持自动闭环，跳过 " +
-                        "taskType=${item.type} actionType=${item.actionType.ifBlank { "UNKNOWN" }} status=${item.status}"
+                    "新村任务⛪[${item.title}]暂不支持自动闭环，已加入自动跳过列表(黑名单) " +
+                        "taskType=${item.type} actionType=${item.actionType.ifBlank { "UNKNOWN" }} status=${item.status}",
                 )
                 return true
             }
@@ -1304,30 +1486,52 @@ class AntStall : ModelTask() {
             return blacklisted
         }
 
-        override fun receive(item: TaskFlowItem): TaskFlowActionResult {
-            return receiveTaskAward(item)
-        }
+        override fun receive(item: TaskFlowItem): TaskFlowActionResult = receiveTaskAward(item)
 
-        override fun complete(item: TaskFlowItem): TaskFlowActionResult {
-            return when (item.type) {
-                STALL_SIGN_TASK_TYPE -> signToday()
-                else -> when (resolveStallTaskCompleteRoute(item)) {
-                    StallTaskCompleteRoute.DAILY_QA -> completeDailyQuestionTask(item)
-                    StallTaskCompleteRoute.INVITE_REGISTER -> completeInviteRegisterTask(item)
-                    StallTaskCompleteRoute.XLIGHT -> handleXlightTask(item)
-                    StallTaskCompleteRoute.ELEME_TOKEN -> completeElemeVisitTask(item)
-                    StallTaskCompleteRoute.FINISH -> finishTask(item)
-                    null -> TaskFlowActionResult.failure(
-                        failureType = TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE,
-                        message = "未找到任务完成闭环",
-                        rpc = "StallTaskFlowAdapter.complete",
-                        detail = stallTaskActionDetail(item, "complete")
-                    )
+        override fun complete(item: TaskFlowItem): TaskFlowActionResult =
+            when (item.type) {
+                STALL_SIGN_TASK_TYPE -> {
+                    signToday()
+                }
+
+                else -> {
+                    when (resolveStallTaskCompleteRoute(item)) {
+                        StallTaskCompleteRoute.DAILY_QA -> {
+                            completeDailyQuestionTask(item)
+                        }
+
+                        StallTaskCompleteRoute.INVITE_REGISTER -> {
+                            completeInviteRegisterTask(item)
+                        }
+
+                        StallTaskCompleteRoute.XLIGHT -> {
+                            handleXlightTask(item)
+                        }
+
+                        StallTaskCompleteRoute.ELEME_TOKEN -> {
+                            completeElemeVisitTask(item)
+                        }
+
+                        StallTaskCompleteRoute.FINISH -> {
+                            finishTask(item)
+                        }
+
+                        null -> {
+                            TaskFlowActionResult.failure(
+                                failureType = TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE,
+                                message = "未找到任务完成闭环",
+                                rpc = "StallTaskFlowAdapter.complete",
+                                detail = stallTaskActionDetail(item, "complete"),
+                            )
+                        }
+                    }
                 }
             }
-        }
 
-        override fun actionKey(item: TaskFlowItem, action: TaskFlowAction): String {
+        override fun actionKey(
+            item: TaskFlowItem,
+            action: TaskFlowAction,
+        ): String {
             val taskKey = buildStallTaskKey(item.type)
             return when (action) {
                 TaskFlowAction.RECEIVE -> "receive:$taskKey"
@@ -1336,7 +1540,11 @@ class AntStall : ModelTask() {
             }
         }
 
-        override fun afterSuccess(item: TaskFlowItem, action: TaskFlowAction, result: TaskFlowActionResult) {
+        override fun afterSuccess(
+            item: TaskFlowItem,
+            action: TaskFlowAction,
+            result: TaskFlowActionResult,
+        ) {
             rememberHandledTask(item, action)
         }
 
@@ -1344,13 +1552,29 @@ class AntStall : ModelTask() {
             item: TaskFlowItem,
             action: TaskFlowAction,
             result: TaskFlowActionResult,
-            decision: TaskFlowDecision
+            decision: TaskFlowDecision,
         ) {
+            if (result.failureType == TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW) {
+                unknownFailureSeen = true
+            }
+            if (action == TaskFlowAction.COMPLETE && result.failureType == TaskRpcFailureType.BUSINESS_LIMIT) {
+                businessLimitedTaskFinishes.add(buildStallTaskKey(item.type))
+            }
             if (decision == TaskFlowDecision.MARK_HANDLED ||
                 decision == TaskFlowDecision.STOP_TODAY_OR_CURRENT_CHAIN ||
                 decision == TaskFlowDecision.BLACKLIST
             ) {
                 rememberHandledTask(item, action)
+            }
+        }
+
+        override fun afterDeferred(
+            item: TaskFlowItem,
+            action: TaskFlowAction,
+            result: TaskFlowActionResult,
+        ) {
+            if (action == TaskFlowAction.COMPLETE && result.deferredReason == DeferredReason.STATE_CONFIRMATION) {
+                stateConfirmationTaskFinishes.add(buildStallTaskKey(item.type))
             }
         }
 
@@ -1362,6 +1586,18 @@ class AntStall : ModelTask() {
             Log.error(TAG, "新村任务列表查询失败 raw=$response")
         }
 
+        override fun onUnknownPhase(
+            item: TaskFlowItem,
+            phase: TaskFlowPhase,
+        ) {
+            unknownPhaseSeen = true
+            Log.error(
+                TAG,
+                "$flowName[未知状态：${item.title}] taskId=${item.id.ifBlank { "UNKNOWN" }} " +
+                    "status=${item.status.ifBlank { "UNKNOWN" }} actionType=${item.actionType.ifBlank { "UNKNOWN" }}",
+            )
+        }
+
         override fun logInfo(message: String) {
             Log.stall(message)
         }
@@ -1370,13 +1606,50 @@ class AntStall : ModelTask() {
             Log.error(TAG, message)
         }
 
-        private fun rememberHandledTask(item: TaskFlowItem, action: TaskFlowAction) {
+        private fun rememberHandledTask(
+            item: TaskFlowItem,
+            action: TaskFlowAction,
+        ) {
             val taskKey = buildStallTaskKey(item.type)
             when (action) {
                 TaskFlowAction.RECEIVE -> handledTaskAwards.add(taskKey)
                 TaskFlowAction.COMPLETE -> handledTaskFinishes.add(taskKey)
                 else -> Unit
             }
+        }
+
+        fun canMarkTasksDone(): Boolean {
+            if (!querySucceeded || unknownPhaseSeen || unknownFailureSeen) {
+                return false
+            }
+            for (item in latestItems) {
+                val phase = mapPhase(item)
+                if (phase == TaskFlowPhase.UNKNOWN) {
+                    return false
+                }
+                if (phase == TaskFlowPhase.TERMINAL || phase == TaskFlowPhase.UNSUPPORTED) {
+                    continue
+                }
+                if (phase == TaskFlowPhase.READY_TO_COMPLETE &&
+                    (
+                        stateConfirmationTaskFinishes.contains(buildStallTaskKey(item.type)) ||
+                            businessLimitedTaskFinishes.contains(buildStallTaskKey(item.type))
+                    )
+                ) {
+                    return false
+                }
+                if (shouldSkip(item)) {
+                    continue
+                }
+                if (phase == TaskFlowPhase.REWARD_READY) {
+                    return false
+                }
+                if (super<TaskFlowAdapter>.isBlacklisted(item)) {
+                    continue
+                }
+                return false
+            }
+            return true
         }
     }
 
@@ -1386,13 +1659,14 @@ class AntStall : ModelTask() {
     private fun handleXlightTask(item: TaskFlowItem): TaskFlowActionResult {
         val configResult = buildStallXlightTaskConfig(item)
         configResult.failure?.let { return it }
-        val config = configResult.config ?: return TaskFlowActionResult.failure(
-            failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
-            message = "XLight任务配置不完整",
-            rpc = "AntStall.handleXlightTask",
-            raw = item.raw?.toString().orEmpty(),
-            detail = stallTaskActionDetail(item, "xlightConfig")
-        )
+        val config =
+            configResult.config ?: return TaskFlowActionResult.failure(
+                failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                message = "XLight任务配置不完整",
+                rpc = "AntStall.handleXlightTask",
+                raw = item.raw?.toString().orEmpty(),
+                detail = stallTaskActionDetail(item, "xlightConfig"),
+            )
 
         if (config.rounds <= 0) {
             return TaskFlowActionResult.failure(
@@ -1400,17 +1674,18 @@ class AntStall : ModelTask() {
                 message = "XLight任务剩余轮次不足",
                 rpc = "AntStall.handleXlightTask",
                 raw = item.raw?.toString().orEmpty(),
-                detail = stallTaskActionDetail(item, "xlightRounds")
+                detail = stallTaskActionDetail(item, "xlightRounds"),
             )
         }
 
         val session = buildStallXlightSession()
-        val roundResult = executeStallXlightRound(
-            config = config,
-            item = item,
-            session = session,
-            processedEventKeys = mutableSetOf()
-        )
+        val roundResult =
+            executeStallXlightRound(
+                config = config,
+                item = item,
+                session = session,
+                processedEventKeys = mutableSetOf(),
+            )
         roundResult.failure?.let { return it }
         val finishedCount = roundResult.finishedCount
 
@@ -1418,80 +1693,124 @@ class AntStall : ModelTask() {
             Log.stall("蚂蚁新村💣任务[${item.title}]完成")
             TaskFlowActionResult.success(refreshAfterAction = true)
         } else {
+            tryTreatXlightTaskAsCompletedAfterRefresh(item)?.let { return it }
             TaskFlowActionResult.failure(
                 failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
                 message = "XLight未推进任何事件",
                 rpc = "AntStallRpcCall.finish",
                 raw = item.raw?.toString().orEmpty(),
-                detail = stallTaskActionDetail(item, "xlightFinish")
+                detail = stallTaskActionDetail(item, "xlightFinish"),
             )
         }
     }
 
+    private fun tryTreatXlightTaskAsCompletedAfterRefresh(item: TaskFlowItem): TaskFlowActionResult? {
+        val refreshedResponse = JsonUtil.parseJSONObjectOrNull(AntStallRpcCall.taskList()) ?: return null
+        if (!ResChecker.checkRes(TAG, refreshedResponse)) {
+            return null
+        }
+        val refreshedItems = buildStallTaskItems(refreshedResponse)
+        val refreshedItem =
+            refreshedItems.firstOrNull { refreshed ->
+                item.id.isNotBlank() && refreshed.id == item.id
+            } ?: refreshedItems.firstOrNull { refreshed ->
+                item.title.isNotBlank() && refreshed.title == item.title
+            } ?: return null
+        return when {
+            isStallTerminalStatus(refreshedItem.status) -> {
+                Log.stall("新村浏览任务⚠️[${item.title}] XLight未推进事件，但刷新后已处于终态")
+                TaskFlowActionResult.success()
+            }
+
+            isStallRewardReadyStatus(refreshedItem.status) -> {
+                Log.stall("新村浏览任务⚠️[${item.title}] XLight未推进事件，但刷新后奖励已可领取")
+                TaskFlowActionResult.success(refreshAfterAction = true)
+            }
+
+            else -> {
+                null
+            }
+        }
+    }
+
     private fun buildStallXlightTaskConfig(item: TaskFlowItem): StallXlightTaskConfigResult {
-        val raw = item.raw ?: return StallXlightTaskConfigResult(
-            failure = missingStallRawResult(item, "xlightConfig")
-        )
+        val raw =
+            item.raw ?: return StallXlightTaskConfigResult(
+                failure = missingStallRawResult(item, "xlightConfig"),
+            )
         val task = raw.optJSONObject("task")
-        val bizInfo = raw.optJSONObject("bizInfo")
-            ?: return StallXlightTaskConfigResult(failure = missingStallRawResult(item, "xlightConfig"))
+        val bizInfo =
+            raw.optJSONObject("bizInfo")
+                ?: return StallXlightTaskConfigResult(failure = missingStallRawResult(item, "xlightConfig"))
         val targetUrl = bizInfo.optString("targetUrl").trim()
         if (targetUrl.isBlank()) {
             return StallXlightTaskConfigResult(
-                failure = TaskFlowActionResult.failure(
-                    failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
-                    message = "XLight缺少targetUrl",
-                    rpc = "AntStall.handleXlightTask",
-                    raw = raw.toString(),
-                    detail = stallTaskActionDetail(item, "xlightConfig")
-                )
+                failure =
+                    TaskFlowActionResult.failure(
+                        failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                        message = "XLight缺少targetUrl",
+                        rpc = "AntStall.handleXlightTask",
+                        raw = raw.toString(),
+                        detail = stallTaskActionDetail(item, "xlightConfig"),
+                    ),
             )
         }
 
-        val pageUrl = UrlUtil.getFullNestedUrl(targetUrl, "url")
-            ?: UrlUtil.getParamValue(targetUrl, "url")
-            ?: targetUrl.takeIf { it.startsWith("http") }
+        val pageUrl =
+            UrlUtil.getFullNestedUrl(targetUrl, "url")
+                ?: UrlUtil.getParamValue(targetUrl, "url")
+                ?: targetUrl.takeIf { it.startsWith("http") }
         if (pageUrl.isNullOrBlank()) {
             return StallXlightTaskConfigResult(
-                failure = TaskFlowActionResult.failure(
-                    failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
-                    message = "XLight无法解析pageUrl",
-                    rpc = "AntStall.handleXlightTask",
-                    raw = raw.toString(),
-                    detail = stallTaskActionDetail(item, "xlightConfig")
-                )
+                failure =
+                    TaskFlowActionResult.failure(
+                        failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                        message = "XLight无法解析pageUrl",
+                        rpc = "AntStall.handleXlightTask",
+                        raw = raw.toString(),
+                        detail = stallTaskActionDetail(item, "xlightConfig"),
+                    ),
             )
         }
 
-        val spaceCode = UrlUtil.extractParamFromUrl(pageUrl, "spaceCodeFeeds")
-            ?: UrlUtil.getParamValue(targetUrl, "spaceCodeFeeds")
+        val spaceCode =
+            UrlUtil.extractParamFromUrl(pageUrl, "spaceCodeFeeds")
+                ?: UrlUtil.getParamValue(targetUrl, "spaceCodeFeeds")
         if (spaceCode.isNullOrBlank()) {
             return StallXlightTaskConfigResult(
-                failure = TaskFlowActionResult.failure(
-                    failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
-                    message = "XLight无法解析spaceCodeFeeds",
-                    rpc = "AntStall.handleXlightTask",
-                    raw = raw.toString(),
-                    detail = stallTaskActionDetail(item, "xlightConfig")
-                )
+                failure =
+                    TaskFlowActionResult.failure(
+                        failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                        message = "XLight无法解析spaceCodeFeeds",
+                        rpc = "AntStall.handleXlightTask",
+                        raw = raw.toString(),
+                        detail = stallTaskActionDetail(item, "xlightConfig"),
+                    ),
             )
         }
 
-        val referToken = UrlUtil.extractParamFromUrl(pageUrl, "tokenFeeds")
-            ?: UrlUtil.getParamValue(targetUrl, "tokenFeeds")
-        val iepTaskSceneCode = UrlUtil.getParamValue(targetUrl, "iepTaskSceneCode")
-            .orEmpty()
-            .ifBlank { "ANTSTALL_TASK" }
-        val iepTaskType = UrlUtil.getParamValue(targetUrl, "iepTaskType")
-            .orEmpty()
-            .ifBlank { item.type }
+        val referToken =
+            UrlUtil.extractParamFromUrl(pageUrl, "tokenFeeds")
+                ?: UrlUtil.getParamValue(targetUrl, "tokenFeeds")
+        val iepTaskSceneCode =
+            UrlUtil
+                .getParamValue(targetUrl, "iepTaskSceneCode")
+                .orEmpty()
+                .ifBlank { "ANTSTALL_TASK" }
+        val iepTaskType =
+            UrlUtil
+                .getParamValue(targetUrl, "iepTaskType")
+                .orEmpty()
+                .ifBlank { item.type }
         val rightsTimes = task?.optInt("rightsTimes", 0) ?: 0
-        val doneTimes = maxOf(
-            UrlUtil.getParamValue(targetUrl, "taskDoneTimes")?.toIntOrNull() ?: 0,
-            UrlUtil.getParamValue(targetUrl, "doneTimes")?.toIntOrNull() ?: 0
-        )
-        val canDoTaskTimesLimit = UrlUtil.getParamValue(targetUrl, "canDoTaskTimesLimit")?.toIntOrNull()
-            ?: task?.optInt("rightsTimesLimit", 0)?.takeIf { it > 0 }
+        val doneTimes =
+            maxOf(
+                UrlUtil.getParamValue(targetUrl, "taskDoneTimes")?.toIntOrNull() ?: 0,
+                UrlUtil.getParamValue(targetUrl, "doneTimes")?.toIntOrNull() ?: 0,
+            )
+        val canDoTaskTimesLimit =
+            UrlUtil.getParamValue(targetUrl, "canDoTaskTimesLimit")?.toIntOrNull()
+                ?: task?.optInt("rightsTimesLimit", 0)?.takeIf { it > 0 }
         val completedTimes = maxOf(rightsTimes, doneTimes)
         val rounds = canDoTaskTimesLimit?.let { (it - completedTimes).coerceAtLeast(0) } ?: 1
         val positionExtMap = JSONObject()
@@ -1500,18 +1819,20 @@ class AntStall : ModelTask() {
         }
 
         return StallXlightTaskConfigResult(
-            config = StallXlightTaskConfig(
-                pageUrl = pageUrl,
-                pageFrom = STALL_XLIGHT_PAGE_FROM,
-                spaceCode = spaceCode,
-                referToken = referToken,
-                iepTaskSceneCode = iepTaskSceneCode,
-                iepTaskType = iepTaskType,
-                rounds = rounds,
-                positionExtMap = positionExtMap,
-                usePagedSearchInfo = referToken.isNullOrBlank() &&
-                    pageUrl.contains("multi-stage-task.html")
-            )
+            config =
+                StallXlightTaskConfig(
+                    pageUrl = pageUrl,
+                    pageFrom = STALL_XLIGHT_PAGE_FROM,
+                    spaceCode = spaceCode,
+                    referToken = referToken,
+                    iepTaskSceneCode = iepTaskSceneCode,
+                    iepTaskType = iepTaskType,
+                    rounds = rounds,
+                    positionExtMap = positionExtMap,
+                    usePagedSearchInfo =
+                        referToken.isNullOrBlank() &&
+                            pageUrl.contains("multi-stage-task.html"),
+                ),
         )
     }
 
@@ -1519,100 +1840,70 @@ class AntStall : ModelTask() {
         config: StallXlightTaskConfig,
         item: TaskFlowItem,
         session: String,
-        processedEventKeys: MutableSet<String>
+        processedEventKeys: MutableSet<String>,
     ): StallXlightRoundResult {
         var playingPageInfo: String? = null
         var pageNo = 1
         var finishedCount = 0
 
         while (pageNo <= 5 && finishedCount < config.rounds) {
-            val response = AntStallRpcCall.xlightPlugin(
-                pageUrl = config.pageUrl,
-                pageFrom = config.pageFrom,
-                spaceCode = config.spaceCode,
-                session = session,
-                referToken = config.referToken,
-                searchInfo = if (config.usePagedSearchInfo) buildStallXlightSearchInfo(pageNo) else null,
-                playingPageInfo = playingPageInfo,
-                positionExtMap = config.positionExtMap.takeIf { it.length() > 0 },
-                pageNo = pageNo
-            )
-            val json = JsonUtil.parseJSONObjectOrNull(response) ?: return StallXlightRoundResult(
-                finishedCount,
-                emptyStallActionResponse(
-                    rpc = "AntStallRpcCall.xlightPlugin",
-                    item = item,
-                    action = "xlightPlugin",
-                    raw = response
+            val response =
+                AntStallRpcCall.xlightPlugin(
+                    pageUrl = config.pageUrl,
+                    pageFrom = config.pageFrom,
+                    spaceCode = config.spaceCode,
+                    session = session,
+                    referToken = config.referToken,
+                    searchInfo = if (config.usePagedSearchInfo) buildStallXlightSearchInfo(pageNo) else null,
+                    playingPageInfo = playingPageInfo,
+                    positionExtMap = config.positionExtMap.takeIf { it.length() > 0 },
+                    pageNo = pageNo,
                 )
-            )
-            val adTrafficRisk = RpcOfflineRisk.isAdTrafficRisk(json)
-
-            val playingResult = json.optJSONObject("playingResult") ?: return StallXlightRoundResult(
-                finishedCount,
-                if (adTrafficRisk) {
+            val json =
+                JsonUtil.parseJSONObjectOrNull(response) ?: return StallXlightRoundResult(
+                    finishedCount,
+                    emptyStallActionResponse(
+                        rpc = "AntStallRpcCall.xlightPlugin",
+                        item = item,
+                        action = "xlightPlugin",
+                        raw = response,
+                    ),
+                )
+            if (RpcOfflineRisk.isAdTrafficRisk(json)) {
+                return StallXlightRoundResult(
+                    finishedCount,
                     stallTaskActionFailureResult(
                         response = json,
                         rpc = "AntStallRpcCall.xlightPlugin",
-                        detail = stallTaskActionDetail(item, "xlightPlugin")
-                    )
-                } else {
-                    TaskFlowActionResult.failure(
-                        failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
-                        message = "XLight缺少playingResult",
-                        rpc = "AntStallRpcCall.xlightPlugin",
-                        raw = json.toString(),
-                        detail = stallTaskActionDetail(item, "xlightPlugin")
-                    )
-                }
-            )
+                        detail = stallTaskActionDetail(item, "xlightPlugin"),
+                    ),
+                )
+            }
+            val playingResult =
+                json.optJSONObject("playingResult") ?: return StallXlightRoundResult(
+                    finishedCount,
+                    buildStallXlightPluginFailureResult(item, json, "XLight缺少playingResult"),
+                )
             val playingBizId = playingResult.optString("playingBizId").trim()
             if (playingBizId.isBlank()) {
                 return StallXlightRoundResult(
                     finishedCount,
-                    if (adTrafficRisk) {
-                        stallTaskActionFailureResult(
-                            response = json,
-                            rpc = "AntStallRpcCall.xlightPlugin",
-                            detail = stallTaskActionDetail(item, "xlightPlugin")
-                        )
-                    } else {
-                        TaskFlowActionResult.failure(
-                            failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
-                            message = "XLight缺少playingBizId",
-                            rpc = "AntStallRpcCall.xlightPlugin",
-                            raw = json.toString(),
-                            detail = stallTaskActionDetail(item, "xlightPlugin")
-                        )
-                    }
+                    buildStallXlightPluginFailureResult(item, json, "XLight缺少playingBizId"),
                 )
             }
 
             val nextPlayingPageInfo = playingResult.optString("playingPageInfo").trim().ifBlank { null }
             val hasNextPage = json.optJSONObject("pagingParam")?.optBoolean("hasNext", false) == true
-            val eventList = JsonUtil.getValueByPathObject(
-                playingResult,
-                "eventRewardDetail.eventRewardInfoList"
-            ) as? JSONArray
+            val eventList =
+                JsonUtil.getValueByPathObject(
+                    playingResult,
+                    "eventRewardDetail.eventRewardInfoList",
+                ) as? JSONArray
             if (eventList == null || eventList.length() == 0) {
                 if (nextPlayingPageInfo.isNullOrBlank() && !(config.usePagedSearchInfo && hasNextPage)) {
                     return StallXlightRoundResult(
                         finishedCount,
-                        if (adTrafficRisk) {
-                            stallTaskActionFailureResult(
-                                response = json,
-                                rpc = "AntStallRpcCall.xlightPlugin",
-                                detail = stallTaskActionDetail(item, "xlightPlugin")
-                            )
-                        } else {
-                            TaskFlowActionResult.failure(
-                                failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
-                                message = "XLight未返回可完成浏览事件",
-                                rpc = "AntStallRpcCall.xlightPlugin",
-                                raw = json.toString(),
-                                detail = stallTaskActionDetail(item, "xlightPlugin")
-                            )
-                        }
+                        buildStallXlightPluginFailureResult(item, json, "XLight未返回可完成浏览事件"),
                     )
                 }
                 playingPageInfo = nextPlayingPageInfo
@@ -1636,21 +1927,7 @@ class AntStall : ModelTask() {
                 if (nextPlayingPageInfo.isNullOrBlank() && !(config.usePagedSearchInfo && hasNextPage)) {
                     return StallXlightRoundResult(
                         finishedCount,
-                        if (adTrafficRisk) {
-                            stallTaskActionFailureResult(
-                                response = json,
-                                rpc = "AntStallRpcCall.xlightPlugin",
-                                detail = stallTaskActionDetail(item, "xlightPlugin")
-                            )
-                        } else {
-                            TaskFlowActionResult.failure(
-                                failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
-                                message = "XLight未返回BROWSE事件",
-                                rpc = "AntStallRpcCall.xlightPlugin",
-                                raw = json.toString(),
-                                detail = stallTaskActionDetail(item, "xlightPlugin")
-                            )
-                        }
+                        buildStallXlightPluginFailureResult(item, json, "XLight未返回BROWSE事件"),
                     )
                 }
                 playingPageInfo = nextPlayingPageInfo
@@ -1661,22 +1938,24 @@ class AntStall : ModelTask() {
             browseEvents.sortBy { it.second.optInt("order", Int.MAX_VALUE) }
             var advanceToNextPage = false
             for ((eventKey, eventInfo) in browseEvents) {
-                val finishResponse = AntStallRpcCall.finish(
-                    playBizId = playingBizId,
-                    jsonObject = eventInfo,
-                    iepTaskSceneCode = config.iepTaskSceneCode,
-                    iepTaskType = config.iepTaskType
-                )
-                val finishJson = JsonUtil.parseJSONObjectOrNull(finishResponse)
-                    ?: return StallXlightRoundResult(
-                        finishedCount,
-                        emptyStallActionResponse(
-                            rpc = "AntStallRpcCall.finish",
-                            item = item,
-                            action = "xlightFinish",
-                            raw = finishResponse
-                        )
+                val finishResponse =
+                    AntStallRpcCall.finish(
+                        playBizId = playingBizId,
+                        jsonObject = eventInfo,
+                        iepTaskSceneCode = config.iepTaskSceneCode,
+                        iepTaskType = config.iepTaskType,
                     )
+                val finishJson =
+                    JsonUtil.parseJSONObjectOrNull(finishResponse)
+                        ?: return StallXlightRoundResult(
+                            finishedCount,
+                            emptyStallActionResponse(
+                                rpc = "AntStallRpcCall.finish",
+                                item = item,
+                                action = "xlightFinish",
+                                raw = finishResponse,
+                            ),
+                        )
 
                 if (!isStallTaskRpcSuccess(finishJson)) {
                     return StallXlightRoundResult(
@@ -1684,8 +1963,8 @@ class AntStall : ModelTask() {
                         stallTaskActionFailureResult(
                             response = finishJson,
                             rpc = "AntStallRpcCall.finish",
-                            detail = stallTaskActionDetail(item, "xlightFinish")
-                        )
+                            detail = stallTaskActionDetail(item, "xlightFinish"),
+                        ),
                     )
                 }
 
@@ -1725,26 +2004,26 @@ class AntStall : ModelTask() {
         }
     }
 
-    private fun buildStallXlightEventKey(playBizId: String, eventInfo: JSONObject): String {
-        return "$playBizId#${eventInfo.optInt("order", -1)}#${eventInfo.optInt("rewardId", -1)}#${eventInfo.optInt("eventStep", 0)}"
-    }
+    private fun buildStallXlightEventKey(
+        playBizId: String,
+        eventInfo: JSONObject,
+    ): String = "$playBizId#${eventInfo.optInt("order", -1)}#${eventInfo.optInt("rewardId", -1)}#${eventInfo.optInt("eventStep", 0)}"
 
-    private fun buildStallXlightSession(): String {
-        return "u_${RandomUtil.getRandomString(5)}_${RandomUtil.getRandomString(5)}"
-    }
+    private fun buildStallXlightSession(): String = "u_${RandomUtil.getRandomString(5)}_${RandomUtil.getRandomString(5)}"
 
     /**
      * @brief 今日签到
      */
     private fun signToday(): TaskFlowActionResult {
         val response = AntStallRpcCall.signToday()
-        val json = JsonUtil.parseJSONObjectOrNull(response) ?: return TaskFlowActionResult.failure(
-            failureType = TaskRpcFailureType.RETRYABLE_RPC,
-            message = "signToday返回空或无法解析",
-            rpc = "AntStallRpcCall.signToday",
-            raw = response,
-            stopCurrentRound = true
-        )
+        val json =
+            JsonUtil.parseJSONObjectOrNull(response) ?: return TaskFlowActionResult.failure(
+                failureType = TaskRpcFailureType.RETRYABLE_RPC,
+                message = "signToday返回空或无法解析",
+                rpc = "AntStallRpcCall.signToday",
+                raw = response,
+                stopCurrentRound = true,
+            )
 
         return if (isStallTaskRpcSuccess(json)) {
             Log.stall("蚂蚁新村⛪[签到成功]")
@@ -1753,7 +2032,7 @@ class AntStall : ModelTask() {
             stallTaskActionFailureResult(
                 response = json,
                 rpc = "AntStallRpcCall.signToday",
-                detail = "taskType=$STALL_SIGN_TASK_TYPE action=signToday"
+                detail = "taskType=$STALL_SIGN_TASK_TYPE action=signToday",
             )
         }
     }
@@ -1763,12 +2042,13 @@ class AntStall : ModelTask() {
      */
     private fun receiveTaskAward(item: TaskFlowItem): TaskFlowActionResult {
         val response = AntStallRpcCall.receiveTaskAward(item.type)
-        val json = JsonUtil.parseJSONObjectOrNull(response) ?: return emptyStallActionResponse(
-            rpc = "AntStallRpcCall.receiveTaskAward",
-            item = item,
-            action = "receiveTaskAward",
-            raw = response
-        )
+        val json =
+            JsonUtil.parseJSONObjectOrNull(response) ?: return emptyStallActionResponse(
+                rpc = "AntStallRpcCall.receiveTaskAward",
+                item = item,
+                action = "receiveTaskAward",
+                raw = response,
+            )
 
         return if (isStallTaskRpcSuccess(json)) {
             Log.stall("蚂蚁新村⛪[领取奖励:${item.title}]")
@@ -1777,7 +2057,7 @@ class AntStall : ModelTask() {
             stallTaskActionFailureResult(
                 response = json,
                 rpc = "AntStallRpcCall.receiveTaskAward",
-                detail = stallTaskActionDetail(item, "receiveTaskAward")
+                detail = stallTaskActionDetail(item, "receiveTaskAward"),
             )
         }
     }
@@ -1786,16 +2066,18 @@ class AntStall : ModelTask() {
      * @brief 完成任务
      */
     private fun finishTask(item: TaskFlowItem): TaskFlowActionResult {
-        val response = AntStallRpcCall.finishTask(
-            "${item.type}_${System.currentTimeMillis()}",
-            item.type
-        )
-        val json = JsonUtil.parseJSONObjectOrNull(response) ?: return emptyStallActionResponse(
-            rpc = "AntStallRpcCall.finishTask",
-            item = item,
-            action = "finishTask",
-            raw = response
-        )
+        val response =
+            AntStallRpcCall.finishTask(
+                "${item.type}_${System.currentTimeMillis()}",
+                item.type,
+            )
+        val json =
+            JsonUtil.parseJSONObjectOrNull(response) ?: return emptyStallActionResponse(
+                rpc = "AntStallRpcCall.finishTask",
+                item = item,
+                action = "finishTask",
+                raw = response,
+            )
 
         return if (isStallTaskRpcSuccess(json)) {
             completedStallTaskResult(item)
@@ -1803,57 +2085,224 @@ class AntStall : ModelTask() {
             stallTaskActionFailureResult(
                 response = json,
                 rpc = "AntStallRpcCall.finishTask",
-                detail = stallTaskActionDetail(item, "finishTask")
+                detail = stallTaskActionDetail(item, "finishTask"),
             )
         }
     }
 
     private fun completeElemeVisitTask(item: TaskFlowItem): TaskFlowActionResult {
         val response = AntStallRpcCall.generateToken(item.type)
-        val json = JsonUtil.parseJSONObjectOrNull(response) ?: return emptyStallActionResponse(
-            rpc = "AntStallRpcCall.generateToken",
-            item = item,
-            action = "generateToken",
-            raw = response
-        )
-
-        return if (isStallTaskRpcSuccess(json)) {
-            completedStallTaskResult(item)
-        } else {
-            stallTaskActionFailureResult(
+        val json =
+            JsonUtil.parseJSONObjectOrNull(response) ?: return emptyStallActionResponse(
+                rpc = "AntStallRpcCall.generateToken",
+                item = item,
+                action = "generateToken",
+                raw = response,
+            )
+        if (!isStallTaskRpcSuccess(json)) {
+            return stallTaskActionFailureResult(
                 response = json,
                 rpc = "AntStallRpcCall.generateToken",
-                detail = stallTaskActionDetail(item, "generateToken")
+                detail = stallTaskActionDetail(item, "generateToken"),
             )
         }
+
+        val refreshResult = refreshStallTaskState(item.type)
+        return when (refreshResult.state) {
+            StallTaskRefreshState.REWARD_READY -> {
+                TaskFlowActionResult.success(refreshAfterAction = true)
+            }
+
+            StallTaskRefreshState.TERMINAL -> {
+                TaskFlowActionResult.success()
+            }
+
+            StallTaskRefreshState.MISSING,
+            StallTaskRefreshState.TODO,
+            StallTaskRefreshState.UNKNOWN,
+            -> {
+                TaskFlowActionResult.defer(
+                    deferredReason = DeferredReason.STATE_CONFIRMATION,
+                    message = "饿了么 token 已生成，等待服务端状态确认",
+                    rpc = "AntStallRpcCall.taskList",
+                    raw = refreshResult.raw,
+                    detail = stallTaskActionDetail(item, "generateTokenRefresh"),
+                )
+            }
+
+            StallTaskRefreshState.QUERY_FAILED -> {
+                TaskFlowActionResult.failure(
+                    failureType = TaskRpcFailureType.RETRYABLE_RPC,
+                    message = "饿了么 token 已生成，任务状态刷新失败",
+                    rpc = "AntStallRpcCall.taskList",
+                    raw = refreshResult.raw,
+                    detail = stallTaskActionDetail(item, "generateTokenRefresh"),
+                    continueCurrentRoundOnFailure = true,
+                )
+            }
+        }
     }
+
+    private enum class StallTaskRefreshState {
+        REWARD_READY,
+        TERMINAL,
+        TODO,
+        MISSING,
+        QUERY_FAILED,
+        UNKNOWN,
+    }
+
+    private data class StallTaskRefreshResult(
+        val state: StallTaskRefreshState,
+        val raw: String = "",
+    )
 
     private fun completeDailyQuestionTask(item: TaskFlowItem): TaskFlowActionResult {
         val bizInfo = item.raw?.optJSONObject("bizInfo") ?: return missingStallRawResult(item, "dailyQuestion")
-        return if (ReadingDada.answerQuestion(bizInfo)) {
-            TaskFlowActionResult.success()
-        } else {
-            TaskFlowActionResult.failure(
+        val answerResult = ReadingDada.answerQuestion(bizInfo)
+        if (answerResult.status == ReadingDada.AnswerQuestionStatus.RPC_FAILED) {
+            return TaskFlowActionResult.failure(
                 failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
-                message = "答题任务未完成",
+                message = answerResult.message.ifBlank { "答题RPC失败" },
                 rpc = "ReadingDada.answerQuestion",
-                detail = stallTaskActionDetail(item, "dailyQuestion")
+                raw = answerResult.raw,
+                detail = stallTaskActionDetail(item, "dailyQuestion"),
             )
+        }
+
+        val refreshResult = refreshStallTaskState(item.type)
+        return when (refreshResult.state) {
+            StallTaskRefreshState.REWARD_READY -> {
+                TaskFlowActionResult.success(refreshAfterAction = true)
+            }
+
+            StallTaskRefreshState.TERMINAL,
+            StallTaskRefreshState.MISSING,
+            -> {
+                TaskFlowActionResult.success()
+            }
+
+            StallTaskRefreshState.TODO -> {
+                TaskFlowActionResult.failure(
+                    failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                    message = buildDailyQuestionPendingMessage(answerResult.status),
+                    rpc = "ReadingDada.answerQuestion",
+                    raw = answerResult.raw.ifBlank { refreshResult.raw },
+                    detail = stallTaskActionDetail(item, "dailyQuestionRefresh"),
+                )
+            }
+
+            StallTaskRefreshState.QUERY_FAILED -> {
+                TaskFlowActionResult.failure(
+                    failureType = TaskRpcFailureType.RETRYABLE_RPC,
+                    message = "答题已提交，任务状态刷新失败",
+                    rpc = "AntStallRpcCall.taskList",
+                    raw = refreshResult.raw.ifBlank { answerResult.raw },
+                    detail = stallTaskActionDetail(item, "dailyQuestionRefresh"),
+                    continueCurrentRoundOnFailure = true,
+                )
+            }
+
+            StallTaskRefreshState.UNKNOWN -> {
+                TaskFlowActionResult.failure(
+                    failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                    message = "答题已提交，但任务状态刷新为未知状态",
+                    rpc = "AntStallRpcCall.taskList",
+                    raw = refreshResult.raw,
+                    detail = stallTaskActionDetail(item, "dailyQuestionRefresh"),
+                )
+            }
         }
     }
 
-    private fun completeInviteRegisterTask(item: TaskFlowItem): TaskFlowActionResult {
-        return if (inviteRegister()) {
+    private fun buildDailyQuestionPendingMessage(status: ReadingDada.AnswerQuestionStatus): String =
+        when (status) {
+            ReadingDada.AnswerQuestionStatus.CONFIRMED_SUCCESS -> "答题完成，但任务状态仍未推进"
+            ReadingDada.AnswerQuestionStatus.CONFIRMED_WRONG -> "答题完成但答案错误，任务状态仍未推进"
+            ReadingDada.AnswerQuestionStatus.SUBMIT_SENT_WAIT_REFRESH -> "答题已提交，但任务状态仍未推进"
+            ReadingDada.AnswerQuestionStatus.RPC_FAILED -> "答题任务未完成"
+        }
+
+    private fun refreshStallTaskState(taskType: String): StallTaskRefreshResult {
+        for (attempt in 0 until STALL_TASK_REFRESH_ATTEMPTS) {
+            if (attempt > 0) {
+                GlobalThreadPools.sleepCompat(STALL_TASK_REFRESH_DELAY_MS)
+            }
+
+            val responseText = AntStallRpcCall.taskList()
+            val response =
+                JsonUtil.parseJSONObjectOrNull(responseText)
+                    ?: return StallTaskRefreshResult(
+                        state = StallTaskRefreshState.QUERY_FAILED,
+                        raw = responseText,
+                    )
+            if (!ResChecker.checkRes(TAG, response)) {
+                return StallTaskRefreshResult(
+                    state = StallTaskRefreshState.QUERY_FAILED,
+                    raw = response.toString(),
+                )
+            }
+
+            val refreshedItem = buildStallTaskItems(response).firstOrNull { it.type == taskType }
+            if (refreshedItem == null) {
+                if (attempt < STALL_TASK_REFRESH_ATTEMPTS - 1) {
+                    continue
+                }
+                Log.stall("新村任务[$taskType]提交后已离开待完成列表，按调用方终态规则处理")
+                return StallTaskRefreshResult(
+                    state = StallTaskRefreshState.MISSING,
+                    raw = response.toString(),
+                )
+            }
+
+            when {
+                isStallRewardReadyStatus(refreshedItem.status) -> {
+                    return StallTaskRefreshResult(
+                        state = StallTaskRefreshState.REWARD_READY,
+                        raw = response.toString(),
+                    )
+                }
+
+                isStallTerminalStatus(refreshedItem.status) -> {
+                    return StallTaskRefreshResult(
+                        state = StallTaskRefreshState.TERMINAL,
+                        raw = response.toString(),
+                    )
+                }
+
+                isStallTodoStatus(refreshedItem.status) -> {
+                    if (attempt < STALL_TASK_REFRESH_ATTEMPTS - 1) {
+                        continue
+                    }
+                    return StallTaskRefreshResult(
+                        state = StallTaskRefreshState.TODO,
+                        raw = response.toString(),
+                    )
+                }
+
+                else -> {
+                    return StallTaskRefreshResult(
+                        state = StallTaskRefreshState.UNKNOWN,
+                        raw = response.toString(),
+                    )
+                }
+            }
+        }
+
+        return StallTaskRefreshResult(state = StallTaskRefreshState.QUERY_FAILED)
+    }
+
+    private fun completeInviteRegisterTask(item: TaskFlowItem): TaskFlowActionResult =
+        if (inviteRegister()) {
             TaskFlowActionResult.success()
         } else {
             TaskFlowActionResult.failure(
                 failureType = TaskRpcFailureType.BUSINESS_LIMIT,
                 message = "未找到可邀请好友或邀请未成功",
                 rpc = "AntStall.inviteRegister",
-                detail = stallTaskActionDetail(item, "inviteRegister")
+                detail = stallTaskActionDetail(item, "inviteRegister"),
             )
         }
-    }
 
     private fun completedStallTaskResult(item: TaskFlowItem): TaskFlowActionResult {
         Log.stall("蚂蚁新村💣任务[${item.title}]完成")
@@ -1864,31 +2313,49 @@ class AntStall : ModelTask() {
         rpc: String,
         item: TaskFlowItem,
         action: String,
-        raw: String = ""
-    ): TaskFlowActionResult {
-        return TaskFlowActionResult.failure(
+        raw: String = "",
+    ): TaskFlowActionResult =
+        TaskFlowActionResult.failure(
             failureType = TaskRpcFailureType.RETRYABLE_RPC,
             message = "${action}返回空或无法解析",
             rpc = rpc,
             raw = raw,
             detail = stallTaskActionDetail(item, action),
-            stopCurrentRound = true
+            stopCurrentRound = true,
+        )
+
+    private fun buildStallXlightPluginFailureResult(
+        item: TaskFlowItem,
+        response: JSONObject,
+        message: String,
+    ): TaskFlowActionResult {
+        val failureType = classifyStallTaskFailure(response)
+        return TaskFlowActionResult.failure(
+            failureType = failureType,
+            code = extractStallTaskFailureCode(response),
+            message = message,
+            rpc = "AntStallRpcCall.xlightPlugin",
+            raw = response.toString(),
+            detail = stallTaskActionDetail(item, "xlightPlugin"),
+            stopCurrentRound = failureType == TaskRpcFailureType.RETRYABLE_RPC,
         )
     }
 
-    private fun missingStallRawResult(item: TaskFlowItem, action: String): TaskFlowActionResult {
-        return TaskFlowActionResult.failure(
+    private fun missingStallRawResult(
+        item: TaskFlowItem,
+        action: String,
+    ): TaskFlowActionResult =
+        TaskFlowActionResult.failure(
             failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
             message = "缺少任务原始数据",
             rpc = "StallTaskFlowAdapter.$action",
-            detail = stallTaskActionDetail(item, action)
+            detail = stallTaskActionDetail(item, action),
         )
-    }
 
     private fun stallTaskActionFailureResult(
         response: JSONObject,
         rpc: String,
-        detail: String
+        detail: String,
     ): TaskFlowActionResult {
         val code = extractStallTaskFailureCode(response)
         val message = extractStallTaskFailureMessage(response)
@@ -1900,77 +2367,94 @@ class AntStall : ModelTask() {
             rpc = rpc,
             raw = response.toString(),
             detail = detail,
-            stopCurrentRound = failureType == TaskRpcFailureType.RETRYABLE_RPC
+            stopCurrentRound = failureType == TaskRpcFailureType.RETRYABLE_RPC,
         )
     }
 
-    private fun stallTaskActionDetail(item: TaskFlowItem, action: String): String {
-        return "taskType=${item.type} taskName=${item.title} actionType=${item.actionType} action=$action"
-    }
+    private fun stallTaskActionDetail(
+        item: TaskFlowItem,
+        action: String,
+    ): String = "taskType=${item.type} taskName=${item.title} actionType=${item.actionType} action=$action"
 
-    private fun buildStallTaskKey(taskType: String): String {
-        return taskType.ifBlank { "UNKNOWN_TASK" }
-    }
+    private fun buildStallTaskKey(taskType: String): String = taskType.ifBlank { "UNKNOWN_TASK" }
 
-    private fun parseStallBizInfo(rawBizInfo: Any?): JSONObject {
-        return when (rawBizInfo) {
-            is JSONObject -> rawBizInfo
-            is String -> rawBizInfo.takeIf { it.isNotBlank() }?.let {
-                JsonUtil.parseJSONObjectOrNull(it)
-            } ?: JSONObject()
-            else -> JSONObject()
+    private fun parseStallBizInfo(rawBizInfo: Any?): JSONObject =
+        when (rawBizInfo) {
+            is JSONObject -> {
+                rawBizInfo
+            }
+
+            is String -> {
+                rawBizInfo.takeIf { it.isNotBlank() }?.let {
+                    JsonUtil.parseJSONObjectOrNull(it)
+                } ?: JSONObject()
+            }
+
+            else -> {
+                JSONObject()
+            }
         }
-    }
 
-    private fun getStallTaskTitle(task: JSONObject, bizInfo: JSONObject, taskType: String): String {
-        return sequenceOf(
+    private fun getStallTaskTitle(
+        task: JSONObject,
+        bizInfo: JSONObject,
+        taskType: String,
+    ): String =
+        sequenceOf(
             bizInfo.optString("taskTitle"),
             bizInfo.optString("title"),
             bizInfo.optString("taskName"),
             bizInfo.optString("taskDesc"),
             task.optString("taskTitle"),
             task.optString("title"),
-            taskType
+            taskType,
         ).firstOrNull { it.isNotBlank() } ?: taskType
-    }
 
-    private fun isCompletableStallTask(item: TaskFlowItem): Boolean {
-        return resolveStallTaskCompleteRoute(item) != null
-    }
+    private fun isCompletableStallTask(item: TaskFlowItem): Boolean = resolveStallTaskCompleteRoute(item) != null
 
-    private fun resolveStallTaskCompleteRoute(item: TaskFlowItem): StallTaskCompleteRoute? {
-        return when (item.type) {
-            STALL_DAILY_QA_TASK_TYPE -> StallTaskCompleteRoute.DAILY_QA
-            STALL_INVITE_REGISTER_TASK_TYPE -> StallTaskCompleteRoute.INVITE_REGISTER
-            STALL_XLIGHT_TASK_TYPE -> StallTaskCompleteRoute.XLIGHT
-            STALL_ELEME_VISIT_TASK_TYPE -> StallTaskCompleteRoute.ELEME_TOKEN
-            else -> when {
-                item.actionType == "VISIT_AUTO_FINISH" -> StallTaskCompleteRoute.FINISH
-                item.type in STALL_FINISH_TASK_TYPES -> StallTaskCompleteRoute.FINISH
-                else -> null
+    private fun resolveStallTaskCompleteRoute(item: TaskFlowItem): StallTaskCompleteRoute? =
+        when (item.type) {
+            STALL_DAILY_QA_TASK_TYPE -> {
+                StallTaskCompleteRoute.DAILY_QA
+            }
+
+            STALL_INVITE_REGISTER_TASK_TYPE -> {
+                StallTaskCompleteRoute.INVITE_REGISTER
+            }
+
+            STALL_XLIGHT_TASK_TYPE -> {
+                StallTaskCompleteRoute.XLIGHT
+            }
+
+            STALL_ELEME_VISIT_TASK_TYPE -> {
+                StallTaskCompleteRoute.ELEME_TOKEN
+            }
+
+            else -> {
+                when {
+                    item.actionType == "VISIT_AUTO_FINISH" -> StallTaskCompleteRoute.FINISH
+                    item.type in STALL_FINISH_TASK_TYPES -> StallTaskCompleteRoute.FINISH
+                    else -> null
+                }
             }
         }
-    }
 
-    private fun isStallRewardReadyStatus(taskStatus: String): Boolean {
-        return taskStatus == TaskStatus.FINISHED.name ||
+    private fun isStallRewardReadyStatus(taskStatus: String): Boolean =
+        taskStatus == TaskStatus.FINISHED.name ||
             taskStatus == "COMPLETE" ||
             taskStatus == "WAIT_RECEIVE" ||
             taskStatus == "TO_RECEIVE" ||
             taskStatus == "UNLOCKED"
-    }
 
-    private fun isStallTerminalStatus(taskStatus: String): Boolean {
-        return taskStatus == TaskStatus.RECEIVED.name ||
+    private fun isStallTerminalStatus(taskStatus: String): Boolean =
+        taskStatus == TaskStatus.RECEIVED.name ||
             taskStatus == "HAS_RECEIVED" ||
             taskStatus == "DONE" ||
             taskStatus == "COMPLETED"
-    }
 
-    private fun isStallTodoStatus(taskStatus: String): Boolean {
-        return taskStatus == TaskStatus.TODO.name ||
+    private fun isStallTodoStatus(taskStatus: String): Boolean =
+        taskStatus == TaskStatus.TODO.name ||
             taskStatus == "WAIT_COMPLETE"
-    }
 
     private fun isStallTaskRpcSuccess(response: JSONObject): Boolean {
         response.optJSONObject("resData")?.let {
@@ -1985,7 +2469,10 @@ class AntStall : ModelTask() {
 
         val resultCode = response.opt("resultCode")
         when (resultCode) {
-            is Number -> if (resultCode.toInt() == 100 || resultCode.toInt() == 200) return true
+            is Number -> {
+                if (resultCode.toInt() == 100 || resultCode.toInt() == 200) return true
+            }
+
             is String -> {
                 if (resultCode.equals("SUCCESS", ignoreCase = true) ||
                     resultCode == "100" ||
@@ -2018,32 +2505,49 @@ class AntStall : ModelTask() {
         val message = extractStallTaskFailureMessage(response)
         return when {
             isStallTaskAlreadyHandled(response) ||
-                containsAnyStall(message, "已领取", "已经领取", "重复领取", "重复领奖", "重复完成", "已完成", "任务已完结", "任务已结束", "无状态转换处理") ->
+                containsAnyStall(message, "已领取", "已经领取", "重复领取", "重复领奖", "重复完成", "已完成", "任务已完结", "任务已结束", "无状态转换处理") -> {
                 TaskRpcFailureType.TERMINAL_DONE
+            }
 
-            RpcOfflineRisk.isAdTrafficRisk(response) ->
+            RpcOfflineRisk.isAdTrafficRisk(response) -> {
                 TaskRpcFailureType.BUSINESS_LIMIT
+            }
 
             ResChecker.isSilentFailure(response) ||
                 code == "CAMP_TRIGGER_ERROR" ||
                 code.contains("LIMIT", ignoreCase = true) ||
-                containsAnyStall(message, "上限", "限制", "受限", "不可领取", "资格不足", "兑完", "风控", "风险") ->
+                containsAnyStall(message, "上限", "限制", "受限", "不可领取", "资格不足", "兑完", "风控", "风险") -> {
                 TaskRpcFailureType.BUSINESS_LIMIT
+            }
 
             code == "400000040" ||
-                containsAnyStall(message, "不支持rpc调用", "不支持RPC完成") ->
+                containsAnyStall(message, "不支持rpc调用", "不支持RPC完成") -> {
                 TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE
+            }
 
             code in setOf("20020012", "TASK_ID_INVALID", "ILLEGAL_ARGUMENT", "PROMISE_TEMPLATE_NOT_EXIST") ||
-                containsAnyStall(message, "参数错误", "任务ID非法", "模板不存在") ->
+                containsAnyStall(message, "参数错误", "任务ID非法", "模板不存在") -> {
                 TaskRpcFailureType.NON_RETRYABLE_INVALID
+            }
 
-            code in setOf("3000", "REMOTE_INVOKE_EXCEPTION", "OP_REPEAT_CHECK", "SYSTEM_BUSY", "NETWORK_ERROR", "I07", "USER_FREQUENTLY_LOCK") ||
+            code in
+                setOf(
+                    "3000",
+                    "REMOTE_INVOKE_EXCEPTION",
+                    "OP_REPEAT_CHECK",
+                    "SYSTEM_BUSY",
+                    "NETWORK_ERROR",
+                    "I07",
+                    "USER_FREQUENTLY_LOCK",
+                ) ||
                 containsAnyStall(message, "系统出错", "系统繁忙", "稍后", "繁忙", "频繁", "重试", "需要验证", "访问被拒绝") ||
-                isStallFailureMarkedRetryable(response) ->
+                isStallFailureMarkedRetryable(response) -> {
                 TaskRpcFailureType.RETRYABLE_RPC
+            }
 
-            else -> TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW
+            else -> {
+                TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW
+            }
         }
     }
 
@@ -2059,13 +2563,21 @@ class AntStall : ModelTask() {
         response.optJSONObject("resData")?.let {
             return extractStallTaskFailureCode(it)
         }
-        return response.optString("code").trim()
+        return response
+            .optString("code")
+            .trim()
             .ifBlank { response.optString("errorCode").trim() }
             .ifBlank { response.optString("resultCode").trim() }
             .ifBlank { response.optString("retCode").trim() }
             .ifBlank { response.optString("sspErrorCode").trim() }
             .ifBlank { response.optString("errCode").trim() }
-            .ifBlank { response.opt("error")?.toString()?.trim().orEmpty() }
+            .ifBlank {
+                response
+                    .opt("error")
+                    ?.toString()
+                    ?.trim()
+                    .orEmpty()
+            }
     }
 
     private fun extractStallTaskFailureMessage(response: JSONObject): String {
@@ -2083,7 +2595,7 @@ class AntStall : ModelTask() {
             response.optString("message").trim(),
             response.optString("sspErrorMsg").trim(),
             response.optString("resultView").trim(),
-            response.optString("errorTip").trim()
+            response.optString("errorTip").trim(),
         ).firstOrNull { it.isNotBlank() } ?: response.toString()
     }
 
@@ -2096,9 +2608,10 @@ class AntStall : ModelTask() {
         }
     }
 
-    private fun containsAnyStall(text: String, vararg keywords: String): Boolean {
-        return keywords.any { keyword -> text.contains(keyword, ignoreCase = true) }
-    }
+    private fun containsAnyStall(
+        text: String,
+        vararg keywords: String,
+    ): Boolean = keywords.any { keyword -> text.contains(keyword, ignoreCase = true) }
 
     private fun logStallTaskOnce(message: String) {
         if (loggedTaskMessages.add(message)) {
@@ -2181,31 +2694,33 @@ class AntStall : ModelTask() {
     /**
      * @brief 助力好友
      */
-    private fun assistFriend() {
+    private fun assistFriend(): Boolean {
         try {
-            if (stallAssistFriend.value != true) return
+            if (stallAssistFriend.value != true) return false
 
             if (!Status.canAntStallAssistFriendToday()) {
                 Log.stall("今日新村助力次数已用完。")
-                return
+                return false
             }
 
             val friendSet = assistFriendList.resolvedIds()
             if (friendSet.isEmpty()) {
                 Log.stall("未设置新村助力好友列表。")
-                return
+                return false
             }
 
             Log.stall("开始为 ${friendSet.size} 位好友进行新村助力...")
+            var progressed = false
 
             for (safeUid in friendSet) {
                 if (FriendGuard.shouldSkipFriend(safeUid, TAG, "新村助力")) {
                     continue
                 }
-                val shareId = Base64.encodeToString(
-                    "$safeUid-${RandomUtil.getRandomInt(5)}ANUTSALTML_2PA_SHARE".toByteArray(),
-                    Base64.NO_WRAP
-                )
+                val shareId =
+                    Base64.encodeToString(
+                        "$safeUid-${RandomUtil.getRandomInt(5)}ANUTSALTML_2PA_SHARE".toByteArray(),
+                        Base64.NO_WRAP,
+                    )
 
                 val response = AntStallRpcCall.achieveBeShareP2P(shareId)
                 val json = JSONObject(response)
@@ -2221,7 +2736,7 @@ class AntStall : ModelTask() {
                         "600000027" -> {
                             Log.stall("新村助力💪今日助力他人次数上限")
                             Status.antStallAssistFriendToday()
-                            return
+                            return progressed
                         }
 
                         else -> {
@@ -2232,39 +2747,44 @@ class AntStall : ModelTask() {
                 }
 
                 Log.stall("新村助力🎉成功[$name]")
+                progressed = true
                 GlobalThreadPools.sleepCompat(5000)
             }
 
             Status.antStallAssistFriendToday()
-
+            return progressed
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "assistFriend err:", t)
         }
+        return false
     }
 
     /**
      * @brief 捐赠项目
      */
-    private fun donate() {
+    private fun donate(): Boolean {
         try {
             val response = AntStallRpcCall.projectList()
             val json = JSONObject(response)
 
-            if (json.optString("resultCode", "") != "SUCCESS") return
+            if (json.optString("resultCode", "") != "SUCCESS") return false
 
             // 检查余额
             val userInfo = json.optJSONObject("astUserInfoVO")
             if (userInfo != null) {
-                val currentCoinAmount = userInfo.optJSONObject("currentCoin")
-                    ?.optDouble("amount", 0.0) ?: 0.0
+                val currentCoinAmount =
+                    userInfo
+                        .optJSONObject("currentCoin")
+                        ?.optDouble("amount", 0.0) ?: 0.0
 
                 if (currentCoinAmount < 15000) {
-                    return
+                    return false
                 }
             }
 
             // 查找在线项目
-            val projects = json.optJSONArray("astProjectVOS") ?: return
+            val projects = json.optJSONArray("astProjectVOS") ?: return false
+            var progressed = false
 
             for (i in 0 until projects.length()) {
                 val project = projects.optJSONObject(i) ?: continue
@@ -2288,81 +2808,84 @@ class AntStall : ModelTask() {
                             if (donateJson.optString("resultCode", "") == "SUCCESS") {
                                 Log.stall("蚂蚁新村⛪[捐赠:$title]")
                                 Status.setStallDonateToday()
+                                progressed = true
                             }
                         }
                     }
                 }
             }
+            return progressed
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "donate err:", t)
         }
+        return false
     }
 
     /**
      * @brief 进入下一村
      */
-    private fun roadmap() {
+    private fun roadmap(): Boolean {
         try {
-            val latestHome = queryStallHomeOrNull("roadmap refreshHome") ?: return
+            val latestHome = queryStallHomeOrNull("roadmap refreshHome") ?: return false
             if (!latestHome.optBoolean("needUpgradeVillage", false)) {
-                return
+                return false
             }
 
             val roadmapResponse = AntStallRpcCall.roadmap()
             val roadmapJson = JSONObject(roadmapResponse)
             if (!ResChecker.checkRes(TAG, roadmapJson)) {
                 Log.error(TAG, "roadmap err: $roadmapResponse")
-                return
+                return false
             }
 
-            val roadList = roadmapJson.optJSONArray("roadList")
             val currentVillage = latestHome.optJSONObject("currentVillage")
             val currentVillageName = currentVillage?.optString("villageName")?.trim().orEmpty()
             val currentVillageType = currentVillage?.optString("villageType")?.trim().orEmpty()
-            val targetVillageName = latestHome.optString("nextVillageName").trim().ifBlank {
-                resolveNextVillageName(roadList, currentVillageName, currentVillageType)
-            }
-            if (targetVillageName.isBlank()) {
-                Log.error(
-                    TAG,
-                    "roadmap err: 未解析到下一村 villageName, currentVillage=$currentVillageName raw=$roadmapJson"
-                )
-                return
-            }
-
-            val flagKey = StatusFlags.FLAG_ANTSTALL_ROADMAP_VISITED_PREFIX + targetVillageName
-            if (Status.hasFlagToday(flagKey)) {
-                Log.stall("今日已进入[$targetVillageName],跳过重复切换。")
-                return
-            }
+            val expectedVillageName =
+                latestHome.optString("nextVillageName").trim().ifBlank {
+                    resolveNextVillageName(roadmapJson.optJSONArray("roadList"), currentVillageName, currentVillageType)
+                }
 
             val nextVillageResponse = AntStallRpcCall.nextVillage()
             val nextVillageJson = JSONObject(nextVillageResponse)
             if (!ResChecker.checkRes(TAG, nextVillageJson)) {
                 Log.error(TAG, "nextVillage err: $nextVillageResponse")
-                return
+                return false
             }
 
-            val verifiedHome = queryStallHomeOrNull("roadmap verifyHome") ?: return
-            val verifiedVillageName = verifiedHome.optJSONObject("currentVillage")
-                ?.optString("villageName")
-                ?.trim()
-                .orEmpty()
+            val verifiedHome = queryStallHomeOrNull("roadmap verifyHome") ?: return false
+            val verifiedVillage = verifiedHome.optJSONObject("currentVillage")
+            val verifiedVillageName = verifiedVillage?.optString("villageName")?.trim().orEmpty()
+            val verifiedVillageType = verifiedVillage?.optString("villageType")?.trim().orEmpty()
             val verifiedNeedUpgradeVillage = verifiedHome.optBoolean("needUpgradeVillage", false)
-            if (verifiedVillageName != targetVillageName || verifiedNeedUpgradeVillage) {
+            val actualVillage = verifiedVillageName.ifBlank { verifiedVillageType }
+            val villageChanged =
+                verifiedVillageName != currentVillageName || verifiedVillageType != currentVillageType
+            if (!villageChanged || verifiedNeedUpgradeVillage || actualVillage.isBlank()) {
                 Log.error(
                     TAG,
-                    "nextVillage verify err: expectedVillage=$targetVillageName actualVillage=$verifiedVillageName needUpgradeVillage=$verifiedNeedUpgradeVillage"
+                    "新村路线[action=nextVillage rpc=com.alipay.antstall.user.ast.next.village " +
+                        "classification=UNKNOWN_NEEDS_REVIEW decision=LOG_ONLY " +
+                        "preVillage=${currentVillageName.ifBlank { currentVillageType }} " +
+                        "expectedVillage=$expectedVillageName actualVillage=$actualVillage " +
+                        "needUpgrade=$verifiedNeedUpgradeVillage raw=$nextVillageJson home=$verifiedHome]",
                 )
-                return
+                return false
             }
 
-            Log.stall("蚂蚁新村⛪[进入:$targetVillageName]成功")
+            val flagKey = StatusFlags.FLAG_ANTSTALL_ROADMAP_VISITED_PREFIX + actualVillage
+            Log.stall("蚂蚁新村⛪[进入:$actualVillage]成功")
             Status.setFlagToday(flagKey)
-
+            return true
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "roadmap err:", t)
         }
+        return false
+    }
+
+    private fun markStallTasksDoneInvalidated() {
+        stallTasksDoneInvalidatedThisRun = true
+        Status.removeFlag(StatusFlags.FLAG_ANTSTALL_TASKS_DONE)
     }
 
     private fun queryStallHomeOrNull(action: String): JSONObject? {
@@ -2378,7 +2901,7 @@ class AntStall : ModelTask() {
     private fun resolveNextVillageName(
         roadList: JSONArray?,
         currentVillageName: String,
-        currentVillageType: String
+        currentVillageType: String,
     ): String {
         if (roadList == null) {
             return ""
@@ -2445,7 +2968,6 @@ class AntStall : ModelTask() {
             } else {
                 Log.stall("没有可收取的肥料。")
             }
-
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "collectManure err:", t)
         }
@@ -2476,7 +2998,6 @@ class AntStall : ModelTask() {
             if (ResChecker.checkRes(TAG, json)) {
                 Log.stall("蚂蚁新村⛪打肥料成功")
             }
-
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "throwManure err:", t)
         } finally {
@@ -2517,10 +3038,11 @@ class AntStall : ModelTask() {
 
                 if (!isThrowManure) continue
 
-                val dynamic = JSONObject().apply {
-                    put("bizId", lossDynamic.getString("bizId"))
-                    put("bizType", lossDynamic.getString("bizType"))
-                }
+                val dynamic =
+                    JSONObject().apply {
+                        put("bizId", lossDynamic.getString("bizId"))
+                        put("bizType", lossDynamic.getString("bizType"))
+                    }
                 dynamicList.put(dynamic)
 
                 if (dynamicList.length() == 5) {
@@ -2532,7 +3054,6 @@ class AntStall : ModelTask() {
             if (dynamicList.length() > 0) {
                 throwManure(dynamicList)
             }
-
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "throwManure err:", t)
         }
@@ -2574,7 +3095,7 @@ class AntStall : ModelTask() {
                     if (!json.optBoolean("success")) {
                         Log.error(
                             TAG,
-                            "pasteTicket.nextTicketFriend err: ${json.optString("resultDesc")}"
+                            "pasteTicket.nextTicketFriend err: ${json.optString("resultDesc")}",
                         )
                         return
                     }
@@ -2622,13 +3143,14 @@ class AntStall : ModelTask() {
                             }
 
                             val rentLastUser = propertyValue.getString("rentLastUser")
-                            val ticketResponse = AntStallRpcCall.ticket(
-                                propertyValue.getString("rentLastBill"),
-                                propertyValue.getString("seatId"),
-                                propertyValue.getString("rentLastShop"),
-                                rentLastUser,
-                                propertyValue.getString("userId")
-                            )
+                            val ticketResponse =
+                                AntStallRpcCall.ticket(
+                                    propertyValue.getString("rentLastBill"),
+                                    propertyValue.getString("seatId"),
+                                    propertyValue.getString("rentLastShop"),
+                                    rentLastUser,
+                                    propertyValue.getString("userId"),
+                                )
 
                             val ticketJson = JSONObject(ticketResponse)
                             if (!ticketJson.optBoolean("success")) {
@@ -2640,43 +3162,38 @@ class AntStall : ModelTask() {
                                 }
                                 Log.error(
                                     TAG,
-                                    "pasteTicket.ticket err: $failureText"
+                                    "pasteTicket.ticket err: $failureText",
                                 )
                                 return
                             }
 
                             Log.stall("蚂蚁新村🚫在[${UserMap.getMaskName(friendId)}]贴罚单")
-
                         } finally {
                             GlobalThreadPools.sleepCompat(1000)
                         }
                     }
-
                 } finally {
                     GlobalThreadPools.sleepCompat(1500)
                 }
             }
-
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "pasteTicket err:", t)
         }
     }
 
-    private fun pasteTicketFailureText(ticketJson: JSONObject): String {
-        return sequenceOf(
+    private fun pasteTicketFailureText(ticketJson: JSONObject): String =
+        sequenceOf(
             ticketJson.optString("resultDesc"),
             ticketJson.optString("resultMessage"),
             ticketJson.optString("resultMsg"),
             ticketJson.optString("desc"),
-            ticketJson.optString("memo")
+            ticketJson.optString("memo"),
         ).firstOrNull { it.isNotBlank() } ?: ticketJson.toString()
-    }
 
-    private fun isPasteTicketLimitReached(resultDesc: String): Boolean {
-        return resultDesc.contains("贴罚单次数已用完") ||
+    private fun isPasteTicketLimitReached(resultDesc: String): Boolean =
+        resultDesc.contains("贴罚单次数已用完") ||
             resultDesc.contains("明天再来") ||
             (resultDesc.contains("罚单") && resultDesc.contains("次数") && resultDesc.contains("用完"))
-    }
 
     /**
      * @brief 摆摊操作类型
@@ -2731,14 +3248,16 @@ class AntStall : ModelTask() {
         private const val STALL_XLIGHT_TASK_TYPE = "ANTSTALL_XLIGHT_VARIABLE_AWARD"
         private const val STALL_ELEME_VISIT_TASK_TYPE = "ANTSTALL_ELEME_VISIT"
         private const val STALL_XLIGHT_PAGE_FROM = "ch_url-https://68687809.h5app.alipay.com/www/game.html"
+        private const val STALL_TASK_REFRESH_ATTEMPTS = 3
+        private const val STALL_TASK_REFRESH_DELAY_MS = 600L
         const val PERSISTENT_CHILD_KIND = "stall_child_task"
 
-        private val STALL_FINISH_TASK_TYPES = setOf(
-            "ANTSTALL_NORMAL_OPEN_NOTICE",  // 开启摊新村收益提醒
-            "tianjiashouye",                 // 添加首页
-            "ANTSTALL_TASK_diantao202311",   // 去点淘赚元宝提现
-            "ANTSTALL_TASK_nongchangleyuan"  // 农场乐园
-        )
+        private val STALL_FINISH_TASK_TYPES =
+            setOf(
+                "ANTSTALL_NORMAL_OPEN_NOTICE", // 开启摊新村收益提醒
+                "tianjiashouye", // 添加首页
+                "ANTSTALL_TASK_diantao202311", // 去点淘赚元宝提现
+                "ANTSTALL_TASK_nongchangleyuan", // 农场乐园
+            )
     }
 }
-

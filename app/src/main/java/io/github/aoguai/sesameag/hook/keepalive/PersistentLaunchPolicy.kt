@@ -5,6 +5,7 @@ import android.os.Process
 import io.github.aoguai.sesameag.data.Config
 import io.github.aoguai.sesameag.data.General
 import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
+import io.github.aoguai.sesameag.hook.AccountSlotRegistry
 import io.github.aoguai.sesameag.model.BaseModel
 import io.github.aoguai.sesameag.util.Files
 import io.github.aoguai.sesameag.util.maps.UserMap
@@ -19,10 +20,13 @@ internal object PersistentLaunchPolicy {
 
     data class PreparationResult(
         val schedule: PersistentSchedule,
-        val blockedReason: String? = null
+        val blockedReason: String? = null,
     )
 
-    fun prepareScheduleForRegistration(context: Context, schedule: PersistentSchedule): PreparationResult {
+    fun prepareScheduleForRegistration(
+        context: Context,
+        schedule: PersistentSchedule,
+    ): PreparationResult {
         if (canUseModuleReceiverContext(context)) {
             return PreparationResult(schedule.copy(payloadJson = sanitizeLaunchTarget(schedule.payloadJson, false)))
         }
@@ -32,17 +36,19 @@ internal object PersistentLaunchPolicy {
         return PreparationResult(schedule = schedule, blockedReason = FRONT_LAUNCH_DISABLED_ERROR)
     }
 
-    fun shouldLaunchTarget(schedule: PersistentSchedule): Boolean {
-        return payloadRequestsTargetLaunch(schedule.payloadJson) && isForegroundLaunchEnabled(schedule.ownerUserId)
-    }
+    fun shouldLaunchTarget(schedule: PersistentSchedule): Boolean =
+        AccountSlotRegistry.isExecutableUser(schedule.ownerUserId) &&
+            payloadRequestsTargetLaunch(schedule.payloadJson) &&
+            isForegroundLaunchEnabled(schedule.ownerUserId)
 
     fun isFrontLaunchDisabled(error: String?): Boolean = error == FRONT_LAUNCH_DISABLED_ERROR
 
-    fun payloadRequestsTargetLaunch(payloadJson: String): Boolean {
-        return payloadToJson(payloadJson).optBoolean(LAUNCH_TARGET_KEY, false)
-    }
+    fun payloadRequestsTargetLaunch(payloadJson: String): Boolean = payloadToJson(payloadJson).optBoolean(LAUNCH_TARGET_KEY, false)
 
-    fun sanitizeLaunchTarget(payloadJson: String, enabled: Boolean): String {
+    fun sanitizeLaunchTarget(
+        payloadJson: String,
+        enabled: Boolean,
+    ): String {
         val payload = payloadToJson(payloadJson)
         if (enabled) {
             payload.put(LAUNCH_TARGET_KEY, true)
@@ -52,23 +58,28 @@ internal object PersistentLaunchPolicy {
         return payload.toString()
     }
 
-    private fun isForegroundLaunchEnabled(ownerUserId: String?): Boolean {
+    fun isForegroundLaunchEnabled(ownerUserId: String?): Boolean {
         val safeOwnerUserId = ownerUserId?.trim()?.takeIf { it.isNotEmpty() }
-        val currentUserId = (AccountSessionCoordinator.currentUserId() ?: UserMap.currentUid)
-            ?.trim()
-            ?.takeIf { it.isNotEmpty() }
-        if (Config.isLoaded() && (safeOwnerUserId == null || currentUserId == null || safeOwnerUserId == currentUserId)) {
+        if (safeOwnerUserId == null || !AccountSlotRegistry.isExecutableUser(safeOwnerUserId)) {
+            return false
+        }
+        val currentUserId =
+            (AccountSessionCoordinator.currentUserId() ?: UserMap.currentUid)
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+        if (Config.isLoaded() && (currentUserId == null || safeOwnerUserId == currentUserId)) {
             return BaseModel.allowPersistentForegroundLaunch.value != false
         }
         return readPersistedForegroundLaunchEnabled(safeOwnerUserId) ?: (BaseModel.allowPersistentForegroundLaunch.value != false)
     }
 
     private fun readPersistedForegroundLaunchEnabled(userId: String?): Boolean? {
-        val configFile = if (userId.isNullOrBlank()) {
-            Files.getDefaultConfigV2File()
-        } else {
-            Files.getConfigV2File(userId)
-        }
+        val configFile =
+            if (userId.isNullOrBlank()) {
+                Files.getDefaultConfigV2File()
+            } else {
+                Files.getConfigV2File(userId)
+            }
         if (!configFile.exists()) return null
         val content = Files.readFromFile(configFile)?.trim().takeIf { !it.isNullOrEmpty() } ?: return null
         return runCatching {

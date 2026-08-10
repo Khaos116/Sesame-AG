@@ -29,8 +29,6 @@ public class GeminiAI implements AnswerAIInterface {
     } else {
       this.token = "";
     }
-    Log.summary("Gemini token: " + token);
-    Log.farm("Gemini token: " + token);
         /*if (cUrl != null && !cUrl.isEmpty()) {
             url = cUrl.trim().replaceAll("/$", "");
         }*/

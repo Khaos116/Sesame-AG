@@ -14,29 +14,48 @@ import org.json.JSONObject
 
 object FarmGame {
     private const val TAG = "FarmGame"
-    private const val QUERY_GAME_LIST_RPC = "com.alipay.charitygamecenter.queryGameList"
-    private const val QUERY_OPTIONAL_PLAY_RPC = "com.alipay.charitygamecenter.queryOptionalPlay"
     private const val LEYUAN_DAILY_TASK_SCENE_CODE = "ANTFARM_LEYUAN_DAILY_TASK"
     private const val LEYUAN_SIGN_TASK_TYPE = "2026cc_lyqd"
     private const val LEYUAN_OPEN_BOX_TASK_TYPE = "2026cc_GAME_ljkbx"
     private const val LEYUAN_OPEN_BOX_TARGET_COUNT = 10
     private val LEYUAN_LIMITED_TASK_TYPES = setOf(LEYUAN_SIGN_TASK_TYPE, LEYUAN_OPEN_BOX_TASK_TYPE)
 
-    private fun isDrawQuotaExhausted(message: String): Boolean {
-        return message.contains("抽奖次数不足") ||
+    private fun isDrawQuotaExhausted(message: String): Boolean =
+        message.contains("抽奖次数不足") ||
             message.contains("无可用抽奖次数") ||
             message.contains("暂无抽奖次数")
-    }
 
     enum class GameType {
-        flyGame, hitGame, starGame, jumpGame;
-        fun gameName(): String = when(this) {
-            flyGame -> "飞行赛"
-            hitGame -> "欢乐揍小鸡"
-            starGame -> "星星球"
-            jumpGame -> "登山赛"
-        }
+        flyGame,
+        hitGame,
+        starGame,
+        jumpGame,
+        ;
+
+        fun gameName(): String =
+            when (this) {
+                flyGame -> "飞行赛"
+                hitGame -> "欢乐揍小鸡"
+                starGame -> "星星球"
+                jumpGame -> "登山赛"
+            }
     }
+
+    private enum class FarmGameCompletion {
+        CONFIRMED_TERMINAL,
+        UNCONFIRMED,
+    }
+
+    private enum class GameTaskHandlingResult {
+        NO_PENDING_TASK,
+        CONFIRMED_PROGRESS,
+        UNCONFIRMED,
+    }
+
+    private data class FarmGameSnapshot(
+        val remainingGameCount: Int?,
+        val level3Get: Boolean?,
+    )
 
     /**
      * 外部入口：处理游戏改分逻辑
@@ -48,10 +67,11 @@ object FarmGame {
         }
 
         val isAccelEnabled = antFarm.useAccelerateTool!!.value == true
-        val isInsideTimeRange = antFarm.farmGameTrigger?.getTriggerSpec()?.let {
-            TimeTriggerEvaluator.evaluateNow(it).allowNow
-        } == true
-        val ignoreAcceLimitMode = !isAccelEnabled || antFarm.ignoreAcceLimit!!.value == true
+        val isInsideTimeRange =
+            antFarm.farmGameTrigger?.getTriggerSpec()?.let {
+                TimeTriggerEvaluator.evaluateNow(it).allowNow
+            } == true
+        val ignoreAcceLimitMode = antFarm.ignoreAcceLimit!!.value == true
         val isAccelLimitReached = isAccelEnabled && antFarm.hasReachedAccelerateToolLimit()
 
         when {
@@ -65,6 +85,7 @@ object FarmGame {
                     Log.farm("当前处于按时游戏改分模式，未到设定时间，跳过")
                 }
             }
+
             isAccelLimitReached || antFarm.accelerateToolCount <= 0 -> {
                 antFarm.syncAnimalStatus(antFarm.ownerFarmId)
                 val foodStockThreshold = AntFarm.foodStockLimit - antFarm.gameRewardMax!!.value!!
@@ -78,14 +99,16 @@ object FarmGame {
                 var isSatisfied: Boolean
                 if (reserveMin <= antFarm.gameRewardMax!!.value!!) {
                     isSatisfied = AntFarm.foodStock in foodStockThreshold..ceilingStock
-                } else{
+                } else {
                     isSatisfied = AntFarm.foodStock >= foodStockThreshold
                 }
                 val isTaskEnabled = antFarm.doFarmTask?.value == true
                 val isTaskFinished = Status.hasFlagToday(StatusFlags.FLAG_FARM_TASK_FINISHED)
 
                 when {
-                    isSatisfied -> playAllFarmGames()
+                    isSatisfied -> {
+                        playAllFarmGames()
+                    }
 
                     AntFarm.foodStock > ceilingStock -> {
                         Log.farm("当前饲料${AntFarm.foodStock}g（空间不足180g），等待小鸡进食后再执行游戏改分")
@@ -99,7 +122,7 @@ object FarmGame {
                     isTaskFinished -> {
                         Log.farm(
                             "已开启饲料任务且今日已完成，但领取奖励后缺口仍超过${antFarm.gameRewardMax!!.value}g，暂不执行游戏改分。" +
-                                    "请确认饲料奖励完成情况，可以关闭设置里的“做饲料任务”选项直接进行游戏改分"
+                                "请确认饲料奖励完成情况，可以关闭设置里的“做饲料任务”选项直接进行游戏改分",
                         )
                     }
 
@@ -108,68 +131,122 @@ object FarmGame {
                     }
                 }
             }
+
             // 加速卡还没用完，等待加速卡用完
             antFarm.accelerateToolCount > 0 -> {
                 Log.farm(
                     "加速卡有${antFarm.accelerateToolCount}张，${antFarm.getAccelerateToolUsageSummary()}，" +
-                        "尚未达到今日设定/系统上限，等待加速完成后再改分"
+                        "尚未达到今日设定/系统上限，等待加速完成后再改分",
                 )
             }
         }
     }
+
     suspend fun playAllFarmGames() {
-        recordFarmGame(GameType.flyGame)
-        recordFarmGame(GameType.hitGame)
-        recordFarmGame(GameType.starGame)
-        recordFarmGame(GameType.jumpGame)
+        var allGamesConfirmed = true
+        for (gameType in
+            listOf(
+                GameType.flyGame,
+                GameType.hitGame,
+                GameType.starGame,
+                GameType.jumpGame,
+            )
+        ) {
+            if (recordFarmGame(gameType) != FarmGameCompletion.CONFIRMED_TERMINAL) {
+                allGamesConfirmed = false
+            }
+        }
+        if (!allGamesConfirmed) {
+            Log.error(TAG, "庄园游戏本轮未形成完整确认状态，保留下一轮重试")
+            return
+        }
         Status.setFlagToday(StatusFlags.FLAG_FARM_GAME_FINISHED)
         Log.farm("今日庄园游戏改分已完成")
     }
 
-    private suspend fun recordFarmGame(gameType: GameType) {
+    private suspend fun recordFarmGame(gameType: GameType): FarmGameCompletion {
         try {
             while (true) {
-                val initRes = AntFarmRpcCall.initFarmGame(gameType.name)
-                val joInit = JSONObject(initRes)
-                if (!ResChecker.checkRes(TAG, joInit)) break
-
-                val gameAward = joInit.optJSONObject("gameAward")
-                if (gameAward?.optBoolean("level3Get") == true) {
+                val beforeSnapshot = queryFarmGameSnapshot(gameType) ?: return FarmGameCompletion.UNCONFIRMED
+                if (beforeSnapshot.level3Get == true) {
                     Log.farm("[${gameType.gameName()}]#今日奖励已领满")
-                    break
+                    return FarmGameCompletion.CONFIRMED_TERMINAL
                 }
 
-                val remainingCount = joInit.optInt("remainingGameCount", 1)
+                val remainingCount = beforeSnapshot.remainingGameCount
+                if (remainingCount == null || remainingCount < 0) {
+                    Log.farm("庄园游戏[${gameType.gameName()}]缺少可确认的剩余次数，保留下一轮重试")
+                    return FarmGameCompletion.UNCONFIRMED
+                }
                 if (remainingCount > 0) {
                     val recordResult = AntFarmRpcCall.recordFarmGame(gameType.name)
                     val joRecord = JSONObject(recordResult)
-                    if (ResChecker.checkRes(TAG, joRecord)) {
-                        val awardStr = parseGameAward(joRecord)
-                        Log.farm("庄园游戏🎮[${gameType.gameName()}]#$awardStr")
-
-                        if (joRecord.optInt("remainingGameCount", 0) > 0) {
-                            delay(3000)
-                            continue
-                        }
-                    } else {
+                    if (!ResChecker.checkRes(TAG, joRecord)) {
                         Log.farm("庄园游戏提交失败: $joRecord")
+                        return FarmGameCompletion.UNCONFIRMED
                     }
-                }
-
-                if (handleGameTasks(gameType)) {
+                    val awardStr = parseGameAward(joRecord)
+                    Log.farm("庄园游戏🎮[${gameType.gameName()}]#$awardStr")
                     delay(3000)
+
+                    val afterSnapshot = queryFarmGameSnapshot(gameType) ?: return FarmGameCompletion.UNCONFIRMED
+                    if (!hasConfirmedGameProgress(beforeSnapshot, afterSnapshot)) {
+                        Log.farm("庄园游戏[${gameType.gameName()}]提交 ACK 但状态未推进，当前轮不再重复提交")
+                        return FarmGameCompletion.UNCONFIRMED
+                    }
                     continue
                 }
-                break
+
+                when (handleGameTasks(gameType)) {
+                    GameTaskHandlingResult.NO_PENDING_TASK -> return FarmGameCompletion.CONFIRMED_TERMINAL
+                    GameTaskHandlingResult.CONFIRMED_PROGRESS -> continue
+                    GameTaskHandlingResult.UNCONFIRMED -> return FarmGameCompletion.UNCONFIRMED
+                }
             }
         } catch (e: CancellationException) {
             // 协程取消异常必须重新抛出，不能吞掉
             Log.farm("recordFarmGame 协程被取消")
             throw e
         } catch (t: Throwable) {
-            Log.printStackTrace(TAG, "recordFarmGame err:",t)
+            Log.printStackTrace(TAG, "recordFarmGame err:", t)
+            return FarmGameCompletion.UNCONFIRMED
         }
     }
+
+    private fun queryFarmGameSnapshot(gameType: GameType): FarmGameSnapshot? {
+        return try {
+            val initJo = JSONObject(AntFarmRpcCall.initFarmGame(gameType.name))
+            if (!ResChecker.checkRes(TAG, initJo)) {
+                Log.farm("庄园游戏[${gameType.gameName()}]初始化状态查询失败: $initJo")
+                null
+            } else {
+                val gameAward = initJo.optJSONObject("gameAward")
+                val level3Get =
+                    gameAward
+                        ?.takeIf { it.has("level3Get") && !it.isNull("level3Get") }
+                        ?.optBoolean("level3Get")
+                val remainingGameCount =
+                    initJo
+                        .takeIf { it.has("remainingGameCount") && !it.isNull("remainingGameCount") }
+                        ?.optInt("remainingGameCount")
+                FarmGameSnapshot(remainingGameCount, level3Get)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            Log.printStackTrace(TAG, "查询庄园游戏状态失败:", t)
+            null
+        }
+    }
+
+    private fun hasConfirmedGameProgress(
+        before: FarmGameSnapshot,
+        after: FarmGameSnapshot,
+    ): Boolean =
+        (before.remainingGameCount != null &&
+            after.remainingGameCount != null &&
+            after.remainingGameCount < before.remainingGameCount) ||
+            (before.level3Get == false && after.level3Get == true)
 
     private fun parseGameAward(jo: JSONObject): String {
         val award = StringBuilder()
@@ -188,34 +265,142 @@ object FarmGame {
         return award.toString()
     }
 
-    private fun handleGameTasks(gameType: GameType): Boolean {
-        // 仅飞行赛和揍小鸡有独立任务列表
-        val listResponse = when (gameType) {
-            GameType.flyGame -> AntFarmRpcCall.FlyGameListFarmTask()
-            GameType.hitGame -> AntFarmRpcCall.HitGameListFarmTask()
-            else -> return false
-        }
-        if (listResponse.isEmpty()) return false
-        val farmTaskList = JSONObject(listResponse).optJSONArray("farmTaskList") ?: return false
+    private suspend fun handleGameTasks(gameType: GameType): GameTaskHandlingResult {
+        val farmTaskList =
+            when (gameType) {
+                GameType.flyGame,
+                GameType.hitGame -> loadGameTasks(gameType) ?: return GameTaskHandlingResult.UNCONFIRMED
+
+                else -> return GameTaskHandlingResult.NO_PENDING_TASK
+            }
 
         for (i in 0 until farmTaskList.length()) {
-            val task = farmTaskList.getJSONObject(i)
+            val task = farmTaskList.optJSONObject(i) ?: run {
+                Log.farm("庄园游戏[${gameType.gameName()}]任务列表包含无效任务项，保留下一轮重试")
+                return GameTaskHandlingResult.UNCONFIRMED
+            }
             val status = task.optString("taskStatus")
             val taskId = task.optString("taskId")
             val awardType = task.optString("awardType")
-            if (TaskStatus.RECEIVED.name == status) continue
-            if (TaskStatus.FINISHED.name == status) {
-                AntFarmRpcCall.receiveFarmTaskAward(taskId, awardType)
-                return true
-            }
-            if (TaskStatus.TODO.name == status) {
-                val bizKey = task.optString("bizKey")
-                val outBizNo = "${bizKey}_${System.currentTimeMillis()}_${Integer.toHexString((Math.random() * 0xFFFFFF).toInt())}"
-                AntFarmRpcCall.finishTask(bizKey, "ANTFARM_GAME_TIMES_TASK", outBizNo)
-                return true
+            when (status) {
+                TaskStatus.RECEIVED.name -> continue
+
+                TaskStatus.FINISHED.name -> {
+                    if (taskId.isBlank()) {
+                        Log.farm("庄园游戏[${gameType.gameName()}]待领奖任务缺少 taskId，保留下一轮重试")
+                        return GameTaskHandlingResult.UNCONFIRMED
+                    }
+                    if (awardType == "ALLPURPOSE" &&
+                        AntFarm.instance?.prepareFarmAwardCapacity(task.optInt("awardCount", 0)) != true
+                    ) {
+                        Log.farm("庄园游戏任务[$taskId]饲料容量不足，保留后续领取")
+                        return GameTaskHandlingResult.UNCONFIRMED
+                    }
+                    val awardResponse = JSONObject(AntFarmRpcCall.receiveFarmTaskAward(taskId, awardType))
+                    if (!ResChecker.checkRes(TAG, awardResponse)) {
+                        Log.farm("庄园游戏任务[$taskId]领奖失败: $awardResponse")
+                        return GameTaskHandlingResult.UNCONFIRMED
+                    }
+                    delay(3000)
+                    val refreshedTask =
+                        loadGameTasks(gameType)
+                            ?.let { refreshedTaskList -> findGameTaskById(refreshedTaskList, taskId) }
+                    if (refreshedTask?.optString("taskStatus") == TaskStatus.RECEIVED.name) {
+                        return GameTaskHandlingResult.CONFIRMED_PROGRESS
+                    }
+                    Log.farm("庄园游戏任务[$taskId]领奖 ACK 后状态未确认，当前轮不再重复领取")
+                    return GameTaskHandlingResult.UNCONFIRMED
+                }
+
+                TaskStatus.TODO.name -> {
+                    val bizKey = task.optString("bizKey")
+                    if (taskId.isBlank() || bizKey.isBlank()) {
+                        Log.farm("庄园游戏[${gameType.gameName()}]待完成任务缺少 taskId 或 bizKey，保留下一轮重试")
+                        return GameTaskHandlingResult.UNCONFIRMED
+                    }
+                    val outBizNo = "${bizKey}_${System.currentTimeMillis()}_${Integer.toHexString((Math.random() * 0xFFFFFF).toInt())}"
+                    val finishResponse =
+                        JSONObject(AntFarmRpcCall.finishTask(bizKey, "ANTFARM_GAME_TIMES_TASK", outBizNo))
+                    if (!ResChecker.checkRes(TAG, finishResponse)) {
+                        Log.farm("庄园游戏任务[$taskId]执行失败: $finishResponse")
+                        return GameTaskHandlingResult.UNCONFIRMED
+                    }
+                    delay(3000)
+                    val refreshedTask =
+                        loadGameTasks(gameType)
+                            ?.let { refreshedTaskList -> findGameTaskById(refreshedTaskList, taskId) }
+                    if (refreshedTask != null && hasConfirmedGameTaskProgress(task, refreshedTask)) {
+                        return GameTaskHandlingResult.CONFIRMED_PROGRESS
+                    }
+                    Log.farm("庄园游戏任务[$taskId]执行 ACK 但状态未推进，当前轮不再重复提交")
+                    return GameTaskHandlingResult.UNCONFIRMED
+                }
+
+                else -> {
+                    Log.farm("庄园游戏[${gameType.gameName()}]任务状态[$status]未确认，保留下一轮重试")
+                    return GameTaskHandlingResult.UNCONFIRMED
+                }
             }
         }
-        return false
+        return GameTaskHandlingResult.NO_PENDING_TASK
+    }
+
+    private fun loadGameTasks(gameType: GameType): JSONArray? {
+        return try {
+            val listResponse =
+                when (gameType) {
+                    GameType.flyGame -> AntFarmRpcCall.FlyGameListFarmTask()
+                    GameType.hitGame -> AntFarmRpcCall.HitGameListFarmTask()
+                    else -> return null
+                }
+            if (listResponse.isEmpty()) {
+                Log.farm("庄园游戏[${gameType.gameName()}]任务列表响应为空")
+                return null
+            }
+            val listJo = JSONObject(listResponse)
+            if (!ResChecker.checkRes(TAG, listJo)) {
+                Log.farm("庄园游戏[${gameType.gameName()}]任务列表查询失败: $listJo")
+                return null
+            }
+            listJo.optJSONArray("farmTaskList") ?: run {
+                Log.farm("庄园游戏[${gameType.gameName()}]任务列表缺少 farmTaskList")
+                null
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            Log.printStackTrace(TAG, "查询庄园游戏任务列表失败:", t)
+            null
+        }
+    }
+
+    private fun findGameTaskById(
+        farmTaskList: JSONArray,
+        taskId: String,
+    ): JSONObject? {
+        for (index in 0 until farmTaskList.length()) {
+            val task = farmTaskList.optJSONObject(index) ?: return null
+            if (task.optString("taskId") == taskId) {
+                return task
+            }
+        }
+        return null
+    }
+
+    private fun hasConfirmedGameTaskProgress(
+        before: JSONObject,
+        after: JSONObject,
+    ): Boolean {
+        when (after.optString("taskStatus")) {
+            TaskStatus.FINISHED.name,
+            TaskStatus.RECEIVED.name -> return true
+
+            TaskStatus.TODO.name -> Unit
+            else -> return false
+        }
+        val beforeTimes = (before.opt("rightsTimes") as? Number)?.toInt()
+        val afterTimes = (after.opt("rightsTimes") as? Number)?.toInt()
+        return beforeTimes != null && afterTimes != null && afterTimes > beforeTimes
     }
 
     internal suspend fun drawGameCenterAward() {
@@ -237,19 +422,21 @@ object FarmGame {
                     break
                 }
 
-                val currentRights = findFirstObjectByKey(jo, "gameCenterDrawRights")
-                    ?: findFirstObjectByKey(jo, "gameDrawAwardActivity")
-                    ?: findFirstObjectByKey(jo, "gameEntryInfo")
+                val currentRights =
+                    findFirstObjectByKey(jo, "gameCenterDrawRights")
+                        ?: findFirstObjectByKey(jo, "gameDrawAwardActivity")
+                        ?: findFirstObjectByKey(jo, "gameEntryInfo")
                 if (currentRights == null) {
                     Log.farm("未找到开宝箱权益，退出")
                     break
                 }
 
                 // 1. 处理当前可开的宝箱 (对应你说的 canUse)
-                var quotaCanUse = currentRights.optInt(
-                    "quotaCanUse",
-                    currentRights.optInt("canUseTimes", currentRights.optInt("drawRightsTimes", 0))
-                )
+                var quotaCanUse =
+                    currentRights.optInt(
+                        "quotaCanUse",
+                        currentRights.optInt("canUseTimes", currentRights.optInt("drawRightsTimes", 0)),
+                    )
                 if (quotaCanUse > 0) {
                     Log.farm("当前有 $quotaCanUse 个宝箱待开启...")
                     while (quotaCanUse > 0) {
@@ -259,8 +446,9 @@ object FarmGame {
                         if (drawRes.optBoolean("success", drawResponse.optBoolean("success"))) {
                             quotaCanUse = (quotaCanUse - batchDrawCount).coerceAtLeast(0)
 
-                            val awardList = findFirstArrayByKey(drawRes, "gameCenterDrawAwardList")
-                                ?: findFirstArrayByKey(drawRes, "drawAwardList")
+                            val awardList =
+                                findFirstArrayByKey(drawRes, "gameCenterDrawAwardList")
+                                    ?: findFirstArrayByKey(drawRes, "drawAwardList")
                             val awardStrings = mutableListOf<String>()
                             if (awardList != null) {
                                 for (i in 0 until awardList.length()) {
@@ -275,9 +463,11 @@ object FarmGame {
                             }
                             Log.farm("庄园小鸡🎁[获得奖品: ${awardStrings.joinToString(",")}]")
                         } else {
-                            val desc = drawRes.optString("desc")
-                                .ifBlank { drawRes.optString("resultDesc") }
-                                .ifBlank { drawResponse.optString("desc") }
+                            val desc =
+                                drawRes
+                                    .optString("desc")
+                                    .ifBlank { drawRes.optString("resultDesc") }
+                                    .ifBlank { drawResponse.optString("desc") }
                             if (isDrawQuotaExhausted(desc)) {
                                 Log.farm("开宝箱权益已用完，停止本轮开箱: $desc")
                             } else {
@@ -291,7 +481,7 @@ object FarmGame {
 
                 // 2. 处理剩余任务 (判断是否需要去刷任务)
                 val limit = currentRights.optInt("quotaLimit", currentRights.optInt("limit")) // 总上限，比如 10
-                val used = currentRights.optInt("usedQuota", currentRights.optInt("usedTimes"))   // 今日已获得的总数，比如 2
+                val used = currentRights.optInt("usedQuota", currentRights.optInt("usedTimes")) // 今日已获得的总数，比如 2
 
                 // 计算逻辑：如果 已获得 < 总上限，且当前没机会了，就去刷
                 val remainToTask = limit - used
@@ -312,7 +502,7 @@ object FarmGame {
             Log.printStackTrace(AntFarm.TAG, "drawGameCenterAward 流程异常", t)
         } finally {
             if (totalParadiseCoins > 0) {
-                Log.farm("庄园小鸡🎁[本次任务总计获得乐园币: ${totalParadiseCoins}]")
+                Log.farm("庄园小鸡🎁[本次任务总计获得乐园币: $totalParadiseCoins]")
             }
         }
     }
@@ -327,34 +517,40 @@ object FarmGame {
                     return
                 }
 
-                val taskList = response.optJSONObject("taskTriggerPlayInfo")
-                    ?.optJSONArray("taskList")
-                    ?: return
+                val taskList =
+                    response
+                        .optJSONObject("taskTriggerPlayInfo")
+                        ?.optJSONArray("taskList")
+                        ?: return
                 val task = findNextLeyuanLimitedBenefitTask(taskList, attemptedTaskTypes) ?: return
                 val taskType = task.optString("taskType")
                 attemptedTaskTypes.add(taskType)
 
-                val title = task.optJSONObject("bizInfo")
-                    ?.optString("title")
-                    ?.takeIf { it.isNotBlank() }
-                    ?: taskType
+                val title =
+                    task
+                        .optJSONObject("bizInfo")
+                        ?.optString("title")
+                        ?.takeIf { it.isNotBlank() }
+                        ?: taskType
                 if (taskType == LEYUAN_OPEN_BOX_TASK_TYPE && !hasOpenedEnoughGameCenterBoxes()) {
                     Log.farm("小鸡乐园限时福利[$title]已完成但开箱数未确认达到${LEYUAN_OPEN_BOX_TARGET_COUNT}个，暂不领奖")
                     return@repeat
                 }
 
                 val sceneCode = task.optString("sceneCode")
-                val awardCount = task.optInt("awardCount").takeIf { it > 0 }
-                    ?: task.optInt("totalAwardCount").takeIf { it > 0 }
-                    ?: task.optInt("nextStageAwardCount").takeIf { it > 0 }
+                val awardCount =
+                    task.optInt("awardCount").takeIf { it > 0 }
+                        ?: task.optInt("totalAwardCount").takeIf { it > 0 }
+                        ?: task.optInt("nextStageAwardCount").takeIf { it > 0 }
                 if (sceneCode.isBlank() || awardCount == null) {
                     Log.farm("小鸡乐园限时福利[$title]跳过：缺少 sceneCode 或 awardCount | raw=$task")
                     return@repeat
                 }
 
-                val awardResp = JSONObject(
-                    AntFarmRpcCall.receiveTaskAwardAntFarm(sceneCode, taskType, awardCount)
-                )
+                val awardResp =
+                    JSONObject(
+                        AntFarmRpcCall.receiveTaskAwardAntFarm(sceneCode, taskType, awardCount),
+                    )
                 if (ResChecker.checkRes(TAG, awardResp)) {
                     Log.farm("小鸡乐园限时福利🎁[$title]#${awardCount}乐园币")
                 } else {
@@ -368,7 +564,7 @@ object FarmGame {
 
     private fun findNextLeyuanLimitedBenefitTask(
         taskList: JSONArray,
-        attemptedTaskTypes: Set<String>
+        attemptedTaskTypes: Set<String>,
     ): JSONObject? {
         for (i in 0 until taskList.length()) {
             val task = taskList.optJSONObject(i) ?: continue
@@ -399,15 +595,16 @@ object FarmGame {
                 Log.farm("小鸡乐园开箱进度查询失败: $response")
                 return null
             }
-            val rights = findFirstObjectByKey(jo, "gameCenterDrawRights")
-                ?: findFirstObjectByKey(jo, "gameDrawAwardActivity")
-                ?: findFirstObjectByKey(jo, "gameEntryInfo")
-                ?: return null
+            val rights =
+                findFirstObjectByKey(jo, "gameCenterDrawRights")
+                    ?: findFirstObjectByKey(jo, "gameDrawAwardActivity")
+                    ?: findFirstObjectByKey(jo, "gameEntryInfo")
+                    ?: return null
             maxOf(
                 rights.optInt("usedQuota", -1),
                 rights.optInt("usedTimes", -1),
                 rights.optInt("drawUsedTimes", -1),
-                rights.optInt("totalUsedTimes", -1)
+                rights.optInt("totalUsedTimes", -1),
             ).takeIf { it >= 0 }
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "queryGameCenterOpenedBoxCount err:", t)
@@ -415,8 +612,10 @@ object FarmGame {
         }
     }
 
-
-    internal fun findFirstObjectByKey(source: Any?, targetKey: String): JSONObject? {
+    internal fun findFirstObjectByKey(
+        source: Any?,
+        targetKey: String,
+    ): JSONObject? {
         return when (source) {
             is JSONObject -> {
                 source.optJSONObject(targetKey)?.let { return it }
@@ -435,11 +634,16 @@ object FarmGame {
                 null
             }
 
-            else -> null
+            else -> {
+                null
+            }
         }
     }
 
-    internal fun findFirstArrayByKey(source: Any?, targetKey: String): JSONArray? {
+    internal fun findFirstArrayByKey(
+        source: Any?,
+        targetKey: String,
+    ): JSONArray? {
         return when (source) {
             is JSONObject -> {
                 source.optJSONArray(targetKey)?.let { return it }
@@ -458,8 +662,9 @@ object FarmGame {
                 null
             }
 
-            else -> null
+            else -> {
+                null
+            }
         }
     }
-
 }

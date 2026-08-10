@@ -18,7 +18,6 @@ import java.io.File
 import java.nio.file.Path
 import java.nio.file.StandardWatchEventKinds
 import java.nio.file.WatchService
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.locks.ReentrantReadWriteLock
@@ -158,8 +157,7 @@ class UserDataStore(val uid: String, private val storageFile: File) {
     private fun forceLoadFromDisk() {
         try {
             if (!storageFile.exists() || storageFile.length() == 0L) {
-                data.clear()
-                lastLoadedTime.set(0)
+                // saveToDisk 可能正在替换文件；这里保留当前快照，避免把用户态缓存误清空。
                 return
             }
             val currentModTime = storageFile.lastModified()
@@ -201,25 +199,44 @@ class UserDataStore(val uid: String, private val storageFile: File) {
         }
     }
 
+    private fun createWriteTempFile(): File {
+        val parentDir = storageFile.parentFile
+            ?: throw IllegalStateException("UserDataStore parent directory is missing")
+        if (!parentDir.exists() && !parentDir.mkdirs()) {
+            throw IllegalStateException("Failed to create UserDataStore directory: ${parentDir.absolutePath}")
+        }
+        setWorldReadableWritable(parentDir)
+        // 多进程/多实例共用固定 .tmp 会互相覆盖，临时文件必须按次唯一。
+        return File.createTempFile("${storageFile.name}.", ".tmp", parentDir)
+    }
+
     private fun saveToDisk() {
+        var tempFile: File? = null
         try {
-            val tempFile = File(storageFile.parentFile, storageFile.name + ".tmp")
+            tempFile = createWriteTempFile()
             mapper.writer(prettyPrinter).writeValue(tempFile, data)
             setWorldReadableWritable(tempFile)
             lastWriteTime.set(System.currentTimeMillis())
             var renameSuccess = tempFile.renameTo(storageFile)
             if (!renameSuccess) {
-                if (storageFile.exists()) storageFile.delete()
-                renameSuccess = tempFile.renameTo(storageFile)
+                Log.w(tag, "renameTo failed, falling back to copy stream.")
+                try {
+                    tempFile.copyTo(storageFile, overwrite = true)
+                    renameSuccess = true
+                } catch (e: Exception) {
+                    Log.e(tag, "Failed to copy temp file to storage file", e)
+                }
             }
-            if (!renameSuccess) {
-                tempFile.copyTo(storageFile, overwrite = true)
-                tempFile.delete()
+            if (renameSuccess) {
+                setWorldReadableWritable(storageFile)
+                lastLoadedTime.set(storageFile.lastModified())
             }
-            setWorldReadableWritable(storageFile)
-            lastLoadedTime.set(storageFile.lastModified())
         } catch (e: Exception) {
             Log.e(tag, "Failed to save config", e)
+        } finally {
+            if (tempFile?.exists() == true) {
+                tempFile.delete()
+            }
         }
     }
 
@@ -234,7 +251,12 @@ class UserDataStore(val uid: String, private val storageFile: File) {
 
             watchService = watch
             runCatching {
-                path.register(watch, StandardWatchEventKinds.ENTRY_MODIFY)
+                path.register(
+                    watch,
+                    StandardWatchEventKinds.ENTRY_CREATE,
+                    StandardWatchEventKinds.ENTRY_DELETE,
+                    StandardWatchEventKinds.ENTRY_MODIFY
+                )
             }.onFailure { e ->
                 runCatching { watch.close() }
                 Log.e(tag, "Failed to register watch service", e)
@@ -244,7 +266,8 @@ class UserDataStore(val uid: String, private val storageFile: File) {
             try {
                 while (isActive) {
                     val key = try {
-                        watch.poll(1, TimeUnit.SECONDS) ?: continue
+                        // 由真实文件变更唤醒；shutdown() 会关闭 WatchService，因此 take() 不会阻塞销毁。
+                        watch.take()
                     } catch (_: Exception) { return@execute }
 
                     var shouldReload = false

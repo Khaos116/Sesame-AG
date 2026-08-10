@@ -5,6 +5,7 @@ import io.github.aoguai.sesameag.entity.RpcEntity
 import io.github.aoguai.sesameag.hook.ApplicationHook
 import io.github.aoguai.sesameag.util.maps.UserMap
 import org.json.JSONObject
+import java.security.MessageDigest
 import java.util.Calendar
 import java.util.TimeZone
 
@@ -121,6 +122,11 @@ object MyUtils {
     return sp
   }
 
+  private fun rpcDailyKey(rpc: RpcEntity): String =
+    MessageDigest.getInstance("SHA-256")
+      .digest("${rpc.requestMethod}_${rpc.requestData}".toByteArray(Charsets.UTF_8))
+      .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+
   fun checkRpcTodayIsError(rpc: RpcEntity) {
     if (rpc.requestMethod.orEmpty().contains(".antfarm.")) {
       return //不能耽误喂鸡大业
@@ -134,7 +140,7 @@ object MyUtils {
           s.contains("系统出错") ||
           s.contains("\"error\":1009") -> {
           getMySp()?.let { sp ->
-            sp.putBoolean(MyCryptoUtils.encrypt("${rpc.requestMethod}_${rpc.requestData}"), true)
+            sp.putBoolean(rpcDailyKey(rpc), true)
             Log.greenFinance("当日异常的请求，当日不再请求\n${rpc.requestMethod}")
           } ?: run {
             Log.greenFinance("当日异常的请求，当日不再请求,存储失败:${rpc.requestMethod}")
@@ -148,6 +154,6 @@ object MyUtils {
     if (rpc.requestMethod.orEmpty().contains(".antfarm.")) {
       return false //不能耽误喂鸡大业
     }
-    return getMySp()?.getBoolean(MyCryptoUtils.encrypt("${rpc.requestMethod}_${rpc.requestData}")) ?: false
+    return getMySp()?.getBoolean(rpcDailyKey(rpc)) ?: false
   }
 }

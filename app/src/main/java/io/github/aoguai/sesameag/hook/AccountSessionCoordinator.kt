@@ -81,12 +81,6 @@ object AccountSessionCoordinator {
 
     fun isSwitching(): Boolean = switchInProgress
 
-    fun hasActiveSessionFor(userId: String?): Boolean {
-        val safeUserId = userId?.trim().orEmpty()
-        val current = currentSession ?: return false
-        return safeUserId.isNotEmpty() && current.userId == safeUserId
-    }
-
     fun beginSessionSwitch(
         reason: String,
         targetUserId: String?,
@@ -149,6 +143,8 @@ object AccountSessionCoordinator {
     ): ActiveAccountSession {
         val safeUserId = userId.trim()
         require(safeUserId.isNotEmpty()) { "userId must not be blank" }
+        require(AccountSlotRegistry.isExecutableUser(safeUserId)) { "userId is not executable" }
+        require(RuntimeIdentityGuard.isTrustedForExecution()) { "runtime identity is not trusted" }
         val now = System.currentTimeMillis()
         val epoch = pendingEpoch.takeIf { it > 0L } ?: epochGenerator.incrementAndGet()
         val snapshot = UserMap.ensureActiveUserSnapshot(safeUserId, activeUserSnapshot)
@@ -188,7 +184,9 @@ object AccountSessionCoordinator {
             WorkflowRootGuard.hasGrantedRoot() &&
                 accepted &&
                 !ApplicationHookConstants.isOffline() &&
-                sessionIsCurrent
+                sessionIsCurrent &&
+                RuntimeIdentityGuard.isTrustedForExecution() &&
+                AccountSlotRegistry.isExecutableUser(current.userId)
         if (current.workflowAllowed == workflowAllowed && current.legalAccepted == accepted) {
             return current
         }
@@ -245,10 +243,13 @@ object AccountSessionCoordinator {
     }
 
     fun shouldAcceptTrigger(trigger: ApplicationHookConstants.TriggerInfo): Boolean {
-        if (switchInProgress) {
+        if (switchInProgress || !RuntimeIdentityGuard.isTrustedForExecution()) {
             return false
         }
         val current = currentSession ?: return false
+        if (!AccountSlotRegistry.isExecutableUser(current.userId)) {
+            return false
+        }
         val ownerUserId = trigger.ownerUserId?.trim().orEmpty()
         if (ownerUserId.isEmpty() || ownerUserId != current.userId) {
             return false
@@ -259,14 +260,21 @@ object AccountSessionCoordinator {
     fun isCurrentSession(userId: String?, sessionEpoch: Long): Boolean {
         val current = currentSession ?: return false
         val safeUserId = userId?.trim().orEmpty()
-        if (safeUserId.isEmpty()) return false
-        return current.userId == safeUserId && current.sessionEpoch == sessionEpoch
+        if (safeUserId.isEmpty() || !RuntimeIdentityGuard.isTrustedForExecution()) return false
+        return AccountSlotRegistry.isExecutableUser(current.userId) &&
+            current.userId == safeUserId &&
+            current.sessionEpoch == sessionEpoch
     }
 
     fun isScheduleRoutable(schedule: PersistentSchedule): Boolean {
         val current = currentSession ?: return false
         val ownerUserId = schedule.ownerUserId?.trim().orEmpty()
-        if (ownerUserId.isEmpty() || ownerUserId != current.userId) {
+        if (
+            ownerUserId.isEmpty() ||
+            ownerUserId != current.userId ||
+            !RuntimeIdentityGuard.isTrustedForExecution() ||
+            !AccountSlotRegistry.isExecutableUser(current.userId)
+        ) {
             return false
         }
         return schedule.sessionEpoch == current.sessionEpoch

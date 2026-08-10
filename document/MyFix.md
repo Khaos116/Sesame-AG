@@ -135,14 +135,14 @@ git diff <上游分支>...my_dev
 - 早期提交直接修改过 `GeminiAI.kt` 和 `AnswerAI.kt`，后来已由 Java 版实现取代；不要同时保留多套同名实现。
 - 某些早期 `AntForest.kt` 的时区替换在当前分支已不再存在。合并后只检查实际仍然依赖本地时区的森林流程，不要全文件盲目替换。
 
-## 4. 当前实现中不要照搬的问题
+## 4. 已修正的迁移问题：后续不要回退
 
-这些是整理时发现的现有缺陷。后续迁移应保留业务意图，但修正实现：
+以下问题已在合并 `dev@17099897` 时修正，后续迁移必须保留修正后的实现：
 
-1. `MyCryptoUtils.encrypt()` 使用随机 GCM IV，同一 RPC 参数每次得到不同字符串，不适合作为可重复查询的 SharedPreferences key。迁移时改用稳定摘要或稳定规范化 key；AES-GCM 可继续用于真正需要保密的数据，但不要用于索引键。
-2. `GreenFinance.kt` 当前记录异常时传入的是任务项 JSON，而不是 `submitTick` 的响应 JSON；应根据真实响应 `obj` 判断并记录异常。
-3. `AntFarm.kt` 当前条件为 `count > 5`，从零开始会多放行一次。若目标是最多 5 次，应按实际计数语义修正边界并做一次小测试。
-4. 旧 `GeminiAI.java` 会记录 token；迁移时必须删除凭据日志，只记录请求结果或脱敏信息。
+1. RPC 每日状态使用稳定的 SHA-256 摘要作为 SharedPreferences key；不要改回带随机 IV 的 `MyCryptoUtils.encrypt()`。
+2. `GreenFinance.kt` 使用 `submitTick` 的真实响应 `obj` 判断并记录异常，不要传任务项 JSON。
+3. `AntFarm.kt` 使用 `count >= 5` 限制最多 5 次，不要改回 `count > 5`。
+4. `GeminiAI.java` 不记录 token，只记录请求结果或脱敏信息。
 5. 签名文件和密码属于敏感资产。若仓库将公开，优先迁移到本地属性或 CI secret；本文不保存具体密码。
 
 ## 5. 已知高冲突区域

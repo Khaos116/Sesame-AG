@@ -140,7 +140,11 @@ object EnergyWaitingPersistence {
                         else ->
                             "持久化同步：当前有效蹲点任务仍为${currentCount}个"
                     }
-                    Log.forest("$statusText (uid: ${store.uid})")
+                    if (previousCount < 0 || currentCount != previousCount) {
+                        Log.forest("$statusText (uid: ${store.uid})")
+                    } else {
+                        Log.debug(TAG, "$statusText (uid: ${store.uid})")
+                    }
                 }
             } catch (e: Exception) {
                 Log.printStackTrace(TAG, "保存蹲点任务失败:", e)
@@ -188,21 +192,25 @@ object EnergyWaitingPersistence {
                     return@forEach
                 }
 
-                // 检查2：能量是否已经过期超过1小时
-                if (currentTime > persistData.produceTime + 60 * 60 * 1000L) {
+                val task = persistData.toWaitingTask()
+                if (!EnergyWaitingManager.isWithinWaitingExecutionWindow(task, currentTime)) {
                     expiredCount++
-                    Log.forest("  跳过[${persistData.userName}]：能量已过期超过1小时")
+                    Log.forest("  跳过[${persistData.userName}]：已超过两分钟执行窗口")
                     return@forEach
                 }
 
                 // 任务有效，添加到列表
-                validTasks.add(persistData.toWaitingTask())
+                validTasks.add(task)
             }
 
             Log.forest(
                 "📥 从持久化存储恢复${validTasks.size}个有效任务（跳过${expiredCount}个过期，${tooOldCount}个过旧，${staleSessionCount}个过期会话）"
             )
             lastPersistedTaskCount.set(validTasks.size)
+            if (validTasks.size != persistDataList.size) {
+                // 过滤结果必须落盘，避免下一次会话再次恢复同一批幽灵任务。
+                saveTasks(validTasks.associateBy { it.taskId })
+            }
 
             validTasks
         } catch (e: Exception) {
@@ -211,19 +219,33 @@ object EnergyWaitingPersistence {
         }
     }
 
-    /**
-     * 清空持久化存储中的所有任务
-     */
-    fun clearTasks() {
-        val store = getStore() ?: return
-        try {
-            val dataStoreKey = getDataStoreKey()
-            store.put(dataStoreKey, emptyList<WaitingTaskPersistData>())
-            lastPersistedTaskCount.set(0)
-            Log.forest("清空持久化存储 (uid: ${store.uid})")
-        } catch (e: Exception) {
-            Log.error(TAG, "清空持久化存储失败: ${e.message}")
+    private fun extractHomeBubbles(userHomeObj: org.json.JSONObject): org.json.JSONArray? {
+        val teamHomeResult = userHomeObj.optJSONObject("teamHomeResult")
+        if (teamHomeResult != null) {
+            return teamHomeResult.optJSONObject("mainMember")?.optJSONArray("bubbles")
         }
+        return userHomeObj.optJSONArray("bubbles")
+    }
+
+    private fun hasCollectableRestoredBubble(
+        userHomeObj: org.json.JSONObject,
+        bubbleId: Long,
+        effectiveNow: Long
+    ): Boolean {
+        val bubbles = extractHomeBubbles(userHomeObj) ?: return false
+        for (i in 0 until bubbles.length()) {
+            val bubble = bubbles.optJSONObject(i) ?: continue
+            if (bubble.optLong("id", 0L) != bubbleId) {
+                continue
+            }
+            val collectStatus = bubble.optString("collectStatus")
+            val produceTime = bubble.optLong("produceTime", 0L)
+            return produceTime <= effectiveNow &&
+                !bubble.optBoolean("robbedToday") &&
+                !bubble.optBoolean("unavailable") &&
+                collectStatus.equals("WAITING", ignoreCase = true)
+        }
+        return false
     }
 
     /**
@@ -254,6 +276,12 @@ object EnergyWaitingPersistence {
 
         tasks.forEach { task ->
             try {
+                if (!EnergyWaitingManager.isWithinWaitingExecutionWindow(task)) {
+                    Log.forest("  跳过[${task.getUserTypeTag()}${task.userName}]球[${task.bubbleId}]：已超过两分钟执行窗口")
+                    skippedCount++
+                    return@forEach
+                }
+
                 // 自己的账号：无论是否有保护罩都要恢复（到时间后直接收取）
                 if (task.isSelf()) {
                     val success = addTaskCallback(task)
@@ -321,6 +349,21 @@ object EnergyWaitingPersistence {
                     )
                     skippedCount++
                 } else {
+                    val effectiveNow = maxOf(System.currentTimeMillis(), userHomeObj.optLong("now", 0L))
+                    if (task.produceTime <= effectiveNow &&
+                        !hasCollectableRestoredBubble(userHomeObj, task.bubbleId, effectiveNow)
+                    ) {
+                        EnergyWaitingManager.markBubbleNoProgressCooldown(
+                            task.userId,
+                            task.bubbleId,
+                            "持久化恢复复核仍不可收"
+                        )
+                        Log.forest(
+                            "  ⏸ 跳过[${task.getUserTypeTag()}${task.userName}]球[${task.bubbleId}]：已成熟但主页复核仍不可收，进入30分钟冷却"
+                        )
+                        skippedCount++
+                        return@forEach
+                    }
                     // 好友任务有效，重新添加
                     val success = addTaskCallback(task)
                     if (success) {

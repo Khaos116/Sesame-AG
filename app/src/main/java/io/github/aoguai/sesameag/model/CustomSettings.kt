@@ -60,6 +60,7 @@ object CustomSettings {
             SimpleEntity("antCooperate", "蚂蚁森林合种"),
             SimpleEntity("antSports", "运动"),
             SimpleEntity("antMember", "会员"),
+            SimpleEntity("myBankWelfare", "网商银行"),
             SimpleEntity("antSesameCredit", "芝麻信用"),
             SimpleEntity("EcoProtection", "生态保护"),
             SimpleEntity("greenFinance", "绿色经营"),
@@ -118,24 +119,37 @@ object CustomSettings {
     @JvmStatic
     fun load(userId: String) {
         if (userId.isEmpty()) return
+        resetToDefault()
         try {
             val file = Files.getCustomSetFile(userId) ?: return
             if (!file.exists()) {
-                resetToDefault()
                 return
             }
             val json = Files.readFromFile(file)
-            if (json.isEmpty()) {
-                resetToDefault()
+            if (json.isBlank()) {
                 return
             }
             val data = JsonUtil.copyMapper().readValue(json, Map::class.java)
-            if (data.containsKey(onlyOnceDaily.code)) onlyOnceDaily.setObjectValue(data[onlyOnceDaily.code])
-            if (data.containsKey(onlyOnceDailyList.code)) onlyOnceDailyList.setObjectValue(data[onlyOnceDailyList.code])
-            if (data.containsKey(autoHandleOnceDaily.code)) autoHandleOnceDaily.setObjectValue(data[autoHandleOnceDaily.code])
-            if (data.containsKey(autoHandleOnceDailyTimes.code)) autoHandleOnceDailyTimes.setObjectValue(data[autoHandleOnceDailyTimes.code])
+            applyLoadedValues(data)
         } catch (e: Throwable) {
-            Log.printStackTrace(TAG, "Failed to load custom settings", e)
+            Log.printStackTrace(TAG, "Failed to load custom settings, keeping defaults", e)
+            Log.runtime(TAG, "自定义设置加载失败，已回退默认值:userId=$userId")
+            Log.record(TAG, "自定义设置加载失败，已回退默认值:userId=$userId")
+        }
+    }
+
+    private fun applyLoadedValues(data: Map<*, *>) {
+        if (data.containsKey(onlyOnceDaily.code)) {
+            onlyOnceDaily.setObjectValue(data[onlyOnceDaily.code])
+        }
+        if (data.containsKey(onlyOnceDailyList.code)) {
+            onlyOnceDailyList.setObjectValue(data[onlyOnceDailyList.code])
+        }
+        if (data.containsKey(autoHandleOnceDaily.code)) {
+            autoHandleOnceDaily.setObjectValue(data[autoHandleOnceDaily.code])
+        }
+        if (data.containsKey(autoHandleOnceDailyTimes.code)) {
+            autoHandleOnceDailyTimes.setObjectValue(data[autoHandleOnceDailyTimes.code])
         }
     }
 
@@ -158,6 +172,7 @@ object CustomSettings {
             taskInfo.contains("运动") || taskInfo.contains("antSports") -> "antSports"
             taskInfo.contains("芝麻信用") || taskInfo.contains("antSesameCredit") -> "antSesameCredit"
             taskInfo.contains("会员") || taskInfo.contains("antMember") -> "antMember"
+            taskInfo.contains("网商银行") || taskInfo.contains("网商福利金") || taskInfo.contains("MyBankWelfare") -> "myBankWelfare"
             taskInfo.contains("生态保护") || taskInfo.contains("EcoProtection") -> "EcoProtection"
             taskInfo.contains("绿色经营") || taskInfo.contains("greenFinance") -> "greenFinance"
             taskInfo.contains("保护地") || taskInfo.contains("reserve") -> "reserve"

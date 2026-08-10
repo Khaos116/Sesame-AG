@@ -1,19 +1,32 @@
 package io.github.aoguai.sesameag.hook
 
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants.TriggerInfo
+import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleRegistry
 import io.github.aoguai.sesameag.util.Log.record
 
 object ApplicationHookCore {
     private const val TAG = "ApplicationHookCore"
 
-    fun requestExecution(trigger: TriggerInfo) {
+    fun requestExecution(trigger: TriggerInfo): Boolean {
         val boundTrigger = AccountSessionCoordinator.bindTrigger(trigger)
         if (!AccountSessionCoordinator.shouldAcceptTrigger(boundTrigger)) {
             record(TAG, "ignore trigger due to stale/switching session: ${boundTrigger.summary()}")
-            return
+            return false
         }
-        ApplicationHookConstants.setPendingTrigger(boundTrigger)
+        val queueResult = ApplicationHookConstants.setPendingTrigger(boundTrigger)
+        queueResult.displaced
+            ?.persistentScheduleId
+            ?.takeIf { it.isNotBlank() }
+            ?.let { scheduleId ->
+                // setPendingTrigger 已退出 triggerLock；持久化和 AlarmManager 操作不得在队列锁内执行。
+                PersistentScheduleRegistry.rescheduleDeferred(
+                    ApplicationHook.appContext,
+                    scheduleId,
+                    "trigger_queue_full",
+                )
+            }
         dispatchIfNeeded()
+        return queueResult.accepted
     }
 
     fun dispatchIfNeeded() {
@@ -55,6 +68,16 @@ object ApplicationHookCore {
             return
         }
 
+        val currentOwnerUserId = AccountSessionCoordinator.currentUserId()
+        val currentSessionEpoch = AccountSessionCoordinator.currentSessionEpoch()
+        if (PersistentScheduleRegistry.hasActiveModuleChild(currentOwnerUserId, currentSessionEpoch)) {
+            record(
+                TAG,
+                "module persistent child is active, defer mainTask: pending=${ApplicationHookConstants.pendingTriggerCount()} owner=$currentOwnerUserId session=$currentSessionEpoch",
+            )
+            return
+        }
+
         record(TAG, "▶️ dispatch mainTask, pending=${ApplicationHookConstants.pendingTriggerCount()}")
         val job = mainTask.startTask(force = false, rounds = 1)
         job.invokeOnCompletion {
@@ -62,4 +85,3 @@ object ApplicationHookCore {
         }
     }
 }
-

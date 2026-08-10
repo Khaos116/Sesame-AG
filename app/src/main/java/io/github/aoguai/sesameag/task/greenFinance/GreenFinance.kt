@@ -228,7 +228,7 @@ class GreenFinance : ModelTask() {
                 if (MyUtils.getSp当天是否执行(MyUtils.CHANGE_KT1)) return
                 str = GreenFinanceRpcCall.submitTick(type, behaviorCode)
                 val obj = JsonUtil.parseJSONObject(str)
-                MyUtils.setSp当天是否执行(MyUtils.CHANGE_KT1, jsonObject)
+                MyUtils.setSp当天是否执行(MyUtils.CHANGE_KT1, obj)
                 if (!obj.optBoolean("success") || 
                     JsonUtil.getValueByPath(obj, "result.result") != "true") {
                     Log.greenFinance("绿色经营📊[${jsonObject.optString("title")}]打卡失败")

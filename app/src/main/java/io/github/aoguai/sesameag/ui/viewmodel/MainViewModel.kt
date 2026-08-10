@@ -8,9 +8,10 @@ import android.content.IntentFilter
 import android.os.Build
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import io.github.aoguai.sesameag.SesameApplication.Companion.PREFERENCES_KEY
 import io.github.aoguai.sesameag.data.Config
 import io.github.aoguai.sesameag.entity.UserEntity
+import io.github.aoguai.sesameag.hook.AccountSlotRegistry
+import io.github.aoguai.sesameag.hook.AccountSlotSnapshot
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.service.ConnectionState
 import io.github.aoguai.sesameag.service.LsposedServiceManager
@@ -68,12 +69,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
 
     companion object {
-        const val TAG = "MainViewModel"
+        private const val TAG = "MainViewModel"
     }
 
     // 1. 定义状态
-    private val prefs = application.getSharedPreferences(PREFERENCES_KEY, Context.MODE_PRIVATE)
-
     private val _oneWord = MutableStateFlow("正在获取句子...")
     val oneWord: StateFlow<String> = _oneWord.asStateFlow()
 
@@ -88,6 +87,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _userList = MutableStateFlow<List<UserEntity>>(emptyList())
     val userList: StateFlow<List<UserEntity>> = _userList.asStateFlow()
+
+    private val _accountSlots = MutableStateFlow(AccountSlotRegistry.snapshot())
+    val accountSlots: StateFlow<AccountSlotSnapshot> = _accountSlots.asStateFlow()
 
     private val _isLegalAccepted = MutableStateFlow(false)
     val isLegalAccepted: StateFlow<Boolean> = _isLegalAccepted.asStateFlow()
@@ -173,7 +175,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 frameworkName = frameworkStatus.frameworkName,
                 frameworkVersion = frameworkStatus.frameworkVersion,
                 apiVersion = frameworkStatus.apiVersion,
-                reason = if (frameworkStatus.apiVersion < 101) {
+                reason = if (!frameworkStatus.hasRequiredApi) {
                     ModuleStatus.UnsupportedReason.API_TOO_LOW
                 } else {
                     ModuleStatus.UnsupportedReason.NON_LSPOSED
@@ -189,13 +191,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun refreshActiveUser() {
         try {
             val activeUserEntity = DataStore.get("activedUser", UserEntity::class.java)
-            _activeUser.value = activeUserEntity
-            UserMap.setCurrentUserId(activeUserEntity?.userId?.trim()?.takeIf { it.isNotEmpty() })
+            val resolvedActiveUser = activeUserEntity ?: recoverActiveUserSnapshot()
+            _activeUser.value = resolvedActiveUser
+            UserMap.setCurrentUserId(resolvedActiveUser?.userId?.trim()?.takeIf { it.isNotEmpty() })
         } catch (e: Exception) {
             Log.e(TAG, "Read active user failed", e)
             _activeUser.value = null
             UserMap.setCurrentUserId(null)
         }
+    }
+
+    private fun recoverActiveUserSnapshot(): UserEntity? {
+        val fallbackUserId = UserMap.currentUid
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?: resolveExistingUserConfigIds().singleOrNull()
+            ?: return null
+        val snapshot = UserMap.readSelf(fallbackUserId) ?: return null
+        runCatching { DataStore.put("activedUser", snapshot) }
+            .onFailure { Log.w(TAG, "Recover active user snapshot failed: ${it.message}") }
+        return snapshot
     }
 
     private fun applyAccountContext(intent: Intent) {
@@ -263,13 +278,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun refreshUserConfigs() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val latestUserIds = SesameAgUtil.getFolderList(Files.CONFIG_DIR.absolutePath)
+                val latestUserIds = Files.listExistingUserConfigIds()
                 val newList = mutableListOf<UserEntity>()
                 for (userId in latestUserIds) {
                     UserMap.loadSelf(userId)
                     UserMap.get(userId)?.let { newList.add(it) }
                 }
                 _userList.value = newList
+                _accountSlots.value = AccountSlotRegistry.snapshot()
             } catch (e: Exception) {
                 Log.e(TAG, "Error reloading user configs", e)
             }
@@ -311,6 +327,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             Log.e(TAG, "Unregister account context receiver failed", e)
         } finally {
             accountContextReceiverRegistered = false
+        }
+    }
+
+    fun removeExecutableAccountSlot(userId: String?) {
+        viewModelScope.launch(Dispatchers.IO) {
+            AccountSlotRegistry.removeExecutableSlot(getApplication<Application>(), userId)
+            refreshUserConfigs()
+        }
+    }
+
+    fun selectLegacyAccountSlots(userIds: Collection<String?>) {
+        viewModelScope.launch(Dispatchers.IO) {
+            AccountSlotRegistry.selectLegacySlots(userIds)
+            refreshUserConfigs()
         }
     }
 
@@ -417,9 +447,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun resolveExistingUserConfigIds(): List<String> {
-        return SesameAgUtil.getFolderList(Files.CONFIG_DIR.absolutePath)
+        return Files.listExistingUserConfigIds()
             .map { it.trim() }
-            .filter { it.isNotEmpty() && Files.getConfigV2File(it).exists() }
+            .filter { it.isNotEmpty() }
             .distinct()
     }
 

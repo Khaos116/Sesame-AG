@@ -31,6 +31,7 @@ import com.google.android.material.appbar.MaterialToolbar
 import io.github.aoguai.sesameag.BuildConfig
 import io.github.aoguai.sesameag.R
 import io.github.aoguai.sesameag.data.Config
+import io.github.aoguai.sesameag.hook.AccountSlotRegistry
 import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.model.Model
@@ -50,11 +51,16 @@ import io.github.aoguai.sesameag.task.customTasks.ManualTaskModel
 import io.github.aoguai.sesameag.util.Files
 import io.github.aoguai.sesameag.util.GlobalThreadPools
 import io.github.aoguai.sesameag.util.JsonUtil
+import io.github.aoguai.sesameag.util.LocaleSettingsApplier
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.PortUtil
+import io.github.aoguai.sesameag.util.SettingsFieldAuditRegistry
 import io.github.aoguai.sesameag.util.ToastUtil
 import io.github.aoguai.sesameag.util.friend.FriendRepository
 import io.github.aoguai.sesameag.util.friend.FriendSelectionResolver
+import io.github.aoguai.sesameag.util.settingsTransfer.ResolvedSettingsImport
+import io.github.aoguai.sesameag.util.settingsTransfer.SettingsTransferExportMode
+import io.github.aoguai.sesameag.util.settingsTransfer.SettingsTransferImporter
 import io.github.aoguai.sesameag.util.maps.BeachMap
 import io.github.aoguai.sesameag.util.maps.BeanExchangeRightMap
 import io.github.aoguai.sesameag.util.maps.CooperateMap
@@ -81,6 +87,7 @@ class WebSettingsActivity : AppCompatActivity() {
     private var progressBar: ProgressBar? = null
     private var userId: String? = null
     private var userName: String? = null
+    private var pendingExportMode: SettingsTransferExportMode = SettingsTransferExportMode.SHARE
     private val tabList = ArrayList<ModelDto>()
     private val groupList = ArrayList<ModelGroupDto>()
     @Volatile
@@ -95,7 +102,13 @@ class WebSettingsActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
 
         context = this
-        userId = intent?.getStringExtra("userId")
+        val requestedUserId = AccountSlotRegistry.normalizeUserId(intent?.getStringExtra("userId"))
+        if (requestedUserId == null || requestedUserId !in Files.listExistingUserConfigIds()) {
+            Toast.makeText(this, "账号配置不存在或账号标识无效", Toast.LENGTH_LONG).show()
+            finish()
+            return
+        }
+        userId = requestedUserId
         userName = intent?.getStringExtra("userName")
 
         setContentView(R.layout.activity_web_settings)
@@ -120,14 +133,14 @@ class WebSettingsActivity : AppCompatActivity() {
         // 初始化导出逻辑（必须在 onCreate 中注册）
         exportLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             if (result.resultCode == RESULT_OK && result.data != null) {
-                PortUtil.handleExport(this, result.data?.data, userId)
+                PortUtil.handleExport(this, result.data?.data, userId, pendingExportMode)
             }
         }
 
         // 初始化导入逻辑（必须在 onCreate 中注册）
         importLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             if (result.resultCode == RESULT_OK && result.data != null) {
-                PortUtil.handleImport(this, result.data?.data, userId)
+                handleImportDocument(result.data?.data)
             }
         }
 
@@ -146,6 +159,7 @@ class WebSettingsActivity : AppCompatActivity() {
 
                 runOnUiThread {
                     try {
+                        LocaleSettingsApplier.apply(this@WebSettingsActivity)
                         webView.visibility = View.VISIBLE
                         initializeWebView()
                     } catch (e: Exception) {
@@ -181,8 +195,10 @@ class WebSettingsActivity : AppCompatActivity() {
             .setTitle("离开设置")
             .setMessage("是否保存当前配置修改？")
             .setPositiveButton("保存并退出") { _, _ ->
-                if (save()) {
-                    finish()
+                flushPendingDrafts {
+                    if (save()) {
+                        finish()
+                    }
                 }
             }
             .setNegativeButton("不保存退出") { _, _ -> finish() }
@@ -532,6 +548,7 @@ class WebSettingsActivity : AppCompatActivity() {
                 "friends" to friends,
                 "groups" to friendConfig.groups,
                 "field" to ModelFieldInfoDto.toInfoDto(modelField),
+                "audit" to SettingsFieldAuditRegistry.get(userId, fieldCode),
                 "preview" to preview.items,
                 "summary" to preview.summary
             )
@@ -593,8 +610,10 @@ class WebSettingsActivity : AppCompatActivity() {
         fun saveOnExit(): Boolean {
             runOnUiThread {
                 Log.record(TAG, "WebViewCallback: saveOnExit called")
-                if (save()) {
-                    finish()
+                flushPendingDrafts {
+                    if (save()) {
+                        finish()
+                    }
                 }
             }
             return true
@@ -626,20 +645,14 @@ class WebSettingsActivity : AppCompatActivity() {
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
         when (item.itemId) {
             1 -> {
-                val exportIntent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
-                    addCategory(Intent.CATEGORY_OPENABLE)
-                    type = "*/*"
-                    putExtra(Intent.EXTRA_TITLE, "[$userName]-config_v2.json")
+                flushPendingDrafts {
+                    showExportModeDialog()
                 }
-                exportLauncher.launch(exportIntent)
             }
             2 -> {
-                val importIntent = Intent(Intent.ACTION_GET_CONTENT).apply {
-                    addCategory(Intent.CATEGORY_OPENABLE)
-                    type = "*/*"
-                    putExtra(Intent.EXTRA_TITLE, "config_v2.json")
+                flushPendingDrafts {
+                    confirmImportBeforePicker()
                 }
-                importLauncher.launch(importIntent)
             }
             3 -> {
                 AlertDialog.Builder(context)
@@ -670,7 +683,9 @@ class WebSettingsActivity : AppCompatActivity() {
                 })
             }
             6 -> {
-                save()
+                flushPendingDrafts {
+                    save()
+                }
             }
             7 -> {
                 val cm = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
@@ -682,12 +697,115 @@ class WebSettingsActivity : AppCompatActivity() {
         return super.onOptionsItemSelected(item)
     }
 
+    private fun flushPendingDrafts(onComplete: () -> Unit) {
+        if (!::webView.isInitialized || isFinishing || isDestroyed) {
+            onComplete()
+            return
+        }
+        runCatching {
+            webView.evaluateJavascript(
+                "(function(){return window.__flushPendingDrafts ? window.__flushPendingDrafts() : 'SKIPPED';})();"
+            ) {
+                onComplete()
+            }
+        }.onFailure {
+            Log.printStackTrace(TAG, "flushPendingDrafts failed", it)
+            onComplete()
+        }
+    }
+
+    private fun showExportModeDialog() {
+        val items = arrayOf("分享设置（默认）", "备份当前账号")
+        AlertDialog.Builder(context)
+            .setTitle("导出配置")
+            .setItems(items) { _, which ->
+                pendingExportMode = if (which == 1) {
+                    SettingsTransferExportMode.BACKUP
+                } else {
+                    SettingsTransferExportMode.SHARE
+                }
+                val exportIntent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = "application/json"
+                    putExtra(Intent.EXTRA_TITLE, buildExportFileName(pendingExportMode))
+                }
+                exportLauncher.launch(exportIntent)
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun buildExportFileName(exportMode: SettingsTransferExportMode): String {
+        val safeName = userName?.takeIf { it.isNotBlank() }
+            ?: userId?.takeIf { it.isNotBlank() }
+            ?: "default"
+        return when (exportMode) {
+            SettingsTransferExportMode.SHARE -> "settings-share.json"
+            SettingsTransferExportMode.BACKUP -> "[$safeName]-settings-backup.json"
+        }
+    }
+
+    private fun confirmImportBeforePicker() {
+        val launchPicker = {
+            val importIntent = Intent(Intent.ACTION_GET_CONTENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "*/*"
+                putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/json", "text/plain"))
+                putExtra(Intent.EXTRA_TITLE, "settings.json")
+            }
+            importLauncher.launch(importIntent)
+        }
+        if (!Config.isModify(userId)) {
+            launchPicker()
+            return
+        }
+        AlertDialog.Builder(context)
+            .setTitle("覆盖当前修改")
+            .setMessage("当前页面还有未保存修改，继续导入会覆盖这些内容。")
+            .setPositiveButton("继续导入") { _, _ -> launchPicker() }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun handleImportDocument(uri: android.net.Uri?) {
+        GlobalThreadPools.execute(Dispatchers.IO) {
+            val json = PortUtil.readImportText(this@WebSettingsActivity, uri) ?: return@execute
+            val resolvedImport = runCatching {
+                SettingsTransferImporter.resolve(json, userId)
+            }.onFailure {
+                Log.printStackTrace(TAG, "解析导入文件失败", it)
+            }.getOrNull()
+
+            runOnUiThread {
+                if (resolvedImport == null) {
+                    Toast.makeText(this@WebSettingsActivity, "导入失败：文件内容无法识别", Toast.LENGTH_LONG).show()
+                } else {
+                    applyResolvedImport(resolvedImport)
+                }
+            }
+        }
+    }
+
+    private fun applyResolvedImport(resolvedImport: ResolvedSettingsImport) {
+        GlobalThreadPools.execute(Dispatchers.IO) {
+            val result = PortUtil.applyImport(this@WebSettingsActivity, userId, resolvedImport)
+            runOnUiThread {
+                if (!result.success) {
+                    Toast.makeText(this@WebSettingsActivity, result.message, Toast.LENGTH_LONG).show()
+                    return@runOnUiThread
+                }
+                PortUtil.restartActivity(this@WebSettingsActivity)
+            }
+        }
+    }
+
     private fun save(): Boolean {
         // 与 TK3 对齐：强制保存，避免 isModify 误判导致用户点击“保存”却未落盘
         if (!Config.save(userId, true)) {
             Toast.makeText(context, "保存失败！", Toast.LENGTH_SHORT).show()
             return false
         }
+        LocaleSettingsApplier.apply(this)
 
         Toast.makeText(context, "保存成功！", Toast.LENGTH_SHORT).show()
         Log.record(TAG, "配置保存成功: userId=${userId ?: "默认"}, configReload=${!userId.isNullOrEmpty()}")

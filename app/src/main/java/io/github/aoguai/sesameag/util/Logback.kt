@@ -9,10 +9,12 @@ import ch.qos.logback.classic.LoggerContext
 import ch.qos.logback.classic.android.LogcatAppender
 import ch.qos.logback.classic.encoder.PatternLayoutEncoder
 import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.core.FileAppender
 import ch.qos.logback.core.rolling.RollingFileAppender
 import ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy
 import ch.qos.logback.core.rolling.TimeBasedRollingPolicy
 import ch.qos.logback.core.util.FileSize
+import io.github.aoguai.sesameag.data.General
 import io.github.aoguai.sesameag.model.BaseModel
 import org.slf4j.LoggerFactory
 import java.io.File
@@ -27,6 +29,10 @@ object Logback {
     private var isFileInitialized = false
     private var appContext: Context? = null
     private var nextMidnightMillis: Long = 0
+    private var isRollingOwnerProcess = false
+
+    // 捕获 Hook 在账户配置加载前已可能写入日志，首轮文件初始化必须直接创建 capture Appender。
+    private var isCaptureFileAppenderEnabled = true
 
     /**
      * 初始化 Logcat (保证控制台一定有日志)
@@ -37,24 +43,25 @@ object Logback {
             val lc = LoggerFactory.getILoggerFactory() as LoggerContext
             lc.reset() // 清除之前的配置
 
-            val encoder = PatternLayoutEncoder().apply {
-                context = lc
-                pattern = "[%thread] %logger{80} %msg%n"
-                start()
-            }
+            val encoder =
+                PatternLayoutEncoder().apply {
+                    context = lc
+                    pattern = "[%thread] %logger{80} %msg%n"
+                    start()
+                }
 
-            val logcatAppender = LogcatAppender().apply {
-                context = lc
-                this.encoder = encoder
-                name = "LOGCAT"
-                start()
-            }
+            val logcatAppender =
+                LogcatAppender().apply {
+                    context = lc
+                    this.encoder = encoder
+                    name = "LOGCAT"
+                    start()
+                }
 
             lc.getLogger(Logger.ROOT_LOGGER_NAME).apply {
                 level = Level.DEBUG // 确保 Logcat 能看到所有级别的日志
                 addAppender(logcatAppender)
             }
-
         } catch (e: Exception) {
             Log.e("SesameLog", "Logback initLogcatOnly failed", e)
         }
@@ -62,10 +69,13 @@ object Logback {
 
     /**
      * 初始化文件日志 (有了 Context 之后调用)
-     * 这是一个“追加”操作，不会打断 Logcat 日志
+     * 目标应用主进程负责滚动，其他进程只追加当前活动文件，不会打断 Logcat 日志。
      */
     @Synchronized
-    fun initFileLogging(context: Context, force: Boolean = false) {
+    fun initFileLogging(
+        context: Context,
+        force: Boolean = false,
+    ) {
         val now = System.currentTimeMillis()
         // 1. 如果已经初始化过，且还没到跨天刷新的时间，则直接跳过
         if (!force && isFileInitialized && now < nextMidnightMillis) return
@@ -75,6 +85,7 @@ object Logback {
 
         // 2. 保存 Context 供后续跨天自动刷新使用
         this.appContext = context.applicationContext
+        isRollingOwnerProcess = context.packageName == General.PACKAGE_NAME
 
         // 3. 如果是触发了跨天刷新，需重置上下文以彻底清除旧的 Appender 句柄
         if (isRebuildingExistingAppenders) {
@@ -91,6 +102,9 @@ object Logback {
             val allLogNames = (LogCatalog.loggerNames() + listOf("other", "captcha")).distinct()
 
             allLogNames.forEach { logName ->
+                if (logName == LogChannel.CAPTURE.loggerName && !isCaptureFileAppenderEnabled) {
+                    return@forEach
+                }
                 addFileAppender(lc, logName, logDir)
 
                 val logFile = File(logDir, "$logName.log")
@@ -114,9 +128,10 @@ object Logback {
 
     /**
      * 【联动刷新】供 Log.kt 每次写日志前调用，感应日期变化并自动重定向。
-     * 只有当跨天时，才会触发 initFileLogging 重新建立 Appender。
+     * 只有滚动所有者进程跨天时，才会触发 initFileLogging 重新建立滚动 Appender。
      */
     fun refreshIfCrossDay() {
+        if (!isRollingOwnerProcess) return
         val now = System.currentTimeMillis()
         if (isFileInitialized && now >= nextMidnightMillis) {
             appContext?.let { initFileLogging(it) }
@@ -124,21 +139,23 @@ object Logback {
     }
 
     @Synchronized
-    fun reloadFileLogging() {
+    fun reloadFileLogging(enableCaptureAppender: Boolean = isCaptureFileAppenderEnabled) {
+        isCaptureFileAppenderEnabled = enableCaptureAppender
         val context = appContext ?: return
         initFileLogging(context, force = true)
     }
 
-    private fun calculateNextMidnight(now: Long): Long {
-        return MyUtils.getInstance().apply {
-            timeInMillis = now
-            add(Calendar.DAY_OF_YEAR, 1)
-            set(Calendar.HOUR_OF_DAY, 0)
-            set(Calendar.MINUTE, 0)
-            set(Calendar.SECOND, 0)
-            set(Calendar.MILLISECOND, 0)
-        }.timeInMillis
-    }
+    private fun calculateNextMidnight(now: Long): Long =
+        MyUtils
+            .getInstance()
+            .apply {
+                timeInMillis = now
+                add(Calendar.DAY_OF_YEAR, 1)
+                set(Calendar.HOUR_OF_DAY, 0)
+                set(Calendar.MINUTE, 0)
+                set(Calendar.SECOND, 0)
+                set(Calendar.MILLISECOND, 0)
+            }.timeInMillis
 
     /**
      * 优先 Files.LOG_DIR -> 失败则回退到 Context.external -> Context.files
@@ -165,58 +182,78 @@ object Logback {
         return targetDir.absolutePath + File.separator
     }
 
-    private fun addFileAppender(lc: LoggerContext, logName: String, logDir: String) {
-        val fileAppender = RollingFileAppender<ILoggingEvent>()
+    private fun addFileAppender(
+        lc: LoggerContext,
+        logName: String,
+        logDir: String,
+    ) {
+        val fileAppender: FileAppender<ILoggingEvent> = if (isRollingOwnerProcess) {
+            RollingFileAppender<ILoggingEvent>()
+        } else {
+            FileAppender<ILoggingEvent>()
+        }
 
         fileAppender.apply {
             context = lc
-            name = "FILE-$logName"
+            name = if (isRollingOwnerProcess) "FILE-$logName" else "APPEND-$logName"
             file = "$logDir$logName.log"
             isAppend = true
-
-            if (shouldDisableSizeRolling(logName)) {
-                val policy = TimeBasedRollingPolicy<ILoggingEvent>().apply {
-                    context = lc
-                    fileNamePattern = "${logDir}bak/$logName-%d{yyyy-MM-dd}.log"
-                    setTotalSizeCap(FileSize.valueOf("${DEFAULT_LOG_TOTAL_SIZE_CAP_MB}MB"))
-                    maxHistory = 3
-                    isCleanHistoryOnStart = true
-                    setParent(fileAppender)
-                    start()
-                }
-                rollingPolicy = policy
-            } else {
-                val policy = SizeAndTimeBasedRollingPolicy<ILoggingEvent>().apply {
-                    context = lc
-                    fileNamePattern = "${logDir}bak/$logName-%d{yyyy-MM-dd}.%i.log"
-                    setMaxFileSize(resolveMaxFileSize(logName))
-                    setTotalSizeCap(FileSize.valueOf("${DEFAULT_LOG_TOTAL_SIZE_CAP_MB}MB"))
-                    maxHistory = 3
-                    isCleanHistoryOnStart = true
-                    setParent(fileAppender)
-                    start()
-                }
-                rollingPolicy = policy
+            if (!isRollingOwnerProcess) {
+                isPrudent = true
             }
+        }
 
-            encoder = PatternLayoutEncoder().apply {
+        if (isRollingOwnerProcess) {
+            val rollingAppender = fileAppender as RollingFileAppender<ILoggingEvent>
+            if (shouldDisableSizeRolling(logName)) {
+                val policy =
+                    TimeBasedRollingPolicy<ILoggingEvent>().apply {
+                        context = lc
+                        fileNamePattern = "${logDir}bak/$logName-%d{yyyy-MM-dd}.log"
+                        setTotalSizeCap(resolveTotalSizeCap())
+                        maxHistory = 3
+                        isCleanHistoryOnStart = true
+                        setParent(rollingAppender)
+                        start()
+                    }
+                rollingAppender.rollingPolicy = policy
+            } else {
+                val policy =
+                    SizeAndTimeBasedRollingPolicy<ILoggingEvent>().apply {
+                        context = lc
+                        fileNamePattern = "${logDir}bak/$logName-%d{yyyy-MM-dd}.%i.log"
+                        setMaxFileSize(resolveMaxFileSize(logName))
+                        setTotalSizeCap(resolveTotalSizeCap())
+                        maxHistory = 3
+                        isCleanHistoryOnStart = true
+                        setParent(rollingAppender)
+                        start()
+                    }
+                rollingAppender.rollingPolicy = policy
+            }
+        }
+
+        fileAppender.apply {
+            encoder =
+                PatternLayoutEncoder().apply {
+                    context = lc
+                    pattern = "%d{dd日 HH:mm:ss.SS} %msg%n"
+                    start()
+                }
+
+            start()
+        }
+
+        val asyncAppender =
+            AsyncAppender().apply {
                 context = lc
-                pattern = "%d{dd日 HH:mm:ss.SS} %msg%n"
+                name = "ASYNC-$logName"
+                queueSize = 512 // 内存缓冲队列
+                discardingThreshold = 0 // 不丢弃任何等级的日志
+                isNeverBlock = false // 极端情况下允许阻塞以确保日志不丢失
+                addAppender(fileAppender)
                 start()
             }
-
-            start()
-        }
-
-        val asyncAppender = AsyncAppender().apply {
-            context = lc
-            name = "ASYNC-$logName"
-            queueSize = 512       // 内存缓冲队列
-            discardingThreshold = 0 // 不丢弃任何等级的日志
-            isNeverBlock = false   // 极端情况下允许阻塞以确保日志不丢失
-            addAppender(fileAppender)
-            start()
-        }
 
         lc.getLogger(logName).apply {
             level = Level.ALL
@@ -233,11 +270,17 @@ object Logback {
     }
 
     private fun resolveMaxFileSize(logName: String): FileSize {
-        val sizeMb = if (logName == LogChannel.CAPTURE.loggerName) {
-            (BaseModel.captureLogFileMaxSizeMb.value ?: DEFAULT_LOG_FILE_MAX_SIZE_MB)
-        } else {
-            DEFAULT_LOG_FILE_MAX_SIZE_MB
-        }
+        val sizeMb =
+            if (logName == LogChannel.CAPTURE.loggerName) {
+                (BaseModel.captureLogFileMaxSizeMb.value ?: DEFAULT_LOG_FILE_MAX_SIZE_MB)
+            } else {
+                DEFAULT_LOG_FILE_MAX_SIZE_MB
+            }
         return FileSize.valueOf("${sizeMb.coerceAtLeast(1)}MB")
+    }
+
+    private fun resolveTotalSizeCap(): FileSize {
+        val sizeMb = (BaseModel.logTotalSizeCapMb.value ?: DEFAULT_LOG_TOTAL_SIZE_CAP_MB).coerceAtLeast(1)
+        return FileSize.valueOf("${sizeMb}MB")
     }
 }
