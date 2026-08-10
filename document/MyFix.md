@@ -178,3 +178,50 @@ git diff <上游分支>...my_dev
 - [ ] 不恢复注释版 Gemini、占位常量、无调用函数和已删除旧 bridge。
 - [ ] 运行 `git diff --check`。
 - [ ] 运行 `./gradlew :app:compileDebugKotlin`；构建链允许时再运行 release/assemble 验证。
+
+## 7. 待恢复定制：免 Root（LSPatch/内置补丁注入）支持
+
+> 状态：仅完成原因分析，尚未修改运行代码。后续收到明确实施指令后再按本节改动。
+
+### 7.1 回归来源与当前阻断链
+
+这里的“免 Root”按项目历史指 **LSPatch/内置补丁注入环境**；普通 LSPosed 虽然设备通常已 Root，但当前代码已经把受支持的 LSPosed libxposed 注入视为可执行权限。
+
+历史证据：
+
+- `a7f3e6ce feat(hook): 统一 RPC 结构并限制支持范围` 首次在 `WorkflowRootGuard` 中明确拒绝 `PATCH_EMBEDDED`，并在 `ApplicationHook.handleHookLogic()` 中停止为该环境安装 Hook。其父提交仍通过 `ApplicationHook.isHooked` 放行已成功注入的运行时。
+- `256e9c6d feat(android): 升级 LSPosed 支持与构建链` 又把支持范围收紧为 **LSPosed + libxposed API 102 以上**，删除旧框架/内置补丁识别，并把 `module.prop` 的最低 API 从 101 提高到 102。
+- `17099897 feat(guard): 收紧运行身份并引入可执行账号池` 继续增加 `RuntimeIdentityGuard`；它不是最初禁止免 Root 的提交，但恢复内置补丁后可能因模块包信息校验失败而成为下一道门禁。
+
+当前执行链会连续经过以下限制，不能只改其中一个：
+
+1. `META-INF/xposed/module.prop`：`minApiVersion=102`。
+2. `ModuleStatus.isSupportedLsposedFramework()`：只接受名称严格等于 `LSPosed` 且 API >= 102。
+3. `LibXposedRuntime.onModuleLoaded()`：不满足上述条件立即 `detach()`。
+4. `ApplicationHook.handleHookLogic()`：再次判断，不满足就停止安装 Hook。
+5. `WorkflowRootGuard`：只把受支持的 LSPosed 注入或真实 Root 视为执行权限；失败后产生 `root_denied`，工作流初始化、手动任务和主任务都会停止。
+6. `RuntimeIdentityGuard`：要求模块/目标均在 Android 主用户，并在 `Application.attach` 时通过 PackageManager 再次读取独立模块包；内置补丁环境要实机确认这里取得的 `moduleApplicationInfo` 和模块包是否仍满足条件。
+
+`AccountSlotRegistry.isExecutableUser()` 和可执行账号池是账号隔离门禁，不是 Root 检测。恢复免 Root 时不要删除账号池、会话一致性、主进程限制或目标包校验。
+
+### 7.2 后续实施方案
+
+按以下顺序做最小修改，不要简单把 `WorkflowRootGuard.hasRoot()` 写死为 `true`：
+
+1. 先在目标免 Root 环境记录 `frameworkName`、`apiVersion`、`moduleApplicationInfo.packageName/sourceDir/uid`，以及 `RuntimeIdentityGuard.lastReasonCode()`，确定它实际走 libxposed 101/102 还是旧 Xposed 入口。
+2. 在 `ModuleStatus.kt` 恢复“受支持的补丁注入”分类。可参考 `a7f3e6ce^` 中基于运行时名称和 ClassLoader 的 `resolveFrameworkInfo(..., loader)`/`PATCH_EMBEDDED` 检测，但只迁移识别语义，不整文件回退。
+3. 把 `isSupportedLsposedFramework()` 的用途拆清：LSPosed 服务管理仍只认 LSPosed；Hook 执行入口改用统一的“受支持执行运行时”判断，同时放行已验证的 LSPosed 和目标免 Root 运行时。`LibXposedRuntime`、`ApplicationHook`、`WorkflowRootGuard` 必须复用同一判断，避免三处规则再次漂移。
+4. `WorkflowRootGuard` 对“已验证且 Hook 已成功安装”的免 Root 运行时直接授予执行权限；没有可靠 Hook 身份时仍走 `SafeRootShell` 探测，不能对未知环境无条件放行。
+5. 若目标运行时只实现 libxposed API 101，则同步评估把 `module.prop` 最低 API 恢复为 101，并检查当前 API 102 调用（尤其 `detach()` 和运行时属性）是否可在 101 安全执行；不兼容时增加一个很薄的 101 适配入口，不回退现有 102 主路径。若实测支持 API 102，则保持 `module.prop` 不变。
+6. 保留 `RuntimeIdentityGuard` 的目标包、主进程、UID/sourceDir 一致性检查。仅当日志证明内置补丁无法通过“独立模块包 PackageManager 回查”时，为已识别的补丁运行时设计等价身份校验；不要删除整个身份守卫，也不要放宽未知运行时。
+7. 同步状态页和日志文案，明确显示“免 Root 补丁注入已验证/被拒绝”的具体原因；Shizuku 只负责命令能力，不应被当作工作流 Hook 身份。
+
+### 7.3 验证清单
+
+- [ ] 无 Root + 目标补丁运行时：能够进入 `Application.attach`、完成 Hook、加载配置并执行一次手动任务。
+- [ ] 无 Root + 未知/未注入环境：仍拒绝执行，不能因恢复兼容而绕过门禁。
+- [ ] LSPosed API 102+：现有路径无回归。
+- [ ] 有 Root、无受支持 Hook：Root fallback 行为保持原样。
+- [ ] 非目标包、非主进程、Android 非主用户、模块/目标身份不一致：仍被拒绝并输出明确 reason code。
+- [ ] 单账号和多账号均继续受 `AccountSlotRegistry` 与会话 UID 一致性保护。
+- [ ] 运行 `git diff --check` 和 `./gradlew :app:compileDebugKotlin`，再在真机分别验证 Root、LSPosed、免 Root 三种路径。
