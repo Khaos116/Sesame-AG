@@ -181,33 +181,34 @@ git diff <上游分支>...my_dev
 
 ## 7. 必须保留的定制：FPA 免 Root 支持
 
-目的：让本分支使用 libxposed API 102 在 FPA 中免 Root 运行，同时保留 LSPosed API 102 的现有路径。这里的补丁兼容只针对 FPA，不把 LSPatch、NPatch 或未知框架自动视为受支持环境。
+目的：让本分支使用 libxposed API 101 在 FPA 中免 Root 运行。较新的 LSPosed 可按向后兼容方式加载 API 101 模块；这里的补丁兼容只针对 FPA，不把 LSPatch、NPatch 或未知框架自动视为受支持环境。
 
 回归来源：`a7f3e6ce` 开始明确拒绝内置补丁运行时，`256e9c6d` 又删除旧入口并把运行范围收紧到 LSPosed API 102，后续 `17099897` 增加的模块身份回查也不适用于没有独立模块包的嵌入环境。
 
 FPA 3.8 实测依据（APK：`C:\Users\USER\Desktop\FPA3.8.Apk`）：
 
-- APK 内置 `extra/xp89.dex`、`xp100.dex`、`xp101.dex` 和 `xp102.dex`。它读取模块的 `module.prop`，目标 API >= 102 时会选择 `xp102`，所以本项目不需要降级到 API 100。
-- FPA 的 API 102 接口声明 `API_102=102`、`LIB_API=102`，`getApiVersion()` 返回 102，框架名称返回 `FPA`。
-- FPA API 102 支持项目使用的 Hook、原方法调用、反优化、日志和远程配置能力；仅 `hookClassInitializer` 未实现，而本项目没有调用它。
+- APK 内置 `extra/xp89.dex`、`xp100.dex`、`xp101.dex` 和 `xp102.dex`，并根据模块 `module.prop` 选择实现。
+- 旧真机可用包 `XQE_AG_0.1.4_20260701_1112.apk` 的 `minApiVersion`、`targetApiVersion` 均为 101；改为 102 后的真机包没有进入模块 Toast，因此 FPA 3.8 必须继续选择已实机验证的 `xp101`。
+- FPA 的 API 101 接口声明 `LIB_API=101`，`getApiVersion()` 返回 101，框架名称返回 `FPA`，并支持项目使用的 Hook、原方法调用、反优化、日志和远程配置能力。
 
 合并上游后必须保留：
 
-- `libs.versions.toml` 中 `xposed-api=102.0.0`，`app` 继续 `compileOnly(libs.libxposed.api)`。不要恢复 `api-100.aar` 或 API 82 依赖，也不要把框架 API 打进 APK。
-- `META-INF/xposed/module.prop` 的 `minApiVersion`、`targetApiVersion` 均为 102；入口只保留 `META-INF/xposed/java_init.list`。**不要添加 `assets/xposed_init`**，它是 API 100 以下的 legacy 入口。
-- `HookEntry` 使用 API 102 的无参构造、`onModuleLoaded` 和 `onPackageReady`；`LibXposedRuntime` 与 `ApplicationHook` 直接使用同一套 API 102 接口，不增加 API 100 适配层。
-- `ModuleStatus.isSupportedHookRuntime()` 仅精确放行 API >= 102 的 `LSPosed` 与 `FPA`。LSPosed 服务状态仍使用 `isSupportedLsposedFramework()`，不要把服务连接与 FPA Hook 身份混为一谈。
-- 目标包、主进程、Android 主用户、UID、sourceDir 和 FPA 提供的 `moduleApplicationInfo` 校验必须保留。仅 FPA 补丁环境可以跳过 PackageManager 对“独立安装模块包”的二次回查，因为补丁 APK 不保证存在独立模块安装记录。
+- `libs.versions.toml` 中 `xposed-api=101.0.1`、`xposed-service=101.0.0`，`app` 继续 `compileOnly(libs.libxposed.api)`。不要恢复 `api-100.aar` 或 API 82 依赖，也不要把框架 API 打进 APK。
+- `META-INF/xposed/module.prop` 的 `minApiVersion`、`targetApiVersion` 均为 101；入口只保留 `META-INF/xposed/java_init.list`。**不要添加 `assets/xposed_init`**，它是 API 100 以下的 legacy 入口。
+- `HookEntry` 使用 API 101 的无参构造、`onModuleLoaded` 和 `onPackageReady`；API 101 没有 `detach()`，入口和运行桥接中不得调用它。
+- `ModuleStatus.isSupportedHookRuntime()` 仅精确放行 API >= 101 的 `LSPosed` 与 `FPA`。LSPosed 服务状态仍使用 `isSupportedLsposedFramework()`，不要把服务连接与 FPA Hook 身份混为一谈。
+- 目标包、主进程、Android 主用户、UID、sourceDir 和 FPA 提供的 `moduleApplicationInfo` 校验必须保留。FPA 通过 `getPackageArchiveInfo()` 读取未独立安装的模块 APK，该归档的 UID 为 `-1`；模块身份守卫必须接受这个唯一的“未分配 UID”，但仍拒绝其他负值和非主用户 UID。仅 FPA 补丁环境可以跳过 PackageManager 对“独立安装模块包”的二次回查，因为补丁 APK 不保证存在独立模块安装记录。
 - `WorkflowRootGuard` 仅在 Hook 已成功安装且运行时通过统一准入判断后，把 FPA 注入视为执行权限；否则仍进行真实 Root 探测。
-- FPA 3.8 声明远程配置能力，继续通过 libxposed API 102 的 `remotePreferences` 加载模块配置。
+- FPA 3.8 声明远程配置能力，继续通过 libxposed API 101 的 `remotePreferences` 加载模块配置。
 - `MyUtils.CHANGE_KT3` 是该定制的代码跳转标记，没有业务含义。所有 FPA 关键修改处应继续引用它，并保留说明性注释。
+- “FPA 加载成功/失败”吐司仅用于真机排查入口，不属于正式功能；确认问题后必须删除。正式包只保留日志以及原有的初始化、账号切换和任务提示。
 
 验证：
 
-- [ ] APK 包含 `META-INF/xposed/java_init.list`，`module.prop` 的最低/目标 API 均为 102，且不包含 `assets/xposed_init`。
+- [ ] APK 包含 `META-INF/xposed/java_init.list`，`module.prop` 的最低/目标 API 均为 101，且不包含 `assets/xposed_init`。
 - [ ] 无 Root + FPA：进入 `Application.attach`、完成 Hook、加载配置并执行一次手动任务。
-- [ ] FPA API 101、未知运行时、非目标包、非主进程和 Android 非主用户仍被拒绝。
-- [ ] LSPosed API 102 的现有运行路径无回归。
+- [ ] FPA API 100、未知运行时、非目标包、非主进程和 Android 非主用户仍被拒绝。
+- [ ] LSPosed API 101+ 的现有运行路径无回归。
 - [ ] 有 Root、无受支持 Hook 时的 Root fallback 保持原样。
 - [ ] 单账号和多账号继续受 `AccountSlotRegistry` 与会话 UID 一致性保护。
 - [ ] 运行 `:app:testDebugUnitTest`、`:app:compileDebugKotlin` 和 `git diff --check`，再做 FPA 真机验证。
@@ -216,5 +217,31 @@ FPA 3.8 实测依据（APK：`C:\Users\USER\Desktop\FPA3.8.Apk`）：
 
 - 保留根目录 `.gitattributes`：普通文本统一使用 LF，确保 Windows、macOS 和 Linux 检出一致。
 - Windows 专用的 `.bat`、`.cmd` 使用 CRLF；`gradlew`、`.sh` 必须保持 LF，否则 macOS/Linux 可能因 `\r` 无法执行。
+
+## 9. 必须保留的定制：允许五个账号执行与切换
+
+目的：本分支需要支持最多五个支付宝账号轮流进入任务执行会话。上游 `17099897` 引入的 `AccountSlotRegistry` 默认只允许两个可执行账号；超过上限后会返回 `account_slot_full`，导致业务初始化中断，任务不执行，并且因为 `init=false` 而不会进入“用户已切换”提示逻辑。
+
+合并上游后必须保留：
+
+- `AccountSlotRegistry.kt` 的 `MAX_EXECUTABLE_ACCOUNT_SLOTS` 必须为 `5`。
+- `SettingsContent.kt` 的历史账号迁移选择数量、确认按钮分母和校验提示必须统一引用 `MAX_EXECUTABLE_ACCOUNT_SLOTS`，不得重新硬编码为 `2`。
+- 保留账号槽位注册、会话 UID 一致性和运行身份校验；这里只扩大允许执行的账号数量，不移除账号安全门禁。
+- `MyUtils.CHANGE_KT3` 仅作为该本地定制的代码跳转标记，没有业务作用。
+
+验证：五个历史账号可完成迁移选择；依次切换五个账号时均可完成初始化、显示切换提示并执行任务；第六个账号仍应被 `account_slot_full` 拒绝。
+
+## 10. 必须保留的定制：主页展示编译时间
+
+目的：在版本号相同但短时间内多次打包时，可以从模块主页直接确认真机安装的是哪一次构建。
+
+合并上游后必须保留：
+
+- `HomeContent.kt` 在“本应用开源免费，严禁倒卖”正下方、官方签名标识之前显示 `编译时间：${BuildConfig.BUILD_DATE} ${BuildConfig.BUILD_TIME}`。
+- 使用 `MaterialTheme.typography.labelSmall`，颜色使用主题主色并设置 `alpha = 0.7f`，保持比警示文字更小的淡蓝色效果。
+- 日期和时间继续复用 `app/build.gradle.kts` 按 GMT+8 生成的 `BUILD_DATE`、`BUILD_TIME`，不要在运行时重新读取系统时间。
+- 保留 `MyUtils.CHANGE_KT3` 跳转标记；它没有业务作用。
+
+验证：主页展示值与当前 APK 的编译时间一致，且警示文字、官方签名状态和主页其他卡片布局正常。
 - AAR、APK、JAR、SO、图片和签名文件按二进制处理，禁止 Git 做换行转换。
 - 若上游合并修改了换行规则，应把纯换行归一化做成独立改动，避免与业务代码差异混在一起。

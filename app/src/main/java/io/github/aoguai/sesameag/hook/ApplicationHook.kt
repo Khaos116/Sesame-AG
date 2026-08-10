@@ -98,7 +98,7 @@ class ApplicationHook {
         }
 
     /**
-     * Attaches the verified API 102 interface supplied by either LSPosed or FPA 3.8.
+     * Attaches the verified API 101+ interface supplied by either LSPosed or FPA 3.8.
      * Both frameworks now use the same hook implementation; only runtime admission differs.
      */
     internal fun attachLibXposedRuntime(runtime: XposedInterface) {
@@ -152,7 +152,7 @@ class ApplicationHook {
         val frameworkInfo = resolveCurrentFrameworkInfo()
         val framework = frameworkInfo.displayName
         val frameworkApiVersion = getFrameworkRuntimeInfo()?.apiVersion ?: 0
-        // FPA 3.8 and LSPosed both use API 102, but unknown framework identities remain rejected.
+        // FPA 3.8 and LSPosed both expose API 101+, but unknown framework identities remain rejected.
         if (!ModuleStatus.isSupportedHookRuntime(framework, frameworkApiVersion)) {
             remotePreferences = null
             ModuleStatusReporter.updateNow(framework = framework, packageName = packageName, reason = "unsupported_hook_runtime")

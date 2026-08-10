@@ -25,6 +25,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.github.aoguai.sesameag.BuildConfig
 import io.github.aoguai.sesameag.ui.MainActivity
 import io.github.aoguai.sesameag.ui.compose.CommonAlertDialog
 import io.github.aoguai.sesameag.ui.extension.openUrl
@@ -35,6 +36,7 @@ import io.github.aoguai.sesameag.ui.screen.card.ServicesStatusCard
 import io.github.aoguai.sesameag.ui.viewmodel.MainViewModel
 import io.github.aoguai.sesameag.util.CommandUtil.ServiceStatus
 import io.github.aoguai.sesameag.util.LogChannel
+import io.github.aoguai.sesameag.util.MyUtils
 import io.github.aoguai.sesameag.util.OfficialBuildVerifier
 import io.github.aoguai.sesameag.util.ToastUtil
 
@@ -81,6 +83,16 @@ fun HomeContent(
                     color = MaterialTheme.colorScheme.error,
                     fontWeight = FontWeight.Bold,
                     style = MaterialTheme.typography.titleSmall,
+                )
+                // BUILD_DATE/BUILD_TIME 由 Gradle 在编译时按 GMT+8 固化，直接展示才能准确
+                // 区分同版本的不同测试包；CHANGE_KT3 只用于定位本地定制，没有业务作用。
+                MyUtils.CHANGE_KT3
+                Text(
+                    text = "编译时间：${BuildConfig.BUILD_DATE} ${BuildConfig.BUILD_TIME}",
+                    modifier = Modifier.padding(top = 4.dp),
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
+                    style = MaterialTheme.typography.labelSmall,
                 )
                 if (isOfficiallySigned) {
                     Text(

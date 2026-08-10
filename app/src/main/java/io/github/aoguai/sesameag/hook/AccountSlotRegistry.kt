@@ -15,7 +15,13 @@ import java.nio.file.StandardOpenOption.CREATE
 import java.nio.file.StandardOpenOption.WRITE
 import java.security.MessageDigest
 
-const val MAX_EXECUTABLE_ACCOUNT_SLOTS = 2
+/**
+ * 最多允许五个支付宝账号进入任务执行会话。
+ *
+ * 上游默认值为 2，会导致第三个及后续账号在 [admitRuntimeUser] 中被
+ * `account_slot_full` 拒绝，进而无法完成初始化、执行任务或显示账号切换提示。
+ */
+const val MAX_EXECUTABLE_ACCOUNT_SLOTS = 5
 
 enum class AccountSlotMigrationState {
     READY,

@@ -7,9 +7,9 @@ import io.github.libxposed.api.XposedModuleInterface.ModuleLoadedParam
 import io.github.libxposed.api.XposedModuleInterface.PackageReadyParam
 
 /**
- * Modern libxposed API 102 entry shared by FPA 3.8 and LSPosed.
+ * Modern libxposed API 101 entry shared by FPA 3.8 and backward-compatible LSPosed runtimes.
  *
- * Both frameworks discover this class through `META-INF/xposed/java_init.list`; API 102 attaches
+ * Both frameworks discover this class through `META-INF/xposed/java_init.list`; API 101 attaches
  * the framework before [onModuleLoaded] and supplies the target class loader in [onPackageReady].
  */
 class HookEntry : XposedModule() {

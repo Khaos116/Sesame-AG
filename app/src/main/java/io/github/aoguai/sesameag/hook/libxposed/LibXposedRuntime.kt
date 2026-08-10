@@ -12,11 +12,12 @@ import io.github.libxposed.api.XposedModuleInterface.ModuleLoadedParam
 import io.github.libxposed.api.XposedModuleInterface.PackageReadyParam
 
 /**
- * Bridges the API 102 lifecycle to the existing application hook runtime.
+ * Bridges the API 101 lifecycle to the existing application hook runtime.
  *
- * FPA 3.8 implements the same API 102 entry, hook builder and package-ready callbacks used here.
+ * FPA 3.8 implements the API 101 entry, hook builder and package-ready callbacks used here.
  * Runtime admission remains centralized in [ModuleStatus.isSupportedHookRuntime] so unknown
  * frameworks cannot gain workflow permission merely by exposing similarly named classes.
+ * API 101 has no `detach()` method; package and process checks provide the lifecycle boundary.
  */
 internal class LibXposedRuntime(
     private val applicationHook: ApplicationHook,
@@ -34,7 +35,6 @@ internal class LibXposedRuntime(
         val identityDecision = RuntimeIdentityGuard.verifyModuleLoaded(module.moduleApplicationInfo)
         if (!identityDecision.accepted) {
             module.log(Log.ERROR, TAG, "instance_rejected: ${identityDecision.reasonCode}")
-            module.detach()
             return
         }
 
@@ -47,7 +47,6 @@ internal class LibXposedRuntime(
                 TAG,
                 "Unsupported runtime: $frameworkName API $apiVersion; requires LSPosed or FPA API ${ModuleStatus.MIN_SUPPORTED_LIBXPOSED_API}+",
             )
-            module.detach()
             return
         }
 
@@ -69,7 +68,6 @@ internal class LibXposedRuntime(
 
         val targetProcessName = processName ?: run {
             module.log(Log.ERROR, TAG, "Package callback arrived before module runtime initialization")
-            module.detach()
             return
         }
         val identityDecision =
@@ -80,7 +78,6 @@ internal class LibXposedRuntime(
             )
         if (!identityDecision.accepted) {
             module.log(Log.ERROR, TAG, "instance_rejected: ${identityDecision.reasonCode}")
-            module.detach()
             return
         }
         packageReady = true
@@ -94,9 +91,6 @@ internal class LibXposedRuntime(
             module.log(Log.INFO, TAG, "Hooked ${param.packageName} in process $targetProcessName via onPackageReady")
         } catch (t: Throwable) {
             module.log(Log.ERROR, TAG, "Hook failed - ${t.message}", t)
-        } finally {
-            // One scoped package is enough for this entry; installed hooks survive module detach.
-            module.detach()
         }
     }
 

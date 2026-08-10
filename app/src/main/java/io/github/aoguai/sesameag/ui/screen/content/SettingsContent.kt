@@ -37,6 +37,7 @@ import io.github.aoguai.sesameag.data.General
 import io.github.aoguai.sesameag.entity.UserEntity
 import io.github.aoguai.sesameag.hook.AccountSlotMigrationState
 import io.github.aoguai.sesameag.hook.AccountSlotSnapshot
+import io.github.aoguai.sesameag.hook.MAX_EXECUTABLE_ACCOUNT_SLOTS
 import io.github.aoguai.sesameag.ui.FriendCenterActivity
 import io.github.aoguai.sesameag.ui.MainActivity
 import io.github.aoguai.sesameag.ui.ManualTaskActivity
@@ -46,6 +47,7 @@ import io.github.aoguai.sesameag.ui.screen.components.SettingsItem
 import io.github.aoguai.sesameag.ui.screen.components.SettingsSwitchItem
 import io.github.aoguai.sesameag.ui.screen.components.UserItemCard
 import io.github.aoguai.sesameag.ui.screen.components.UserSelectionDialog
+import io.github.aoguai.sesameag.util.MyUtils
 
 
 @Composable
@@ -98,6 +100,9 @@ fun SettingsContent(
             }
 
             if (accountSlots.migrationState == AccountSlotMigrationState.SELECTION_REQUIRED) {
+                // 迁移界面必须与 AccountSlotRegistry 的准入上限共用同一个值；否则界面确认成功后，
+                // 后续账号仍可能被运行时门禁拒绝。CHANGE_KT3 仅作为本地定制的代码跳转标记。
+                MyUtils.CHANGE_KT3
                 items(accountSlots.legacyCandidates) { userId ->
                     val selected = userId in selectedLegacySlots
                     SettingsItem(
@@ -106,7 +111,7 @@ fun SettingsContent(
                         onClick = {
                             selectedLegacySlots = when {
                                 selected -> selectedLegacySlots - userId
-                                selectedLegacySlots.size < 2 -> selectedLegacySlots + userId
+                                selectedLegacySlots.size < MAX_EXECUTABLE_ACCOUNT_SLOTS -> selectedLegacySlots + userId
                                 else -> selectedLegacySlots
                             }
                         }
@@ -114,14 +119,18 @@ fun SettingsContent(
                 }
                 item {
                     SettingsItem(
-                        title = "确认选择（${selectedLegacySlots.size}/2）",
+                        title = "确认选择（${selectedLegacySlots.size}/$MAX_EXECUTABLE_ACCOUNT_SLOTS）",
                         icon = Icons.Rounded.AccountCircle,
                         onClick = {
-                            if (selectedLegacySlots.size == 2) {
+                            if (selectedLegacySlots.size == MAX_EXECUTABLE_ACCOUNT_SLOTS) {
                                 onSelectLegacySlots(selectedLegacySlots.toList())
                                 selectedLegacySlots = emptySet()
                             } else {
-                                Toast.makeText(context, "请恰好选择两个账号", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(
+                                    context,
+                                    "请恰好选择 $MAX_EXECUTABLE_ACCOUNT_SLOTS 个账号",
+                                    Toast.LENGTH_SHORT,
+                                ).show()
                             }
                         }
                     )

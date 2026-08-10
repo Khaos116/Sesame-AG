@@ -90,9 +90,9 @@ fun ModuleStatusCard(
                             Text(
                                 text = when (status.reason) {
                                     MainViewModel.ModuleStatus.UnsupportedReason.API_TOO_LOW ->
-                                        "请改用支持 libxposed API 102+ 的 LSPosed。"
+                                        "请使用支持 libxposed API 101+ 的 FPA 3.8 或 LSPosed。"
                                     MainViewModel.ModuleStatus.UnsupportedReason.NON_LSPOSED ->
-                                        "当前模块仅支持LSPosed；内置打包或补丁式分发将被拦截。"
+                                        "当前模块仅支持 FPA 3.8 或 LSPosed；其他补丁式分发将被拦截。"
                                 },
                                 style = MaterialTheme.typography.bodyMedium
                             )
@@ -105,7 +105,7 @@ fun ModuleStatusCard(
                         Column(Modifier.padding(start = 20.dp)) {
                             Text(text = "模块未激活或管理器未连接", style = MaterialTheme.typography.titleMedium)
                             Spacer(Modifier.height(4.dp))
-                            Text(text = "首次安装后请在LSPosed 管理器中勾选模块，并确认目标应用已加入作用域", style = MaterialTheme.typography.bodyMedium)
+                            Text(text = "首次安装后请在 FPA 或 LSPosed 中启用模块，并确认目标应用已加入作用域", style = MaterialTheme.typography.bodyMedium)
                             Text(text = "点击或双击卡片查看排查说明", style = MaterialTheme.typography.bodySmall)
                         }
                     }
@@ -132,17 +132,17 @@ fun ModuleStatusCard(
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "当前模块仅支持 LSPosed，且要求 libxposed API 102+；模块元数据的最低与目标框架 API 均为 102。",
+                        text = "当前模块支持 FPA 3.8 与 LSPosed，要求 libxposed API 101+；模块元数据的最低与目标框架 API 均为 101。",
                         style = MaterialTheme.typography.bodySmall
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "首次使用时，请先在LSPosed 中激活模块、把目标应用加入作用域，然后重新打开目标应用或返回首页复查。",
+                        text = "首次使用时，请先在 FPA 或 LSPosed 中激活模块、把目标应用加入作用域，然后重新打开目标应用或返回首页复查。",
                         style = MaterialTheme.typography.bodySmall
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "非 LSPosed 的框架或内置打包/补丁式分发不在支持维护范围内，运行时会停止安装 Hook。",
+                        text = "除 FPA 3.8 和 LSPosed 外，其他框架或补丁式分发不在支持维护范围内，运行时会停止安装 Hook。",
                         style = MaterialTheme.typography.titleSmall
                     )
                 }

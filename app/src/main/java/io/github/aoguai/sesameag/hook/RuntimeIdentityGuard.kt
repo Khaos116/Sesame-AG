@@ -34,7 +34,8 @@ object RuntimeIdentityGuard {
     )
 
     private const val PRIMARY_ANDROID_USER_ID = 0
-private const val ANDROID_PER_USER_RANGE = 100_000
+    private const val ANDROID_PER_USER_RANGE = 100_000
+    private const val UNASSIGNED_ARCHIVE_UID = -1
 
     @Volatile
     private var moduleSnapshot: ModuleSnapshot? = null
@@ -52,10 +53,9 @@ private const val ANDROID_PER_USER_RANGE = 100_000
     fun verifyModuleLoaded(applicationInfo: ApplicationInfo): RuntimeIdentityDecision {
         val packageName = applicationInfo.packageName.orEmpty()
         val sourceDir = applicationInfo.sourceDir.orEmpty()
-        val userId = androidUserId(applicationInfo.uid)
         val decision = when {
             packageName != General.MODULE_PACKAGE_NAME -> reject("module_package_mismatch")
-            userId != PRIMARY_ANDROID_USER_ID -> reject("module_non_primary_user")
+            !isPrimaryOrUnassignedModuleUid(applicationInfo.uid) -> reject("module_non_primary_user")
             sourceDir.isBlank() -> reject("module_source_missing")
             else -> {
                 moduleSnapshot = ModuleSnapshot(applicationInfo.uid, sourceDir)
@@ -84,7 +84,7 @@ private const val ANDROID_PER_USER_RANGE = 100_000
             appProcessName != General.PACKAGE_NAME -> reject("target_application_process_mismatch")
             userId != PRIMARY_ANDROID_USER_ID -> reject("target_non_primary_user")
             sourceDir.isBlank() -> reject("target_source_missing")
-            androidUserId(module.uid) != PRIMARY_ANDROID_USER_ID -> reject("module_non_primary_user")
+            !isPrimaryOrUnassignedModuleUid(module.uid) -> reject("module_non_primary_user")
             else -> {
                 targetSnapshot = TargetSnapshot(applicationInfo.uid, sourceDir, processName)
                 attachedIdentity = null
@@ -159,6 +159,20 @@ private const val ANDROID_PER_USER_RANGE = 100_000
     /** UserHandle.getUserId is hidden from this module's compile SDK; Android reserves 100000 UIDs per user. */
     private fun androidUserId(uid: Int): Int =
         if (uid >= 0) uid / ANDROID_PER_USER_RANGE else -1
+
+    /**
+     * FPA loads a module as an APK archive and supplies the resulting [ApplicationInfo]. Android
+     * assigns `-1` to that archive because it is not installed inside the patched target. Accept
+     * only that one unassigned value; installed modules must still belong to Android's main user,
+     * while secondary-user UIDs and every other negative value remain rejected.
+     */
+    internal fun isPrimaryOrUnassignedModuleUid(uid: Int): Boolean {
+        if (uid == UNASSIGNED_ARCHIVE_UID) {
+            MyUtils.CHANGE_KT3
+            return true
+        }
+        return androidUserId(uid) == PRIMARY_ANDROID_USER_ID
+    }
 
     private fun accept(): RuntimeIdentityDecision = RuntimeIdentityDecision(true)
 

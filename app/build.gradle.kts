@@ -212,7 +212,8 @@ dependencies {
     implementation(libs.material) // Material Design 组件
 
     // 仅编译时依赖 - Xposed 相关
-    // FPA 3.8 and current LSPosed both provide the modern libxposed API 102 at runtime.
+    // FPA 3.8 is verified on real devices through its libxposed API 101 implementation.
+    // Newer LSPosed frameworks remain backward-compatible with modules targeting API 101.
     // compileOnly prevents framework classes from being bundled into the module APK.
     compileOnly(libs.libxposed.api)
     implementation(libs.libxposed.service) // https://github.com/libxposed/service

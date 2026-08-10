@@ -7,7 +7,7 @@ package io.github.aoguai.sesameag.util
  */
 object ModuleStatus {
     // This object also runs in the standalone settings process, where the compileOnly API jar is absent.
-    const val MIN_SUPPORTED_LIBXPOSED_API = 102
+    const val MIN_SUPPORTED_LIBXPOSED_API = 101
 
     private const val UNKNOWN_FRAMEWORK = "Unknown"
 
@@ -47,9 +47,9 @@ object ModuleStatus {
     /**
      * Runtime gate shared by hook installation and workflow execution.
      *
-     * FPA 3.8 was inspected locally and provides the same API 102 interface used by LSPosed,
-     * including the modern hook builder and package-ready callback. Unknown framework names and
-     * either supported framework below API 102 remain rejected.
+     * FPA 3.8's API 101 implementation is the path verified by the previously working real-device
+     * build. It provides the hook builder and package-ready callback used by this project. Unknown
+     * framework names and either supported framework below API 101 remain rejected.
      */
     fun isSupportedHookRuntime(frameworkName: String?, apiVersion: Int): Boolean =
         when (classifyFrameworkName(frameworkName)) {

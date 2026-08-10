@@ -20,8 +20,8 @@
 > [!IMPORTANT]
 > 为避免滥用，确保模块以学习研究为主的定位，当前仓库仅对以下环境组合提供“支持维护”：
 >
-> - `LSPosed（libxposed API 102+；模块框架 min/target API 均为 102）`
-> - `已 Root`
+> - `FPA 3.8 或 LSPosed（libxposed API 101+；模块框架 min/target API 均为 101）`
+> - `FPA 支持免 Root；LSPosed 按框架自身运行要求`
 > - `Android 16+`
 > - `目标应用版本 >=v10.3.96.8100(作者使用 v10.8.20.8000)`
 >
