@@ -97,7 +97,12 @@ class ApplicationHook {
             updateFrameworkRuntimeInfo(value)
         }
 
+    /**
+     * Attaches the verified API 102 interface supplied by either LSPosed or FPA 3.8.
+     * Both frameworks now use the same hook implementation; only runtime admission differs.
+     */
     internal fun attachLibXposedRuntime(runtime: XposedInterface) {
+        MyUtils.CHANGE_KT3
         xposedInterface = runtime
     }
 
@@ -127,6 +132,7 @@ class ApplicationHook {
     // --- 入口方法 ---
     fun loadPackage(lpparam: PackageReadyParam) {
         if (General.PACKAGE_NAME != lpparam.packageName || !RuntimeIdentityGuard.isPackageReady()) return
+        MyUtils.CHANGE_KT3
         handleHookLogic(
             lpparam.classLoader,
             lpparam.packageName,
@@ -146,12 +152,14 @@ class ApplicationHook {
         val frameworkInfo = resolveCurrentFrameworkInfo()
         val framework = frameworkInfo.displayName
         val frameworkApiVersion = getFrameworkRuntimeInfo()?.apiVersion ?: 0
-        if (!ModuleStatus.isSupportedLsposedFramework(framework, frameworkApiVersion)) {
+        // FPA 3.8 and LSPosed both use API 102, but unknown framework identities remain rejected.
+        if (!ModuleStatus.isSupportedHookRuntime(framework, frameworkApiVersion)) {
             remotePreferences = null
-            ModuleStatusReporter.updateNow(framework = framework, packageName = packageName, reason = "unsupported_libxposed_runtime")
+            ModuleStatusReporter.updateNow(framework = framework, packageName = packageName, reason = "unsupported_hook_runtime")
             record(TAG, "⛔ 检测到不受支持的 $framework 运行时 (API $frameworkApiVersion)，停止安装 Hook")
             return
         }
+        MyUtils.CHANGE_KT3
 
         // 1. 初始化配置读取
         remotePreferences = loadRemotePreferences(framework)
@@ -183,6 +191,7 @@ class ApplicationHook {
             logFramework(android.util.Log.INFO, "无法读取 $framework 的 capability，跳过远程偏好读取")
             return null
         }
+        // FPA 3.8 reports PROP_CAP_REMOTE, so it can use the same remote-preference path as LSPosed.
         if (frameworkProperties.and(XposedInterface.PROP_CAP_REMOTE) == 0L) {
             logFramework(android.util.Log.INFO, "$framework 未声明 remote capability，跳过远程偏好读取")
             return null
@@ -224,7 +233,13 @@ class ApplicationHook {
                 val result = chain.proceed()
                 val context = chain.args[0] as? Context ?: return@intercept result
                 val application = chain.getThisObject() as? Application
-                val identityDecision = RuntimeIdentityGuard.verifyApplicationAttach(context)
+                // FPA embeds the module in the target APK, so there may be no separately installed
+                // module package to query. All target package/process/UID/source checks remain active.
+                val identityDecision =
+                    RuntimeIdentityGuard.verifyApplicationAttach(
+                        context,
+                        verifyInstalledModulePackage = !isEmbeddedPatchRuntime(),
+                    )
                 if (!identityDecision.accepted) {
                     android.util.Log.w(TAG, "instance_rejected: ${identityDecision.reasonCode}")
                     return@intercept result
@@ -1668,6 +1683,17 @@ class ApplicationHook {
             val runtimeInfo = frameworkRuntimeInfo ?: return false
             return ModuleStatus.isSupportedLsposedFramework(runtimeInfo.name, runtimeInfo.apiVersion ?: 0)
         }
+
+        internal fun hasSupportedHookRuntime(): Boolean {
+            val runtimeInfo = frameworkRuntimeInfo ?: return false
+            return ModuleStatus.isSupportedHookRuntime(
+                resolveCurrentFrameworkInfo().displayName,
+                runtimeInfo.apiVersion ?: 0,
+            )
+        }
+
+        internal fun isEmbeddedPatchRuntime(): Boolean =
+            resolveCurrentFrameworkInfo().category == ModuleStatus.FrameworkCategory.PATCH_EMBEDDED
 
         private fun updateFrameworkRuntimeInfo(xposedInterface: XposedInterface?) {
             frameworkInterface = xposedInterface

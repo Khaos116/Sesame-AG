@@ -79,11 +79,6 @@ android {
         }
     }
 
-    testOptions {
-        unitTests.all {
-            it.enabled = false
-        }
-    }
     buildFeatures {
         buildConfig = true
         compose = true
@@ -217,7 +212,9 @@ dependencies {
     implementation(libs.material) // Material Design 组件
 
     // 仅编译时依赖 - Xposed 相关
-    compileOnly(libs.libxposed.api) // Xposed API 102 https://github.com/libxposed/api
+    // FPA 3.8 and current LSPosed both provide the modern libxposed API 102 at runtime.
+    // compileOnly prevents framework classes from being bundled into the module APK.
+    compileOnly(libs.libxposed.api)
     implementation(libs.libxposed.service) // https://github.com/libxposed/service
 
     // 代码生成和工具库

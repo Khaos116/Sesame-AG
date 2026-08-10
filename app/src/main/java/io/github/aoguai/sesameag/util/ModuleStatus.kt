@@ -13,6 +13,7 @@ object ModuleStatus {
 
     enum class FrameworkCategory {
         LSPOSED,
+        PATCH_EMBEDDED,
         UNSUPPORTED,
     }
 
@@ -22,15 +23,19 @@ object ModuleStatus {
     )
 
     fun resolveFrameworkInfo(officialFrameworkName: String?): FrameworkInfo {
-        val displayName = officialFrameworkName?.trim()?.takeIf { it.isNotBlank() } ?: UNKNOWN_FRAMEWORK
+        val officialName = officialFrameworkName?.trim().orEmpty()
+        val displayName = officialName.takeIf { it.isNotBlank() } ?: UNKNOWN_FRAMEWORK
         return FrameworkInfo(displayName, classifyFrameworkName(displayName))
     }
 
     fun classifyFrameworkName(frameworkName: String?): FrameworkCategory {
-        return if (frameworkName?.trim() == "LSPosed") {
-            FrameworkCategory.LSPOSED
-        } else {
-            FrameworkCategory.UNSUPPORTED
+        return when (frameworkName?.trim()?.lowercase()) {
+            "lsposed" -> FrameworkCategory.LSPOSED
+            "fpa" -> {
+                MyUtils.CHANGE_KT3
+                FrameworkCategory.PATCH_EMBEDDED
+            }
+            else -> FrameworkCategory.UNSUPPORTED
         }
     }
 
@@ -38,4 +43,19 @@ object ModuleStatus {
         return apiVersion >= MIN_SUPPORTED_LIBXPOSED_API &&
             classifyFrameworkName(frameworkName) == FrameworkCategory.LSPOSED
     }
+
+    /**
+     * Runtime gate shared by hook installation and workflow execution.
+     *
+     * FPA 3.8 was inspected locally and provides the same API 102 interface used by LSPosed,
+     * including the modern hook builder and package-ready callback. Unknown framework names and
+     * either supported framework below API 102 remain rejected.
+     */
+    fun isSupportedHookRuntime(frameworkName: String?, apiVersion: Int): Boolean =
+        when (classifyFrameworkName(frameworkName)) {
+            FrameworkCategory.LSPOSED -> apiVersion >= MIN_SUPPORTED_LIBXPOSED_API
+            FrameworkCategory.PATCH_EMBEDDED -> apiVersion >= MIN_SUPPORTED_LIBXPOSED_API
+            FrameworkCategory.UNSUPPORTED -> false
+        }
+
 }

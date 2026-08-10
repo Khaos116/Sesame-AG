@@ -6,15 +6,17 @@ import io.github.aoguai.sesameag.hook.ApplicationHook
 import io.github.aoguai.sesameag.hook.RuntimeIdentityGuard
 import io.github.aoguai.sesameag.hook.XposedEnv
 import io.github.aoguai.sesameag.util.ModuleStatus
+import io.github.aoguai.sesameag.util.MyUtils
 import io.github.libxposed.api.XposedModule
 import io.github.libxposed.api.XposedModuleInterface.ModuleLoadedParam
 import io.github.libxposed.api.XposedModuleInterface.PackageReadyParam
 
 /**
- * Bridges the API 102 module lifecycle to the existing application hook runtime.
+ * Bridges the API 102 lifecycle to the existing application hook runtime.
  *
- * The framework attaches [module] before [onModuleLoaded] runs. The adapter therefore only
- * exposes that interface to [ApplicationHook] after the supported runtime has been verified.
+ * FPA 3.8 implements the same API 102 entry, hook builder and package-ready callbacks used here.
+ * Runtime admission remains centralized in [ModuleStatus.isSupportedHookRuntime] so unknown
+ * frameworks cannot gain workflow permission merely by exposing similarly named classes.
  */
 internal class LibXposedRuntime(
     private val applicationHook: ApplicationHook,
@@ -39,16 +41,17 @@ internal class LibXposedRuntime(
         processName = param.processName
         val frameworkName = runCatching { module.frameworkName }.getOrDefault("Unknown")
         val apiVersion = runCatching { module.apiVersion }.getOrDefault(0)
-        if (!ModuleStatus.isSupportedLsposedFramework(frameworkName, apiVersion)) {
+        if (!ModuleStatus.isSupportedHookRuntime(frameworkName, apiVersion)) {
             module.log(
                 Log.ERROR,
                 TAG,
-                "Unsupported runtime: $frameworkName API $apiVersion; requires LSPosed API ${ModuleStatus.MIN_SUPPORTED_LIBXPOSED_API}+"
+                "Unsupported runtime: $frameworkName API $apiVersion; requires LSPosed or FPA API ${ModuleStatus.MIN_SUPPORTED_LIBXPOSED_API}+",
             )
             module.detach()
             return
         }
 
+        MyUtils.CHANGE_KT3
         active = true
         applicationHook.attachLibXposedRuntime(module)
         val frameworkVersion = runCatching { module.frameworkVersion }.getOrDefault("unknown")
@@ -57,25 +60,24 @@ internal class LibXposedRuntime(
         module.log(
             Log.INFO,
             TAG,
-            "Initialized for process ${param.processName}; framework=$frameworkName $frameworkVersion $frameworkVersionCode api=$apiVersion module_process=$moduleProcess"
+            "Initialized for process ${param.processName}; framework=$frameworkName $frameworkVersion $frameworkVersionCode api=$apiVersion module_process=$moduleProcess",
         )
     }
 
     fun onPackageReady(module: XposedModule, param: PackageReadyParam) {
-        if (!active || packageReady || param.packageName != General.PACKAGE_NAME) {
-            return
-        }
+        if (!active || packageReady || param.packageName != General.PACKAGE_NAME) return
 
         val targetProcessName = processName ?: run {
             module.log(Log.ERROR, TAG, "Package callback arrived before module runtime initialization")
             module.detach()
             return
         }
-        val identityDecision = RuntimeIdentityGuard.verifyPackageReady(
-            applicationInfo = param.applicationInfo,
-            packageName = param.packageName,
-            processName = targetProcessName,
-        )
+        val identityDecision =
+            RuntimeIdentityGuard.verifyPackageReady(
+                applicationInfo = param.applicationInfo,
+                packageName = param.packageName,
+                processName = targetProcessName,
+            )
         if (!identityDecision.accepted) {
             module.log(Log.ERROR, TAG, "instance_rejected: ${identityDecision.reasonCode}")
             module.detach()
@@ -93,7 +95,7 @@ internal class LibXposedRuntime(
         } catch (t: Throwable) {
             module.log(Log.ERROR, TAG, "Hook failed - ${t.message}", t)
         } finally {
-            // One scoped package is enough for this entry; hooks remain active after detaching.
+            // One scoped package is enough for this entry; installed hooks survive module detach.
             module.detach()
         }
     }

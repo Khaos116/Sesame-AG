@@ -1,0 +1,20 @@
+# Keep repository text files identical on Windows, macOS, and Linux regardless of core.autocrlf.
+# Shell scripts and Gradle's Unix launcher must remain LF so they run outside Windows.
+* text=auto eol=lf
+
+# Native Windows command scripts use CRLF; Git will still store their normalized text safely.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Never apply newline conversion to binary artifacts.
+*.aar binary
+*.apk binary
+*.gif binary
+*.ico binary
+*.jar binary
+*.jpeg binary
+*.jpg binary
+*.keystore binary
+*.png binary
+*.so binary
+*.webp binary

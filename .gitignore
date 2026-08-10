@@ -74,6 +74,8 @@ fastlane/test_output
 # python virtual env
 .venv/
 test/
+!app/src/test/
+!app/src/test/**
 
 # cache
 .lingma/rules/project_rule.md

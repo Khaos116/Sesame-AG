@@ -3,6 +3,7 @@ package io.github.aoguai.sesameag.hook
 import android.content.Context
 import android.content.pm.ApplicationInfo
 import io.github.aoguai.sesameag.data.General
+import io.github.aoguai.sesameag.util.MyUtils
 
 /**
  * Verifies that the module is running against the one supported Android user and target process.
@@ -96,21 +97,33 @@ private const val ANDROID_PER_USER_RANGE = 100_000
 
     @Suppress("DEPRECATION")
     @Synchronized
-    fun verifyApplicationAttach(context: Context): RuntimeIdentityDecision {
+    fun verifyApplicationAttach(
+        context: Context,
+        verifyInstalledModulePackage: Boolean = true,
+    ): RuntimeIdentityDecision {
         val module = moduleSnapshot ?: return rejectAndStore("module_identity_missing")
+        // FPA 3.8 supplies moduleApplicationInfo from the selected module APK, so that snapshot is
+        // still mandatory. Only the PackageManager lookup of a separately installed module is
+        // skipped, because a patched target may not have one installed under the module package.
+        if (!verifyInstalledModulePackage) MyUtils.CHANGE_KT3
         val target = targetSnapshot ?: return rejectAndStore("target_identity_missing")
         val contextInfo = context.applicationInfo ?: return rejectAndStore("target_context_missing")
         val decision = runCatching {
             val targetInfo = context.packageManager.getApplicationInfo(General.PACKAGE_NAME, 0)
-            val moduleInfo = context.packageManager.getApplicationInfo(General.MODULE_PACKAGE_NAME, 0)
+            val moduleInfo =
+                if (verifyInstalledModulePackage) {
+                    context.packageManager.getApplicationInfo(General.MODULE_PACKAGE_NAME, 0)
+                } else {
+                    null
+                }
             when {
                 context.packageName != General.PACKAGE_NAME -> reject("target_context_package_mismatch")
                 !matchesTarget(contextInfo, target) -> reject("target_context_mismatch")
                 !matchesTarget(targetInfo, target) -> reject("target_package_manager_mismatch")
-                moduleInfo.packageName != General.MODULE_PACKAGE_NAME -> reject("module_package_manager_mismatch")
-                moduleInfo.uid != module.uid -> reject("module_uid_mismatch")
-                androidUserId(moduleInfo.uid) != PRIMARY_ANDROID_USER_ID -> reject("module_non_primary_user")
-                moduleInfo.sourceDir.orEmpty() != module.sourceDir -> reject("module_source_mismatch")
+                verifyInstalledModulePackage && moduleInfo?.packageName != General.MODULE_PACKAGE_NAME -> reject("module_package_manager_mismatch")
+                verifyInstalledModulePackage && moduleInfo?.uid != module.uid -> reject("module_uid_mismatch")
+                verifyInstalledModulePackage && androidUserId(moduleInfo?.uid ?: -1) != PRIMARY_ANDROID_USER_ID -> reject("module_non_primary_user")
+                verifyInstalledModulePackage && moduleInfo?.sourceDir.orEmpty() != module.sourceDir -> reject("module_source_mismatch")
                 else -> {
                     attachedIdentity = RuntimeIdentity(
                         moduleUid = module.uid,
