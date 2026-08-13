@@ -25,10 +25,10 @@ import java.util.TimeZone
  */
 object MyUtils {
   //为了方便快速找到处理本地修改的代码
-  const val CHANGE_KT1 = "1_当天异常不再执行_绿色经营"
+  const val CHANGE_KT1 = "1_绿色经营单项屏蔽与封控冷却"
   const val CHANGE_KT2 = "2_当天异常不再执行_健康岛泡泡"
   const val CHANGE_KT3 = "3_支持免Root运行_FPA"
-  //const val CHANGE_KT4 = "4"
+  const val CHANGE_KT4 = "4_同步步数限制在19853至21423"
   //const val CHANGE_KT5 = "5"
   //const val CHANGE_KT6 = "6"
   //const val CHANGE_KT7 = "7"
@@ -65,6 +65,74 @@ object MyUtils {
   fun myJSONObject(value: String?): JSONObject = JSONObject(jsonObjectSource(value))
 
   internal fun jsonObjectSource(value: String?): String = value?.takeUnless { it.isBlank() } ?: "{}"
+
+  /** 自定义同步步数允许的最小目标。 */
+  const val MIN_SYNC_STEP_COUNT = 19_853
+
+  /** 自定义同步步数允许的最大目标。 */
+  const val MAX_SYNC_STEP_COUNT = 21_423
+
+  /**
+   * 根据配置生成本次同步的目标步数。
+   * 配置为 0 或负数时关闭同步；启用后结果始终位于 19853～21423。
+   */
+  fun randomSyncStepTarget(configuredStep: Int): Int {
+    if (configuredStep <= 0) return 0
+    val lowerBound = configuredStep.coerceIn(MIN_SYNC_STEP_COUNT, MAX_SYNC_STEP_COUNT)
+    return RandomUtil.nextInt(lowerBound, MAX_SYNC_STEP_COUNT + 1)
+  }
+
+  /**
+   * 合并真实步数与自定义目标，避免同步操作降低设备已有的真实步数。
+   * 真实步数未超过上限时返回受限目标；超过上限时保留真实步数且不再增加。
+   */
+  fun resolveSyncStepTarget(originStep: Int, targetStep: Int): Int =
+    maxOf(originStep.coerceAtLeast(0), targetStep.coerceIn(0, MAX_SYNC_STEP_COUNT))
+
+  /** 绿色经营发生封控后的冷却分钟数，可按需调整。 */
+  const val GREEN_FINANCE_COOLDOWN_MINUTES = 30L
+
+  private const val GREEN_FINANCE_COOLDOWN_KEY = "GREEN_FINANCE_COOLDOWN_UNTIL"
+  private const val GREEN_FINANCE_SUBMIT_TICK_METHOD =
+    "com.alipay.mcaplatformunit.common.mobile.newservice.GreenFinanceTickService.submitTick"
+
+  /** 返回从指定时刻开始计算的绿色经营冷却截止时间。 */
+  internal fun greenFinanceCooldownUntil(nowMs: Long): Long =
+    nowMs + GREEN_FINANCE_COOLDOWN_MINUTES * 60_000L
+
+  /** 生成账号独立的绿色经营冷却存储键。 */
+  internal fun greenFinanceCooldownKey(uid: String?): String =
+    "${GREEN_FINANCE_COOLDOWN_KEY}_${uid.orEmpty()}"
+
+  /** 返回剩余冷却分钟数；不足一分钟按一分钟显示，已到期返回 0。 */
+  internal fun greenFinanceCooldownRemainingMinutes(untilMs: Long, nowMs: Long): Long {
+    val remainingMs = (untilMs - nowMs).coerceAtLeast(0L)
+    return if (remainingMs == 0L) 0L else (remainingMs + 59_999L) / 60_000L
+  }
+
+  /** 为当前账号开始或刷新绿色经营封控冷却。 */
+  fun startGreenFinanceCooldown(nowMs: Long = System.currentTimeMillis()) {
+    getMySp()?.putString(
+      greenFinanceCooldownKey(UserMap.currentUid),
+      greenFinanceCooldownUntil(nowMs).toString()
+    )
+  }
+
+  /** 返回当前账号剩余的绿色经营冷却分钟数。 */
+  fun greenFinanceCooldownRemainingMinutes(nowMs: Long = System.currentTimeMillis()): Long {
+    val untilMs = getMySp()
+      ?.getString(greenFinanceCooldownKey(UserMap.currentUid))
+      ?.toLongOrNull()
+      ?: 0L
+    return greenFinanceCooldownRemainingMinutes(untilMs, nowMs)
+  }
+
+  /** 判断错误码是否为 RPC 层生成的“今日已屏蔽”本地错误码。 */
+  internal fun isGreenFinanceDailyBlockedError(error: Int): Boolean = error == 9999
+
+  /** 判断响应是否为 RPC 层生成的“今日已屏蔽”本地响应。 */
+  fun isGreenFinanceDailyBlockedResponse(response: JSONObject): Boolean =
+    isGreenFinanceDailyBlockedError(response.optInt("error"))
 
   fun 自动同意LICENSE() = true
 
@@ -146,6 +214,10 @@ object MyUtils {
           s.contains("\"error\":1009") -> {
           getMySp()?.let { sp ->
             sp.putBoolean(rpcDailyKey(rpc), true)
+            if (rpc.requestMethod == GREEN_FINANCE_SUBMIT_TICK_METHOD) {
+              startGreenFinanceCooldown()
+              Log.greenFinance("检测到封控，绿色经营冷却${GREEN_FINANCE_COOLDOWN_MINUTES}分钟")
+            }
             Log.greenFinance("当日异常的请求，当日不再请求\n${rpc.requestMethod}")
           } ?: run {
             Log.greenFinance("当日异常的请求，当日不再请求,存储失败:${rpc.requestMethod}")

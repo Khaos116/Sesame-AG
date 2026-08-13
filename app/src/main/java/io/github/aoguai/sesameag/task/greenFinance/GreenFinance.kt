@@ -77,7 +77,12 @@ class GreenFinance : ModelTask() {
     }
 
     override fun check(): Boolean {
+        val cooldownMinutes = MyUtils.greenFinanceCooldownRemainingMinutes()
         return when {
+            cooldownMinutes > 0L -> {
+                Log.greenFinance("绿色经营封控冷却中，剩余约${cooldownMinutes}分钟，本轮跳过")
+                false
+            }
             TaskCommon.IS_ENERGY_TIME -> {
                 Log.greenFinance("⏸ 当前为只收能量时间【${BaseModel.energyTime.value}】，停止执行${getName()}任务！")
                 false
@@ -146,6 +151,7 @@ class GreenFinance : ModelTask() {
             signIn("PLAY102632271")
             signIn("PLAY102232206")
             behaviorTick()
+            if (MyUtils.greenFinanceCooldownRemainingMinutes() > 0L) return
             donation()
             batchStealFriend()
             prizes()
@@ -210,6 +216,7 @@ class GreenFinance : ModelTask() {
 
     private suspend fun doTick(type: String) {
         try {
+            if (MyUtils.greenFinanceCooldownRemainingMinutes() > 0L) return
             var str = GreenFinanceRpcCall.queryUserTickItem(type)
             var jsonObject = JsonUtil.parseJSONObject(str)
             if (!jsonObject.optBoolean("success")) {
@@ -224,11 +231,12 @@ class GreenFinance : ModelTask() {
                 }
                 val behaviorCode = jsonObject.optString("behaviorCode")
                 if (behaviorCode.isEmpty()) continue
-                //{"error":1009,"errorMessage":"系统繁忙，请稍后再试。","errorNo":3,"errorTip":"1009"}
-                if (MyUtils.getSp当天是否执行(MyUtils.CHANGE_KT1)) return
                 str = GreenFinanceRpcCall.submitTick(type, behaviorCode)
                 val obj = JsonUtil.parseJSONObject(str)
-                MyUtils.setSp当天是否执行(MyUtils.CHANGE_KT1, obj)
+                if (MyUtils.isGreenFinanceDailyBlockedResponse(obj)) {
+                    Log.greenFinance("绿色经营📊[${jsonObject.optString("title")}]今日已屏蔽，跳过")
+                    continue
+                }
                 if (!obj.optBoolean("success") || 
                     JsonUtil.getValueByPath(obj, "result.result") != "true") {
                     Log.greenFinance("绿色经营📊[${jsonObject.optString("title")}]打卡失败")

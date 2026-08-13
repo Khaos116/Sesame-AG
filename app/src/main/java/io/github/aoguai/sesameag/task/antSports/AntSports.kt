@@ -569,8 +569,8 @@ class AntSports : ModelTask() {
                 .also { latestExchangeTime = it }
         )
         modelFields.addField(
-            IntegerModelField("syncStepCount", "同步步数 | 自定义步数", 0, 0, 100000).withDesc(
-                "在当前真实步数基础上额外增加的步数基数，运行时会随机上浮 0~1999，设为 0 关闭自定义同步。"
+            IntegerModelField("syncStepCount", "同步步数 | 目标步数下限", 0, 0, MyUtils.MAX_SYNC_STEP_COUNT).withDesc(
+                "最终目标会在配置值与 21423 之间随机生成，不再叠加真实步数；设为 0 关闭自定义同步。"
             ).also { syncStepCount = it }
         )
 
@@ -1352,13 +1352,7 @@ class AntSports : ModelTask() {
         if (tmpStepCount >= 0) {
             return tmpStepCount
         }
-        tmpStepCount = (syncStepCount.value ?: 0).coerceIn(0, 100_000)
-        if (tmpStepCount > 0) {
-            tmpStepCount = RandomUtil.nextInt(tmpStepCount, tmpStepCount + 2000)
-            if (tmpStepCount > 100_000) {
-                tmpStepCount = 100_000
-            }
-        }
+        tmpStepCount = MyUtils.randomSyncStepTarget(syncStepCount.value ?: 0)
         return tmpStepCount
     }
 
@@ -1390,7 +1384,7 @@ class AntSports : ModelTask() {
             cachedTargetDailyStep = -1
         }
         if (cachedTargetDailyStep < 0) {
-            cachedTargetDailyStep = (cachedOriginDailyStep + customStep).coerceAtMost(100_000)
+            cachedTargetDailyStep = MyUtils.resolveSyncStepTarget(cachedOriginDailyStep, customStep)
         }
         return cachedTargetDailyStep.coerceAtLeast(safeOriginStep)
     }
@@ -8601,4 +8595,3 @@ class AntSports : ModelTask() {
         }
     }
 }
-
