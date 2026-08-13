@@ -61,6 +61,11 @@ object MyUtils {
     return Calendar.getInstance(TimeZone.getTimeZone("GMT+8"))
   }
 
+  @JvmStatic
+  fun myJSONObject(value: String?): JSONObject = JSONObject(jsonObjectSource(value))
+
+  internal fun jsonObjectSource(value: String?): String = value?.takeUnless { it.isBlank() } ?: "{}"
+
   fun 自动同意LICENSE() = true
 
   fun 是否开启绿色绿色经营(): Boolean {

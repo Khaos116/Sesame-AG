@@ -67,6 +67,7 @@ import io.github.aoguai.sesameag.util.Average
 import io.github.aoguai.sesameag.util.FriendGuard
 import io.github.aoguai.sesameag.util.GlobalThreadPools
 import io.github.aoguai.sesameag.util.Log
+import io.github.aoguai.sesameag.util.MyUtils
 import io.github.aoguai.sesameag.util.Notify.updateRunningLastExec
 import io.github.aoguai.sesameag.util.Notify.updateRunningStatus
 import io.github.aoguai.sesameag.util.ResChecker
@@ -3592,7 +3593,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     collectEnergyLockLimit.setForce(startTime)
                 }
 
-                requestString(rpcEntity, 0, 0)
+                val responseString = requestString(rpcEntity, 0, 0)
                 val spendTime = System.currentTimeMillis() - startTime
                 if (balanceNetworkDelay?.value == true) {
                     delayTimeMath.nextInteger((spendTime / 3).toInt())
@@ -3624,8 +3625,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     return@Runnable
                 }
 
-                val responseString: String = rpcEntity.responseString ?: ""
-                val jo = JSONObject(responseString)
+                val jo = MyUtils.myJSONObject(responseString)
                 val resultCode = jo.optString("resultCode")
                 if (!jo.optBoolean("success") && !"SUCCESS".equals(resultCode, ignoreCase = true)) {
                     if ("PARAM_ILLEGAL2" == resultCode) {

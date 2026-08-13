@@ -245,3 +245,58 @@ FPA 3.8 实测依据（APK：`C:\Users\USER\Desktop\FPA3.8.Apk`）：
 验证：主页展示值与当前 APK 的编译时间一致，且警示文字、官方签名状态和主页其他卡片布局正常。
 - AAR、APK、JAR、SO、图片和签名文件按二进制处理，禁止 Git 做换行转换。
 - 若上游合并修改了换行规则，应把纯换行归一化做成独立改动，避免与业务代码差异混在一起。
+
+## 11. 2026-08-13 真机异常处置与配置记录
+
+本节记录设备运行配置和“空响应 JSON 崩错”的代码修复。账号配置通常位于：
+
+`/sdcard/Android/media/com.eg.android.AlipayGphone/sesame-AG/config/<UID>/config_v2.json`
+
+### 11.1 运行配置
+
+| 配置范围 | 网络异常阈值 `BaseModel.setMaxErrorCount` | 森林好友并发 `AntForest.friendProcessConcurrency` | 芝麻信用模块 `AntSesameCredit.enable` | 每日公益捐蛋 `AntFarm.donation` |
+|---|---:|---:|---:|---:|
+| 出现网络异常的账号配置 | `8` | `3` | `false` | `false` |
+| 其他已配置账号 | `3` | `3` | `false` | `false` |
+
+修改原因：
+
+- 主账号曾出现“网络异常次数超过阈值 / 当前网络不可用”。把阈值从 `3` 调为 `8`，允许短时网络抖动有更多重试机会，但仍保留上限，避免无限请求。
+- 所有已配置账号的森林好友处理并发统一为 `3`，降低同一时间的 RPC 压力，减少拥塞、空响应和风控触发概率。
+- 所有已配置账号均关闭芝麻信用模块。日志中该模块反复出现 `ILLEGAL_ARGUMENT`，提示 `promiseActivityExtCheck` 不是有效入参；关闭模块可停止继续触发这组当前不可用的任务。
+- 所有已配置账号均关闭普通“每日捐蛋”。日志曾出现公益捐蛋 `resultCode=218`，提示自营项目缺少捐赠标的；关闭该功能可避免继续发送残缺或服务端暂不兼容的请求。
+- `AntFarm.donationCompetition`（捐蛋排位赛）仍为 `true`，本次没有修改。若目标是完全不捐蛋，还需要单独关闭“捐蛋排位赛 | 开启”。
+
+修改真机配置前已逐文件备份，备份命名遵循 `config_v2.json.bak-<timestamp>`；这些设备本地备份不提交到仓库。
+
+### 11.2 空响应 JSON 崩错修复
+
+涉及文件：
+
+- `app/src/main/java/io/github/aoguai/sesameag/util/MyUtils.kt`
+- `app/src/main/java/io/github/aoguai/sesameag/task/antForest/AntForest.kt`
+- `app/src/test/java/io/github/aoguai/sesameag/util/MyUtilsTest.kt`
+
+根因：`AntForest.collectEnergy()` 调用 `requestString(rpcEntity, 0, 0)` 后丢弃了它的返回值，随后改读 `rpcEntity.responseString ?: ""`。离线保护或网络错误时，请求层会返回本地合成的 JSON，但不一定写回 `rpcEntity.responseString`，因此这里可能把空字符串传给 `JSONObject`，触发 `JSONException: End of input`。
+
+修复：
+
+- `MyUtils.myJSONObject(value)` 统一处理对象响应：`null` 或空白字符串转成 `{}`，正常非空字符串按原值解析。
+- 非空但格式错误的 JSON 仍然抛错，不吞掉真正的数据格式问题。
+- `AntForest.collectEnergy()` 保存并解析 `requestString()` 的真实返回值，不再绕过请求层的离线兜底响应。
+- `MyUtilsTest` 覆盖 `null`、空白和正常 JSON 三种输入。
+
+验证记录：
+
+- `:app:testDebugUnitTest`、`:app:compileDebugKotlin` 均通过。
+- `git diff --check` 通过。
+- 代码修复需要随新 APK 构建并安装后才会在真机生效；仅修改设备配置不会包含该修复。
+
+### 11.3 当前日志结论
+
+截至 2026-08-13 10:20 的复查结果：
+
+- 未发现 Sesame-AG 或支付宝进程的 FATAL 崩溃、ANR；Logcat 中的 `FaceUnlockTrack` 空 JSON 异常属于系统人脸解锁服务，不是本模块堆栈。
+- 仍存在非崩溃级业务异常：绿色经营 `submitTick` 返回 `1009/系统繁忙` 并触发离线保护；会员浮球返回 `PARAM_ILLEGAL/系统繁忙`。
+- `PVP_ENTRY_CLOSED`、今日已捐步、摇钱树持仓不足、果树未选种子等属于服务端业务状态，当前不会造成应用崩溃。
+- 因此不能结论为“完全没有其他异常”；准确结论是没有发现新的崩溃级异常，但仍有服务端限制和业务失败需要继续观察。
