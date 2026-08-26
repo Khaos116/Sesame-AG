@@ -164,7 +164,12 @@ class ApplicationHook {
         // 1. 初始化配置读取
         remotePreferences = loadRemotePreferences(framework)
 
-        // 2. 进程检查
+        // 2. 进程检查。Lite 子进程只安装自然 RPC 抓包，不得进入任务运行时。
+        if (shouldHookCaptureOnlyProcess()) {
+            installCaptureOnlyHooks(activeLoader)
+            hookCaptureOnlyProcessAttach()
+            return
+        }
         if (!shouldHookProcess()) return
 
         init(Files.CONFIG_DIR)
@@ -188,26 +193,26 @@ class ApplicationHook {
     private fun loadRemotePreferences(framework: String): SharedPreferences? {
         val frameworkProperties = getFrameworkRuntimeInfo()?.properties
         if (frameworkProperties == null) {
-            logFramework(android.util.Log.INFO, "无法读取 $framework 的 capability，跳过远程偏好读取")
+            Log.runtime(TAG, "无法读取 $framework 的 capability，跳过远程偏好读取")
             return null
         }
         // FPA 3.8 reports PROP_CAP_REMOTE, so it can use the same remote-preference path as LSPosed.
         if (frameworkProperties.and(XposedInterface.PROP_CAP_REMOTE) == 0L) {
-            logFramework(android.util.Log.INFO, "$framework 未声明 remote capability，跳过远程偏好读取")
+            Log.runtime(TAG, "$framework 未声明 remote capability，跳过远程偏好读取")
             return null
         }
         return runCatching {
             requireXposedInterface().getRemotePreferences(SesameApplication.PREFERENCES_KEY)
         }.onFailure {
-            logFramework(android.util.Log.WARN, "读取远程偏好失败: ${it.message}", it)
+            logFrameworkWarning("读取远程偏好失败: ${it.message}", it)
         }.getOrNull()
     }
 
-    private fun shouldHookProcess(): Boolean {
-        val isMainProcess = General.PACKAGE_NAME == finalProcessName
-        return isMainProcess && RuntimeIdentityGuard.isPackageReady()
-//            record(TAG, "跳过辅助进程: $finalProcessName")
-    }
+    private fun shouldHookProcess(): Boolean =
+        RuntimeIdentityGuard.isMainProcess() && RuntimeIdentityGuard.isPackageReady()
+
+    private fun shouldHookCaptureOnlyProcess(): Boolean =
+        RuntimeIdentityGuard.isCaptureOnlyProcess() && RuntimeIdentityGuard.isPackageReady()
 
     private fun initReflection(loader: ClassLoader) {
         try {
@@ -223,6 +228,45 @@ class ApplicationHook {
             deoptimizeClass(loadedApkClass)
         } catch (_: Throwable) {
             // ignore
+        }
+    }
+
+    private fun installCaptureOnlyHooks(activeLoader: ClassLoader) {
+        val installed = RpcTrafficCapture.installForCaptureOnlyProcess(activeLoader)
+        val application = runCatching {
+            val activityThread = Class.forName("android.app.ActivityThread")
+            activityThread.getDeclaredMethod("currentApplication").invoke(null) as? Application
+        }.getOrNull()
+        application?.let { Log.init(it) }
+        Log.runtime(
+            TAG,
+            "capture_only_hook_install: process=$finalProcessName installed=$installed applicationReady=${application != null}",
+        )
+    }
+
+    private fun hookCaptureOnlyProcessAttach() {
+        try {
+            val attachMethod = findMethod(Application::class.java, "attach", Context::class.java)
+            requireXposedInterface().hook(attachMethod).intercept { chain ->
+                val result = chain.proceed()
+                val context = chain.args[0] as? Context ?: return@intercept result
+                val identityDecision = RuntimeIdentityGuard.verifyApplicationAttach(context)
+                if (!identityDecision.accepted || !RuntimeIdentityGuard.isCaptureOnlyProcess()) {
+                    android.util.Log.w(TAG, "capture_instance_rejected: ${identityDecision.reasonCode}")
+                    return@intercept result
+                }
+                XposedEnv.runtimeIdentity = RuntimeIdentityGuard.trustedIdentity()
+                Log.init(context)
+                val activeLoader = classLoader ?: return@intercept result
+                val installed = RpcTrafficCapture.installForCaptureOnlyProcess(activeLoader)
+                Log.runtime(
+                    TAG,
+                    "capture_only_hook_ready: process=$finalProcessName installed=$installed",
+                )
+                result
+            }
+        } catch (e: Exception) {
+            Log.printStackTrace(TAG, "Capture-only attach hook failed", e)
         }
     }
 
@@ -1737,16 +1781,15 @@ class ApplicationHook {
             }
         }
 
-        private fun logFramework(
-            priority: Int,
+        private fun logFrameworkWarning(
             message: String,
             throwable: Throwable? = null,
         ) {
             val logger = frameworkInterface ?: return
             if (throwable != null) {
-                logger.log(priority, TAG, message, throwable)
+                logger.log(android.util.Log.WARN, TAG, message, throwable)
             } else {
-                logger.log(priority, TAG, message)
+                logger.log(android.util.Log.WARN, TAG, message)
             }
         }
     }

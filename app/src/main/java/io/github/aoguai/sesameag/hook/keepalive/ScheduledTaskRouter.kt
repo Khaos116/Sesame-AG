@@ -9,6 +9,7 @@ import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.hook.ApplicationHookCore
 import io.github.aoguai.sesameag.hook.ApplicationResumeCoordinator
 import io.github.aoguai.sesameag.model.Model
+import io.github.aoguai.sesameag.task.antDodo.AntDodo
 import io.github.aoguai.sesameag.task.antFarm.AntFarm
 import io.github.aoguai.sesameag.task.antForest.EnergyWaitingManager
 import io.github.aoguai.sesameag.task.antSports.AntSports
@@ -43,6 +44,10 @@ object ScheduledTaskRouter {
     ): Boolean {
         return try {
             val appContext = context.applicationContext ?: context
+            Log.record(
+                TAG,
+                "路由持久调度[id=${schedule.id}] state=${schedule.state} kind=${schedule.kind} source=$source owner=${schedule.ownerUserId} session=${schedule.sessionEpoch}",
+            )
             if (schedule.state != PersistentScheduleState.SCHEDULED) {
                 Log.record(TAG, "持久任务[${schedule.name}]状态为${schedule.state}，忽略 source=$source")
                 return true
@@ -64,12 +69,12 @@ object ScheduledTaskRouter {
                         }
                     }
                 }
-                PersistentScheduleRegistry.markExpired(appContext, schedule.id, now)
+                PersistentScheduleRegistry.markExpired(appContext, schedule.id, now, source)
                 Log.record(TAG, "持久任务[${schedule.name}]超过触发窗口，已过期 source=$source")
                 return true
             }
             // 只有目标进程拥有后续执行队列；模块进程只负责转发，避免目标广播读到 QUEUED 后被拒绝。
-            if (targetProcess && !PersistentScheduleRegistry.markQueued(appContext, schedule.id, now)) {
+            if (targetProcess && !PersistentScheduleRegistry.markQueued(appContext, schedule.id, now, source)) {
                 Log.record(TAG, "持久任务排队状态已变化，跳过重复路由[${schedule.name}] source=$source")
                 return true
             }
@@ -79,13 +84,13 @@ object ScheduledTaskRouter {
                     if (targetProcess && schedule.kind == PersistentScheduleKind.MODULE_CHILD) {
                         // Claim the child slot before an asynchronous module worker is queued.
                         // This closes the startup arbitration window between QUEUED and RUNNING.
-                        PersistentScheduleRegistry.markRunning(schedule.id)
+                        PersistentScheduleRegistry.markRunning(schedule.id, source = source)
                     }
                 }
 
                 RouteResult.CONSUMED -> {
                     if (targetProcess) {
-                        PersistentScheduleRegistry.markFired(appContext, schedule.id)
+                        PersistentScheduleRegistry.markFired(appContext, schedule.id, source = source)
                     }
                 }
 
@@ -97,13 +102,13 @@ object ScheduledTaskRouter {
 
                 RouteResult.FAILED -> {
                     if (targetProcess) {
-                        PersistentScheduleRegistry.markFailed(appContext, schedule.id, "unhandled kind=${schedule.kind}")
+                        PersistentScheduleRegistry.markFailed(appContext, schedule.id, "unhandled kind=${schedule.kind}", source = source)
                     }
                 }
 
                 RouteResult.SKIPPED -> {
                     if (targetProcess) {
-                        PersistentScheduleRegistry.markFired(appContext, schedule.id)
+                        PersistentScheduleRegistry.markFired(appContext, schedule.id, source = source)
                     }
                 }
             }
@@ -111,7 +116,7 @@ object ScheduledTaskRouter {
         } catch (t: Throwable) {
             val appContext = context.applicationContext ?: context
             if (isTargetProcess(appContext)) {
-                PersistentScheduleRegistry.markFailed(appContext, schedule.id, t.message ?: t.javaClass.name)
+                PersistentScheduleRegistry.markFailed(appContext, schedule.id, t.message ?: t.javaClass.name, source = source)
             }
             Log.printStackTrace(TAG, "持久任务路由失败[${schedule.name}]", t)
             false
@@ -272,9 +277,9 @@ object ScheduledTaskRouter {
                 return RouteResult.FAILED
             }
             if (targetProcess) {
-                return when (EnergyWaitingManager.triggerPersistentWaitingTask(taskId, schedule.payloadJson, source)) {
+                return when (EnergyWaitingManager.triggerPersistentWaitingTask(taskId, schedule.payloadJson, source, schedule.id)) {
                     EnergyWaitingManager.PersistentTriggerResult.HANDLED -> {
-                        PersistentScheduleRegistry.markRunning(schedule.id)
+                        PersistentScheduleRegistry.markRunning(schedule.id, source = source)
                         RouteResult.HANDLED
                     }
 
@@ -290,6 +295,30 @@ object ScheduledTaskRouter {
                         RouteResult.FAILED
                     }
                 }
+            }
+            return routeResult(dispatchExecute(context, schedule, source, wakenAtTime = false, wakenTime = null))
+        }
+        if (childKind == AntDodo.PERSISTENT_CHILD_KIND) {
+            val childId = payload.optString("child_id").trim()
+            if (childId != AntDodo.COLLECT_TO_FRIEND_CHILD_ID) {
+                Log.record(TAG, "神奇物种持久子任务缺少或未知 child_id: ${schedule.name}")
+                return RouteResult.FAILED
+            }
+            if (targetProcess) {
+                val antDodo = Model.getModel(AntDodo::class.java)
+                if (antDodo != null) {
+                    if (!antDodo.isEnable()) {
+                        Log.record(TAG, "神奇物种持久子任务触发时模块已关闭，标记完成: ${schedule.name}")
+                        return RouteResult.SKIPPED
+                    }
+                    return if (antDodo.triggerPersistentCollectToFriend(schedule.payloadJson, schedule.id, source)) {
+                        RouteResult.HANDLED
+                    } else {
+                        RouteResult.FAILED
+                    }
+                }
+                Log.record(TAG, "神奇物种实例尚未就绪，延后持久子任务: ${schedule.name}")
+                return RouteResult.DEFERRED
             }
             return routeResult(dispatchExecute(context, schedule, source, wakenAtTime = false, wakenTime = null))
         }

@@ -1,5 +1,6 @@
 package io.github.aoguai.sesameag.hook
 
+import android.app.Application
 import android.content.Context
 import android.content.pm.ApplicationInfo
 import io.github.aoguai.sesameag.data.General
@@ -7,7 +8,7 @@ import io.github.aoguai.sesameag.util.MyUtils
 
 /**
  * Verifies that the module is running against the one supported Android user and target process.
- * This is a compatibility boundary, not an anti-tamper guarantee for rooted or virtualized hosts.
+ * Main-process execution is trusted separately from capture-only Alipay lite processes.
  */
 data class RuntimeIdentity(
     val moduleUid: Int,
@@ -75,18 +76,20 @@ object RuntimeIdentityGuard {
         val module = moduleSnapshot ?: return rejectAndStore("module_identity_missing")
         val appPackageName = applicationInfo.packageName.orEmpty()
         val appProcessName = applicationInfo.processName.orEmpty()
+        val targetProcessName = processName ?: return rejectAndStore("target_process_missing")
         val sourceDir = applicationInfo.sourceDir.orEmpty()
         val userId = androidUserId(applicationInfo.uid)
         val decision = when {
             packageName != General.PACKAGE_NAME -> reject("target_package_mismatch")
             appPackageName != General.PACKAGE_NAME -> reject("target_application_package_mismatch")
-            processName != General.PACKAGE_NAME -> reject("target_non_main_process")
-            appProcessName != General.PACKAGE_NAME -> reject("target_application_process_mismatch")
+            !isSupportedTargetProcess(targetProcessName) -> reject("target_unsupported_process")
+            targetProcessName == General.PACKAGE_NAME && appProcessName != General.PACKAGE_NAME ->
+                reject("target_application_process_mismatch")
             userId != PRIMARY_ANDROID_USER_ID -> reject("target_non_primary_user")
             sourceDir.isBlank() -> reject("target_source_missing")
             !isPrimaryOrUnassignedModuleUid(module.uid) -> reject("module_non_primary_user")
             else -> {
-                targetSnapshot = TargetSnapshot(applicationInfo.uid, sourceDir, processName)
+                targetSnapshot = TargetSnapshot(applicationInfo.uid, sourceDir, targetProcessName)
                 attachedIdentity = null
                 accept()
             }
@@ -118,8 +121,9 @@ object RuntimeIdentityGuard {
                 }
             when {
                 context.packageName != General.PACKAGE_NAME -> reject("target_context_package_mismatch")
-                !matchesTarget(contextInfo, target) -> reject("target_context_mismatch")
-                !matchesTarget(targetInfo, target) -> reject("target_package_manager_mismatch")
+                !matchesTargetApplication(contextInfo, target) -> reject("target_context_mismatch")
+                Application.getProcessName() != target.processName -> reject("target_runtime_process_mismatch")
+                !matchesTargetApplication(targetInfo, target) -> reject("target_package_manager_mismatch")
                 verifyInstalledModulePackage && moduleInfo?.packageName != General.MODULE_PACKAGE_NAME -> reject("module_package_manager_mismatch")
                 verifyInstalledModulePackage && moduleInfo?.uid != module.uid -> reject("module_uid_mismatch")
                 verifyInstalledModulePackage && androidUserId(moduleInfo?.uid ?: -1) != PRIMARY_ANDROID_USER_ID -> reject("module_non_primary_user")
@@ -143,18 +147,35 @@ object RuntimeIdentityGuard {
         lastDecision.accepted && targetSnapshot != null
 
     fun isTrustedForExecution(): Boolean =
-        lastDecision.accepted && attachedIdentity != null
+        lastDecision.accepted && attachedIdentity?.targetProcessName == General.PACKAGE_NAME
+
+    fun isMainProcess(): Boolean =
+        targetSnapshot?.processName == General.PACKAGE_NAME
+
+    fun isCaptureOnlyProcess(): Boolean =
+        targetSnapshot?.processName?.let(::isCaptureOnlyProcessName) == true
 
     fun lastReasonCode(): String? = lastDecision.reasonCode
 
     fun trustedIdentity(): RuntimeIdentity? = attachedIdentity
 
-    private fun matchesTarget(info: ApplicationInfo, target: TargetSnapshot): Boolean =
+    private fun isSupportedTargetProcess(processName: String?): Boolean =
+        processName == General.PACKAGE_NAME || isCaptureOnlyProcessName(processName)
+
+    private fun isCaptureOnlyProcessName(processName: String?): Boolean {
+        val prefix = "${General.PACKAGE_NAME}:lite"
+        if (processName.isNullOrBlank() || !processName.startsWith(prefix)) {
+            return false
+        }
+        val suffix = processName.removePrefix(prefix)
+        return suffix.isNotEmpty() && suffix.all { it in '0'..'9' }
+    }
+
+    private fun matchesTargetApplication(info: ApplicationInfo, target: TargetSnapshot): Boolean =
         info.packageName == General.PACKAGE_NAME &&
             info.uid == target.uid &&
             androidUserId(info.uid) == PRIMARY_ANDROID_USER_ID &&
-            info.sourceDir.orEmpty() == target.sourceDir &&
-            info.processName.orEmpty() == General.PACKAGE_NAME
+            info.sourceDir.orEmpty() == target.sourceDir
 
     /** UserHandle.getUserId is hidden from this module's compile SDK; Android reserves 100000 UIDs per user. */
     private fun androidUserId(uid: Int): Int =

@@ -202,40 +202,79 @@ class AntStall : ModelTask() {
         val currentOwnerUserId = (AccountSessionCoordinator.currentUserId() ?: UserMap.currentUid).orEmpty()
         if (ownerUserId.isNotBlank() && ownerUserId != currentOwnerUserId) {
             Log.stall("新村持久子任务[$group][$childId]账号不匹配，跳过: owner=$ownerUserId current=$currentOwnerUserId")
+            PersistentScheduleRegistry.markFired(
+                ApplicationHook.appContext,
+                scheduleId,
+                source = "stall_owner_mismatch:$source",
+            )
             return true
         }
         if (!isPersistentChildSessionCurrent(currentOwnerUserId, payloadSessionEpoch)) {
             Log.stall("新村持久子任务[$group][$childId]会话无效，跳过触发: owner=$currentOwnerUserId session=$payloadSessionEpoch")
+            PersistentScheduleRegistry.markFired(
+                ApplicationHook.appContext,
+                scheduleId,
+                source = "stall_invalid_session:$source",
+            )
             return true
         }
         if (!isEnable()) {
             Log.stall("新村持久子任务[$group][$childId]触发时模块已关闭，跳过")
+            PersistentScheduleRegistry.markFired(
+                ApplicationHook.appContext,
+                scheduleId,
+                source = "stall_disabled:$source",
+            )
             return true
         }
-        GlobalThreadPools.execute {
-            PersistentScheduleRegistry.markRunning(scheduleId)
-            val executionLease =
-                ApplicationHook.appContext?.let { context ->
-                    WakeLockManager.acquire(
-                        context = context,
-                        timeoutMs = PersistentScheduleDefaults.TASK_EXECUTION_WAKELOCK_MS,
-                        source = "stall_persistent_child",
-                        scheduleId = scheduleId,
-                    )
+        val worker =
+            runCatching {
+                GlobalThreadPools.execute {
+                    PersistentScheduleRegistry.markRunning(scheduleId, source = "stall_worker_start:$source")
+                    val executionLease =
+                        ApplicationHook.appContext?.let { context ->
+                            WakeLockManager.acquire(
+                                context = context,
+                                timeoutMs = PersistentScheduleDefaults.TASK_EXECUTION_WAKELOCK_MS,
+                                source = "stall_persistent_child",
+                                scheduleId = scheduleId,
+                            )
+                        }
+                    try {
+                        runPersistentChildTask(childId, group, payload, source, currentOwnerUserId.orEmpty(), payloadSessionEpoch)
+                        PersistentScheduleRegistry.markFired(
+                            ApplicationHook.appContext,
+                            scheduleId,
+                            source = "stall_worker_success:$source",
+                        )
+                    } catch (t: Throwable) {
+                        Log.printStackTrace(TAG, "新村持久子任务执行失败[$group][$childId]", t)
+                        PersistentScheduleRegistry.markFailed(
+                            ApplicationHook.appContext,
+                            scheduleId,
+                            t.message ?: t.javaClass.name,
+                            source = "stall_worker_exception:$source",
+                        )
+                    } finally {
+                        executionLease?.close()
+                    }
                 }
-            try {
-                runPersistentChildTask(childId, group, payload, source, currentOwnerUserId.orEmpty(), payloadSessionEpoch)
-                PersistentScheduleRegistry.markFired(ApplicationHook.appContext, scheduleId)
-            } catch (t: Throwable) {
-                Log.printStackTrace(TAG, "新村持久子任务执行失败[$group][$childId]", t)
+            }.onFailure { error ->
+                Log.printStackTrace(TAG, "新村持久子任务提交失败[$group][$childId]", error)
                 PersistentScheduleRegistry.markFailed(
                     ApplicationHook.appContext,
                     scheduleId,
-                    t.message ?: t.javaClass.name,
+                    "worker_submit_failed:${error.javaClass.simpleName}",
+                    source = "stall_worker_submit:$source",
                 )
-            } finally {
-                executionLease?.close()
-            }
+            }.getOrNull() ?: return false
+        worker.invokeOnCompletion { error ->
+            PersistentScheduleRegistry.markWorkerFailedIfActive(
+                ApplicationHook.appContext,
+                scheduleId,
+                "worker_completed_without_terminal_state:${error?.javaClass?.simpleName ?: "none"}",
+                source = "stall_worker_completion:$source",
+            )
         }
         return true
     }
@@ -2963,7 +3002,22 @@ class AntStall : ModelTask() {
                 val collectJson = JSONObject(collectResponse)
 
                 if (ResChecker.checkRes(TAG, collectJson)) {
-                    Log.stall("蚂蚁新村⛪获得肥料${manure}g")
+                    val refreshed = JSONObject(AntStallRpcCall.queryManureInfo())
+                    if (!refreshed.optBoolean("success")) {
+                        Log.error(TAG, "collectManure confirm err: $refreshed")
+                        return
+                    }
+                    val refreshedInfo = refreshed.optJSONObject("astManureInfoVO")
+                    if (refreshedInfo == null || !refreshedInfo.has("hasManure")) {
+                        Log.error(TAG, "collectManure confirm missing astManureInfoVO.hasManure: $refreshed")
+                        return
+                    }
+                    if (refreshedInfo.optBoolean("hasManure")) {
+                        Log.stall("蚂蚁新村肥料收取后回查仍有待收肥料，保留后续重试")
+                        return
+                    }
+                    val collected = collectJson.optInt("collectNumber", manure).takeIf { it > 0 } ?: manure
+                    Log.stall("蚂蚁新村⛪获得肥料${collected}g")
                 }
             } else {
                 Log.stall("没有可收取的肥料。")

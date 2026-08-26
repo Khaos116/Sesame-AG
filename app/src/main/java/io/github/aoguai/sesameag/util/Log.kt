@@ -17,6 +17,13 @@ object Log {
     private val errorCountMap = ConcurrentHashMap<String, AtomicInteger>()
     private val loggerMap: Map<LogChannel, Logger>
 
+    fun interface WarningErrorMirror {
+        fun write(priority: Int, message: String)
+    }
+
+    @Volatile
+    private var warningErrorMirror: WarningErrorMirror? = null
+
     private enum class Severity {
         DEBUG,
         INFO,
@@ -32,6 +39,15 @@ object Log {
     init {
         Logback.initLogcatOnly()
         loggerMap = LogCatalog.channels.associateWith { LoggerFactory.getLogger(it.loggerName) }
+    }
+
+    @JvmStatic
+    fun setWarningErrorMirror(mirror: WarningErrorMirror?) {
+        warningErrorMirror = mirror
+    }
+
+    private fun mirrorWarningOrError(priority: Int, message: String) {
+        runCatching { warningErrorMirror?.write(priority, message) }
     }
 
     @JvmStatic
@@ -125,8 +141,14 @@ object Log {
         when (severity) {
             Severity.DEBUG -> logger.debug("{}", msg)
             Severity.INFO -> logger.info("{}", msg)
-            Severity.WARN -> logger.warn("{}", msg)
-            Severity.ERROR -> logger.error("{}", msg)
+            Severity.WARN -> {
+                logger.warn("{}", msg)
+                mirrorWarningOrError(android.util.Log.WARN, msg)
+            }
+            Severity.ERROR -> {
+                logger.error("{}", msg)
+                mirrorWarningOrError(android.util.Log.ERROR, msg)
+            }
         }
     }
 
@@ -296,7 +318,9 @@ object Log {
 
     @JvmStatic
     fun capture(msg: String) {
-        write(LogChannel.CAPTURE, Severity.INFO, msg)
+        // capture.log is shared by processes; keep every legacy capture record on one physical line.
+        val singleLineMessage = msg.replace("\r", "\\r").replace("\n", "\\n")
+        write(LogChannel.CAPTURE, Severity.INFO, singleLineMessage)
     }
 
     @JvmStatic
