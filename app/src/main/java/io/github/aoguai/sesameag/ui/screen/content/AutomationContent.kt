@@ -17,21 +17,19 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Card
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -43,9 +41,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.aoguai.sesameag.entity.UserEntity
-import io.github.aoguai.sesameag.hook.AccountSlotMigrationState
 import io.github.aoguai.sesameag.hook.AccountSlotSnapshot
-import io.github.aoguai.sesameag.hook.MAX_EXECUTABLE_ACCOUNT_SLOTS
 import io.github.aoguai.sesameag.ui.compose.CommonAlertDialog
 import io.github.aoguai.sesameag.util.MyUtils
 
@@ -55,11 +51,9 @@ fun AutomationContent(
     accountSlots: AccountSlotSnapshot,
     onOpenSettings: (UserEntity) -> Unit,
     onOpenFriendCenter: (UserEntity) -> Unit,
-    onRemoveExecutableSlot: (String?) -> Unit,
-    onSelectLegacySlots: (Collection<String?>) -> Unit,
+    onSetExecutableSlot: (String?, Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var selectedLegacySlots by rememberSaveable { mutableStateOf<Set<String>>(emptySet()) }
     var pendingSlotRemoval by rememberSaveable { mutableStateOf<String?>(null) }
 
     LazyColumn(
@@ -72,50 +66,6 @@ fun AutomationContent(
                 title = "账号与可执行槽位",
                 supportingText = "账号配置按当前同步结果展示，移出槽位不会删除账号数据。",
             )
-        }
-
-        if (accountSlots.migrationState == AccountSlotMigrationState.SELECTION_REQUIRED) {
-            MyUtils.CHANGE_KT3
-            item {
-                Text(
-                    text = "选择 $MAX_EXECUTABLE_ACCOUNT_SLOTS 个可执行账号",
-                    style = MaterialTheme.typography.bodyLarge,
-                )
-            }
-            items(accountSlots.legacyCandidates, key = { userId -> "legacy-slot-$userId" }) { userId ->
-                val selected = userId in selectedLegacySlots
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Checkbox(
-                        checked = selected,
-                        onCheckedChange = { checked ->
-                            selectedLegacySlots = when {
-                                !checked -> selectedLegacySlots - userId
-                                selectedLegacySlots.size < MAX_EXECUTABLE_ACCOUNT_SLOTS -> selectedLegacySlots + userId
-                                else -> selectedLegacySlots
-                            }
-                        },
-                    )
-                    Text(
-                        text = maskUserId(userId),
-                        style = MaterialTheme.typography.bodyLarge,
-                    )
-                }
-            }
-            item {
-                TextButton(
-                    onClick = {
-                        onSelectLegacySlots(selectedLegacySlots.toList())
-                        selectedLegacySlots = emptySet()
-                    },
-                    enabled = selectedLegacySlots.size == MAX_EXECUTABLE_ACCOUNT_SLOTS,
-                ) {
-                    Text("确认选择（${selectedLegacySlots.size}/$MAX_EXECUTABLE_ACCOUNT_SLOTS）")
-                }
-            }
-            item { HorizontalDivider() }
         }
 
         if (userList.isEmpty()) {
@@ -139,13 +89,12 @@ fun AutomationContent(
                     isExecutable = userId in accountSlots.activeUserIds,
                     onOpenSettings = { onOpenSettings(user) },
                     onOpenFriendCenter = { onOpenFriendCenter(user) },
-                    onRemove = if (
-                        accountSlots.migrationState == AccountSlotMigrationState.READY &&
-                        userId in accountSlots.activeUserIds
-                    ) {
-                        { pendingSlotRemoval = userId }
-                    } else {
-                        null
+                    onSetExecutableSlot = { enabled ->
+                        if (enabled) {
+                            onSetExecutableSlot(userId, true)
+                        } else {
+                            pendingSlotRemoval = userId
+                        }
                     },
                 )
             }
@@ -159,7 +108,7 @@ fun AutomationContent(
             showDialog = true,
             onDismissRequest = { pendingSlotRemoval = null },
             onConfirm = {
-                onRemoveExecutableSlot(userId)
+                onSetExecutableSlot(userId, false)
                 pendingSlotRemoval = null
             },
             title = "移出可执行槽位",
@@ -178,7 +127,7 @@ private fun AccountCard(
     isExecutable: Boolean,
     onOpenSettings: () -> Unit,
     onOpenFriendCenter: () -> Unit,
-    onRemove: (() -> Unit)?,
+    onSetExecutableSlot: (Boolean) -> Unit,
 ) {
     val context = LocalContext.current
     val userId = user.userId?.trim().orEmpty()
@@ -244,6 +193,20 @@ private fun AccountCard(
                     },
                 )
                 DropdownMenuItem(
+                    text = { Text(if (isExecutable) "移出槽位" else "移入槽位") },
+                    leadingIcon = {
+                        Icon(
+                            if (isExecutable) Icons.Outlined.DeleteOutline else Icons.Outlined.Add,
+                            contentDescription = null,
+                            tint = if (isExecutable) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                        )
+                    },
+                    onClick = {
+                        menuExpanded = false
+                        onSetExecutableSlot(!isExecutable)
+                    },
+                )
+                DropdownMenuItem(
                     text = { Text("复制账号 ID") },
                     leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
                     enabled = userId.isNotBlank(),
@@ -252,22 +215,6 @@ private fun AccountCard(
                         copyAccountId(context, userId)
                     },
                 )
-                if (onRemove != null) {
-                    DropdownMenuItem(
-                        text = { Text("移出槽位", color = MaterialTheme.colorScheme.error) },
-                        leadingIcon = {
-                            Icon(
-                                Icons.Outlined.DeleteOutline,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.error,
-                            )
-                        },
-                        onClick = {
-                            menuExpanded = false
-                            onRemove()
-                        },
-                    )
-                }
             }
         }
     }

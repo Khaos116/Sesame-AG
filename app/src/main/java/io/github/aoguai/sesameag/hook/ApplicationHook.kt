@@ -1222,6 +1222,12 @@ class ApplicationHook {
                         WorkflowRootGuard.hasGrantedRoot() &&
                         legalAccepted &&
                         !ApplicationHookConstants.isOffline()
+                val executionCheck = AccountSlotRegistry.checkExecutableUser(userId)
+                if (executionCheck !is AccountSlotExecutionCheck.Allowed) {
+                    record(TAG, "execution_gate_rejected_before_apply: $executionCheck")
+                    destroyHandlerInternal("account_slot_recheck", invalidateSession = true)
+                    return false
+                }
                 AccountSessionCoordinator.applySession(
                     context = appContext,
                     userId = userId,

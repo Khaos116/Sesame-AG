@@ -217,6 +217,7 @@ class AntFarm : ModelTask() {
      * s收取道具奖励
      */
     internal var receiveFarmToolReward: BooleanModelField? = null
+    private var useToolOnceWhenRewardFull: BooleanModelField? = null
 
     /**
      * 游戏改分
@@ -306,7 +307,8 @@ class AntFarm : ModelTask() {
     internal var family: BooleanModelField? = null
     internal var familyOptions: SelectModelField? = null
     internal var familyAssignStrategy: ChoiceModelField? = null
-    internal var notInviteList: FriendSelectionModelField? = null
+    internal var familyShareMode: ChoiceModelField? = null
+    internal var familyShareList: FriendSelectionModelField? = null
     internal var paradiseCoinExchangeBenefit: BooleanModelField? = null
     private var paradiseCoinExchangeBenefitList: SelectModelField? = null
 
@@ -807,6 +809,14 @@ class AntFarm : ModelTask() {
             ).withDesc("自动领取庄园任务或活动中的道具类奖励。").also { receiveFarmToolReward = it })
         modelFields.addField(
             BooleanModelField(
+                "useToolOnceWhenRewardFull",
+                "收取道具奖励 | 满仓时使用一次",
+                false,
+            ).withDesc("同类道具满仓时，先使用一张可安全消耗的道具并刷新库存，再重试一次领奖。默认关闭。")
+                .also { useToolOnceWhenRewardFull = it },
+        )
+        modelFields.addField(
+            BooleanModelField(
                 "harvestProduce",
                 "收获爱心鸡蛋",
                 false
@@ -861,11 +871,20 @@ class AntFarm : ModelTask() {
                 familyAssignStrategy = it
             })
         modelFields.addField(
+            ChoiceModelField(
+                "familyShareMode",
+                "家庭 | 好友分享动作",
+                FamilyShareMode.INVITE_SELECTED,
+                FamilyShareMode.nickNames,
+            ).withDesc("决定好友分享名单是仅邀请选中好友，还是从全部好友中排除选中好友。").also {
+                familyShareMode = it
+            })
+        modelFields.addField(
             FriendSelectionModelField(
-                "notInviteList",
-                "家庭 | 好友分享排除列表"
-            ).withDesc("家庭分享或邀请时排除这些好友。").also {
-                notInviteList = it
+                "familyShareList",
+                "家庭 | 好友分享名单"
+            ).withDesc("配置好友分享规则作用的好友名单；支持显式选择、全部好友、分组和排除规则。").also {
+                familyShareList = it
             })
         modelFields.addField(
             BooleanModelField(
@@ -2727,13 +2746,13 @@ class AntFarm : ModelTask() {
                         var isFull = false
                         for (farmTool in farmTools) {
                             if (farmTool.toolType == toolType) {
-                                if (farmTool.toolCount == farmTool.toolHoldLimit) {
+                                if (farmTool.toolCount >= farmTool.toolHoldLimit) {
                                     isFull = true
                                 }
                                 break
                             }
                         }
-                        if (isFull) {
+                        if (isFull && !freeToolSlotForReward(toolType, taskTitle)) {
                             Log.farm("领取道具[" + toolType.nickName() + "]#已满，暂不领取")
                             continue
                         }
@@ -2758,6 +2777,31 @@ class AntFarm : ModelTask() {
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "receiveToolTaskReward err:",t)
         }
+    }
+
+    private fun freeToolSlotForReward(toolType: ToolType, taskTitle: String): Boolean {
+        if (useToolOnceWhenRewardFull?.value != true) {
+            return false
+        }
+        val targetFarmId = ownerFarmId
+        if (targetFarmId.isNullOrBlank()) {
+            Log.farm("领取道具[${toolType.nickName()}]满仓补救跳过：缺少当前庄园标识")
+            return false
+        }
+        val before = findFarmTool(toolType, forceRefresh = true)
+        if (before == null || before.toolCount < before.toolHoldLimit) {
+            return before != null
+        }
+        if (!useFarmTool(targetFarmId, toolType)) {
+            Log.farm("领取道具[${toolType.nickName()}]满仓补救未消耗道具，保留任务[$taskTitle]")
+            return false
+        }
+        val after = findFarmTool(toolType, forceRefresh = true)
+        val hasFreeSlot = after != null && after.toolCount < after.toolHoldLimit
+        if (!hasFreeSlot) {
+            Log.farm("领取道具[${toolType.nickName()}]满仓补救后库存未释放，保留任务[$taskTitle]")
+        }
+        return hasFreeSlot
     }
 
     internal fun harvestProduce(farmId: String?) {
@@ -3815,7 +3859,6 @@ class AntFarm : ModelTask() {
 
     private inner class FarmDailyTaskFlowAdapter : TaskFlowAdapter {
         private val loggedTaskDecisionKeys = mutableSetOf<String>()
-        private val handledCompleteKeys = mutableSetOf<String>()
 
         override val moduleName: String = farmTaskBlacklistModule
         override val flowName: String = "庄园饲料任务"
@@ -3912,12 +3955,6 @@ class AntFarm : ModelTask() {
                 logFarmTaskDecisionOnce(item, "抽抽乐未开启，跳过饲料任务收敛检查")
                 return true
             }
-            if (mapPhase(item) == TaskFlowPhase.READY_TO_COMPLETE &&
-                actionKey(item, TaskFlowAction.COMPLETE) in handledCompleteKeys
-            ) {
-                logFarmTaskDecisionOnce(item, "本轮已推进，等待刷新后再处理")
-                return true
-            }
             return false
         }
 
@@ -3959,23 +3996,6 @@ class AntFarm : ModelTask() {
 
         override fun actionKey(item: TaskFlowItem, action: TaskFlowAction): String {
             return "${action.logName}:${item.type.ifBlank { item.id }}:${item.progress.ifBlank { "NO_PROGRESS" }}"
-        }
-
-        override fun afterSuccess(item: TaskFlowItem, action: TaskFlowAction, result: TaskFlowActionResult) {
-            if (action == TaskFlowAction.COMPLETE) {
-                handledCompleteKeys.add(actionKey(item, action))
-            }
-        }
-
-        override fun afterFailure(
-            item: TaskFlowItem,
-            action: TaskFlowAction,
-            result: TaskFlowActionResult,
-            decision: TaskFlowDecision
-        ) {
-            if (action == TaskFlowAction.COMPLETE && decision == TaskFlowDecision.MARK_HANDLED) {
-                handledCompleteKeys.add(actionKey(item, action))
-            }
         }
 
         override fun onQueryFailed(response: JSONObject) {
@@ -4112,7 +4132,6 @@ class AntFarm : ModelTask() {
     private inner class FarmMultiStageTaskFlowAdapter(
         private val isManual: Boolean
     ) : TaskFlowAdapter {
-        private val handledActionKeys = mutableSetOf<String>()
         private var gameFinished = false
         private var shouldReceiveAwards = false
         private var hasIncompleteMultiStage = false
@@ -4204,9 +4223,6 @@ class AntFarm : ModelTask() {
             } else {
                 (foodSpace > 0 && totalAvailableAwards >= foodSpace) || anyTaskFullyDone
             }
-            if (!hasIncompleteMultiStage && !isManual) {
-                Status.setFlagToday(StatusFlags.FLAG_FARM_MULTI_STAGE_TASK_FINISHED)
-            }
             return items
         }
 
@@ -4223,19 +4239,7 @@ class AntFarm : ModelTask() {
             }
         }
 
-        override fun shouldSkip(item: TaskFlowItem): Boolean {
-            if (Thread.currentThread().isInterrupted) {
-                return true
-            }
-            val phase = mapPhase(item)
-            return when {
-                phase == TaskFlowPhase.REWARD_READY &&
-                    actionKey(item, TaskFlowAction.RECEIVE) in handledActionKeys -> true
-                phase == TaskFlowPhase.READY_TO_COMPLETE &&
-                    actionKey(item, TaskFlowAction.COMPLETE) in handledActionKeys -> true
-                else -> false
-            }
-        }
+        override fun shouldSkip(item: TaskFlowItem): Boolean = Thread.currentThread().isInterrupted
 
         override fun receive(item: TaskFlowItem): TaskFlowActionResult {
             val task = item.raw ?: return missingMultiStageRawResult(item, "receive")
@@ -4288,23 +4292,6 @@ class AntFarm : ModelTask() {
 
         override fun actionKey(item: TaskFlowItem, action: TaskFlowAction): String {
             return "${action.logName}:${item.type.ifBlank { item.id }}:${item.progress.ifBlank { "NO_PROGRESS" }}"
-        }
-
-        override fun afterSuccess(item: TaskFlowItem, action: TaskFlowAction, result: TaskFlowActionResult) {
-            if (action == TaskFlowAction.RECEIVE || action == TaskFlowAction.COMPLETE) {
-                handledActionKeys.add(actionKey(item, action))
-            }
-        }
-
-        override fun afterFailure(
-            item: TaskFlowItem,
-            action: TaskFlowAction,
-            result: TaskFlowActionResult,
-            decision: TaskFlowDecision
-        ) {
-            if (decision == TaskFlowDecision.MARK_HANDLED) {
-                handledActionKeys.add(actionKey(item, action))
-            }
         }
 
         override fun onAllTasksDone(snapshot: TaskFlowSnapshot) {
@@ -7502,8 +7489,14 @@ class AntFarm : ModelTask() {
     )
 
     private data class NpcAnimalSyncResult(
-        val npc: NpcAnimalSnapshot?,
-    )
+        val npcs: List<NpcAnimalSnapshot>,
+    ) {
+        val npc: NpcAnimalSnapshot?
+            get() = npcs.firstOrNull()
+
+        fun find(animalId: String): NpcAnimalSnapshot? =
+            npcs.firstOrNull { it.animal.animalId == animalId }
+    }
 
     internal fun isZhimaPigeonConfigured(): Boolean =
         selectedNpcConfig() == NpcConfig.ZHIMA_PIGEON
@@ -7539,9 +7532,18 @@ class AntFarm : ModelTask() {
 
             val source = if (targetConfig == NpcConfig.ZHIMA_PIGEON) targetConfig.source else "H5"
             val syncResult = syncNpcAnimalStatus(source, "SYNC_NPC") ?: return
-            val currentNpc = syncResult.npc
+            val targetNpc = syncResult.find(targetConfig.animalId)
+            if (targetNpc != null) {
+                checkNpcReward(targetNpc, targetConfig)
+                return
+            }
+            val currentNpc = selectReplaceableNpc(syncResult.npcs)
 
             if (currentNpc == null) {
+                if (syncResult.npcs.isNotEmpty()) {
+                    Log.farm("NPC小鸡🤖[现有NPC均有待领奖励，不遣返，等待后续回查]")
+                    return
+                }
                 if (targetConfig == NpcConfig.ZHIMA_PIGEON && hasPendingZhimaPigeonRewardReceipt()) {
                     Log.farm("芝麻大表鸽🤖[满产奖励待芝麻信用收取确认，本日不重复雇佣]")
                     return
@@ -7558,11 +7560,6 @@ class AntFarm : ModelTask() {
                 }
                 Log.farm("NPC小鸡🤖[当前未雇佣，准备雇佣${targetConfig.nickName}]")
                 hireNpc(targetConfig)
-                return
-            }
-
-            if (currentNpc.animal.animalId == targetConfig.animalId) {
-                checkNpcReward(currentNpc, targetConfig)
                 return
             }
 
@@ -7618,12 +7615,12 @@ class AntFarm : ModelTask() {
 
         val config = NpcConfig.ZHIMA_PIGEON
         val initialSync = syncNpcAnimalStatus(config.source, "SYNC__NPC_TASKLIST_INIT") ?: return
-        if (initialSync.npc?.animal?.animalId != config.animalId) return
+        if (initialSync.find(config.animalId) == null) return
 
         TaskFlowEngine(ZhimaPigeonTaskFlowAdapter(), roundSleepMs = 300L).run()
 
         val latestSync = syncNpcAnimalStatus(config.source, "SYNC__NPC_TASKLIST") ?: return
-        latestSync.npc?.takeIf { it.animal.animalId == config.animalId }?.let {
+        latestSync.find(config.animalId)?.let {
             checkNpcReward(it, config)
         }
     }
@@ -7654,23 +7651,35 @@ class AntFarm : ModelTask() {
                 )
                 return null
             }
-            val npc = responseJo.optJSONObject("subFarmVO")
+            val npcs = responseJo.optJSONObject("subFarmVO")
                 ?.optJSONArray("animals")
                 ?.let { animalsArray ->
                     (0 until animalsArray.length())
                         .asSequence()
                         .mapNotNull { index -> animalsArray.optJSONObject(index) }
-                        .firstOrNull { it.optString("subAnimalType") == "NPC" }
-                        ?.let { raw ->
+                        .filter { it.optString("subAnimalType") == "NPC" }
+                        .map { raw ->
                             NpcAnimalSnapshot(objectMapper.readValue(raw.toString(), Animal::class.java), raw)
                         }
+                        .toList()
                 }
-            NpcAnimalSyncResult(npc)
+                ?: emptyList()
+            NpcAnimalSyncResult(npcs)
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "syncNpcAnimalStatus err", t)
             null
         }
     }
+
+    private fun selectReplaceableNpc(npcs: List<NpcAnimalSnapshot>): NpcAnimalSnapshot? =
+        npcs
+            .asSequence()
+            .filterNot(::hasPendingNpcReward)
+            .minByOrNull { it.raw.optDouble("npcBizReward", 0.0) }
+
+    private fun hasPendingNpcReward(snapshot: NpcAnimalSnapshot): Boolean =
+        snapshot.raw.optBoolean("reachNpcBizRewardLimit", false) ||
+            snapshot.raw.optDouble("npcBizReward", 0.0) > 0.0
 
     private fun hireNpc(config: NpcConfig): Boolean {
         try {
@@ -7734,7 +7743,7 @@ class AntFarm : ModelTask() {
         }
 
         val afterSendBack = syncNpcAnimalStatus("H5", "SYNC_AFTER_SEND_BACK_NPC")
-        if (afterSendBack != null && afterSendBack.npc == null) {
+        if (afterSendBack != null && afterSendBack.find(config.animalId) == null) {
             if (markZhimaPigeonRewardReceiptPending()) {
                 Log.farm("芝麻大表鸽🤖[已遣返，等待芝麻信用收取88芝麻粒并回查确认]")
             } else {
@@ -8201,6 +8210,14 @@ class AntFarm : ModelTask() {
             const val RANDOM: Int = 0
             const val LOWEST_TODAY_INTIMACY: Int = 1
             val nickNames: Array<String?> = arrayOf<String?>("随机安排", "优先今日亲密值最低")
+        }
+    }
+
+    interface FamilyShareMode {
+        companion object {
+            const val INVITE_SELECTED: Int = 0
+            const val DONT_INVITE_SELECTED: Int = 1
+            val nickNames: Array<String?> = arrayOf<String?>("选中邀请", "选中不邀请")
         }
     }
 

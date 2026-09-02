@@ -426,7 +426,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 "collectEnergy",
                 "收集能量 | 开启",
                 false
-            ).withDesc("开启后仅处理收取自己、好友和可访问 PK 森友主页内的可见绿色能量球相关链路。").also { collectEnergy = it })
+            ).withDesc("开启后处理收取自己、好友和可访问 PK 森友主页内的可见绿色能量球相关链路。").also { collectEnergy = it })
         modelFields.addField(
             BooleanModelField(
                 "batchRobEnergy",
@@ -692,7 +692,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 "wateringEnabled",
                 "浇水 | 开启",
                 false
-            ).withDesc("开启后统一控制普通浇水、随机浇水任务、回浇和浇水金球/保护回赠收取；关闭后不影响复活金球与任务领奖。").also {
+            ).withDesc("开启后统一控制普通浇水、随机浇水任务和回浇；关闭后不影响浇水金球、保护回赠和复活金球收取及任务领奖。").also {
                 wateringEnabled = it
             })
         modelFields.addField(
@@ -1271,34 +1271,15 @@ class AntForest : ModelTask(), EnergyCollectCallback {
      * @param wateringBubbles 包含不同类型金球的对象数组
      */
     private fun collectWateringBubbles(wateringBubbles: JSONArray) {
-        val forestWateringEnabled = isForestWateringEnabled()
-        var wateringBubbleSkipLogged = false
-        var returnEnergySkipLogged = false
         for (i in 0..<wateringBubbles.length()) {
             try {
                 val wateringBubble = wateringBubbles.getJSONObject(i)
                 when (val bizType = wateringBubble.getString("bizType")) {
                     "jiaoshui" -> {
-                        if (!forestWateringEnabled) {
-                            if (!wateringBubbleSkipLogged) {
-                                Log.forest("浇水总开关关闭，跳过浇水金球收取")
-                                wateringBubbleSkipLogged = true
-                            }
-                            continue
-                        }
                         collectWater(wateringBubble)
                     }
                     "fuhuo" -> collectRebornEnergy()
-                    "baohuhuizeng" -> {
-                        if (!forestWateringEnabled) {
-                            if (!returnEnergySkipLogged) {
-                                Log.forest("浇水总开关关闭，跳过保护回赠收取")
-                                returnEnergySkipLogged = true
-                            }
-                            continue
-                        }
-                        collectReturnEnergy(wateringBubble)
-                    }
+                    "baohuhuizeng" -> collectReturnEnergy(wateringBubble)
                     else -> {
                         Log.forest("未知bizType: $bizType")
                         continue
@@ -4573,7 +4554,13 @@ class AntForest : ModelTask(), EnergyCollectCallback {
 
             val bizKey = "${childSceneCode}_$childTaskType"
             forestTaskTryCount.computeIfAbsent(bizKey) { AtomicInteger(0) }.incrementAndGet()
-            val finishTaskResponse = JSONObject(AntForestRpcCall.finishTask(childSceneCode, childTaskType))
+            val finishTaskResponse = JSONObject(
+                AntForestRpcCall.finishTask(
+                    childSceneCode,
+                    childTaskType,
+                    AntForestRpcCall.FOREST_TASK_ACTION_SOURCE,
+                ),
+            )
             when {
                 isForestTaskAlreadyHandled(finishTaskResponse) -> {
                     forestTaskTryCount.remove(bizKey)
@@ -4723,7 +4710,13 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             taskType
         ).firstOrNull { it.isNotBlank() } ?: taskType
 
-        val awardResponse = JSONObject(AntForestRpcCall.receiveTaskAward(sceneCode, taskType))
+        val awardResponse = JSONObject(
+            AntForestRpcCall.receiveTaskAward(
+                sceneCode,
+                taskType,
+                AntForestRpcCall.FOREST_TASK_ACTION_SOURCE,
+            ),
+        )
         return when {
             isForestTaskAlreadyHandled(awardResponse) -> {
                 Log.forest("奖励已领取: $taskTitle")
@@ -4835,7 +4828,11 @@ class AntForest : ModelTask(), EnergyCollectCallback {
 
     private fun receiveForestTaskReward(item: TaskFlowItem): TaskFlowActionResult {
         val awardText = item.raw?.optInt("awardCount", 0) ?: 0
-        val response = AntForestRpcCall.receiveTaskAward(item.sceneCode, item.type)
+        val response = AntForestRpcCall.receiveTaskAward(
+            item.sceneCode,
+            item.type,
+            AntForestRpcCall.FOREST_TASK_ACTION_SOURCE,
+        )
         if (response.isBlank()) {
             return emptyForestTaskActionResponse("AntForestRpcCall.receiveTaskAward", item, "receiveTaskAward")
         }
@@ -4877,7 +4874,11 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             Log.forest("跳转到游戏: $gameUrl")
         }
         Log.forest("森林任务🧾️[${item.title}] 直接提交完成RPC")
-        val response = AntForestRpcCall.finishTask(item.sceneCode, item.type)
+        val response = AntForestRpcCall.finishTask(
+            item.sceneCode,
+            item.type,
+            AntForestRpcCall.FOREST_TASK_ACTION_SOURCE,
+        )
         if (response.isBlank()) {
             return emptyForestTaskActionResponse("AntForestRpcCall.finishTask", item, "finishLegacyGameTask")
         }
@@ -4902,7 +4903,11 @@ class AntForest : ModelTask(), EnergyCollectCallback {
     private fun completeOrdinaryForestTask(item: TaskFlowItem): TaskFlowActionResult {
         val bizKey = buildForestTaskKey(item.sceneCode, item.type)
         forestTaskTryCount.computeIfAbsent(bizKey) { AtomicInteger(0) }.incrementAndGet()
-        val response = AntForestRpcCall.finishTask(item.sceneCode, item.type)
+        val response = AntForestRpcCall.finishTask(
+            item.sceneCode,
+            item.type,
+            AntForestRpcCall.FOREST_TASK_ACTION_SOURCE,
+        )
         if (response.isBlank()) {
             return emptyForestTaskActionResponse("AntForestRpcCall.finishTask", item, "finishTask")
         }
@@ -5050,7 +5055,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         val response = AntForestRpcCall.finishTask(
             item.sceneCode,
             item.type,
-            AntForestRpcCall.OPEN_GREEN_RIGHTS_SOURCE
+            AntForestRpcCall.FOREST_TASK_ACTION_SOURCE,
         )
         if (response.isBlank()) {
             return emptyForestTaskActionResponse("AntForestRpcCall.finishTask", item, "oneClickWateringFinishTask")
@@ -5449,6 +5454,21 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             if (isEnergyRainTaskCenterTaskType(item.type)) {
                 return TaskFlowPhase.TERMINAL
             }
+            if (isAccumulatedEffectiveTask(item)) {
+                return when (item.status.uppercase(Locale.ROOT)) {
+                    TaskStatus.FINISHED.name,
+                    "COMPLETE",
+                    "WAIT_RECEIVE",
+                    "TO_RECEIVE" -> TaskFlowPhase.REWARD_READY
+
+                    TaskStatus.RECEIVED.name,
+                    "HAS_RECEIVED",
+                    "DONE",
+                    "COMPLETED" -> TaskFlowPhase.TERMINAL
+
+                    else -> TaskFlowPhase.BUSINESS_ACTION
+                }
+            }
             return when (item.status) {
                 TaskStatus.FINISHED.name,
                 "COMPLETE",
@@ -5488,6 +5508,14 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             return limit > 0 && current >= limit
         }
 
+        private fun isAccumulatedEffectiveTask(item: TaskFlowItem): Boolean {
+            val taskBaseInfo = item.raw?.optJSONObject("taskBaseInfo") ?: return false
+            if (taskBaseInfo.optString("taskMode") != "ACC_ANTIEP") {
+                return false
+            }
+            return parseTaskBizInfo(taskBaseInfo).optString("taskAccEffectiveType") == "ACC_EFFECTIVE_TASK"
+        }
+
         override fun shouldSkip(item: TaskFlowItem): Boolean {
             if (Thread.currentThread().isInterrupted || isGreenPracticeChildItem(item)) {
                 return true
@@ -5524,6 +5552,9 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             }
             return false
         }
+
+        override fun isUnresolvedWhenSkipped(item: TaskFlowItem): Boolean =
+            mapPhase(item) != TaskFlowPhase.TERMINAL && !super<TaskFlowAdapter>.isBlacklisted(item)
 
         override fun receive(item: TaskFlowItem): TaskFlowActionResult {
             return receiveForestTaskReward(item)
