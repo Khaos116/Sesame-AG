@@ -138,7 +138,7 @@ class Status {
         val currentCount = flags[name] ?: return false
         if (retryLimit > 0 && currentCount < retryLimit) return false
         if (!retryTimes.isNullOrEmpty()) {
-            val sdf = SimpleDateFormat("HHmm", Locale.getDefault())
+            val sdf = SimpleDateFormat("HHmm", Locale.US).apply { timeZone = MyUtils.getInstance().timeZone }
             val nowTime = sdf.format(Date(System.currentTimeMillis()))
             val timeArray = retryTimes.split(",")
             for (t in timeArray) {
@@ -769,7 +769,8 @@ class Status {
             val oldCount = flags[name] ?: 0
 
             var changed = false
-            val nowTime = SimpleDateFormat("HHmm", Locale.getDefault()).format(Date())
+            val nowTime = SimpleDateFormat("HHmm", Locale.US)
+                .apply { timeZone = MyUtils.getInstance().timeZone }.format(Date())
 
             if (oldCount == 0) {
                 flags[name] = 1

@@ -12,6 +12,7 @@
 *.gif binary
 *.ico binary
 *.jar binary
+*.jks binary
 *.jpeg binary
 *.jpg binary
 *.keystore binary

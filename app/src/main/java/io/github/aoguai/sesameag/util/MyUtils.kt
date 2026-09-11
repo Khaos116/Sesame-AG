@@ -111,9 +111,9 @@ object MyUtils {
   }
 
   /** 为当前账号开始或刷新绿色经营封控冷却。 */
-  fun startGreenFinanceCooldown(nowMs: Long = System.currentTimeMillis()) {
-    getMySp()?.putString(
-      greenFinanceCooldownKey(UserMap.currentUid),
+  fun startGreenFinanceCooldown(nowMs: Long = System.currentTimeMillis(), uid: String? = UserMap.currentUid) {
+    getMySp(uid)?.putString(
+      greenFinanceCooldownKey(uid),
       greenFinanceCooldownUntil(nowMs).toString()
     )
   }
@@ -187,12 +187,11 @@ object MyUtils {
   }
 
   private val mSpMap = hashMapOf<String, DailySharedPreferences>()
-  private fun getMySp(): DailySharedPreferences? {
+  @Synchronized
+  private fun getMySp(uid: String? = UserMap.currentUid): DailySharedPreferences? {
+    val userId = uid?.takeIf { it.isNotBlank() } ?: return null
     val context: Context = ApplicationHook.appContext ?: return null
-    mSpMap[UserMap.currentUid.orEmpty()]?.let { sp -> return sp }
-    val sp = DailySharedPreferences(context, UserMap.currentUid.orEmpty())
-    mSpMap[UserMap.currentUid.orEmpty()] = sp
-    return sp
+    return mSpMap.getOrPut(userId) { DailySharedPreferences(context, userId) }
   }
 
   private fun rpcDailyKey(rpc: RpcEntity): String =
@@ -200,22 +199,24 @@ object MyUtils {
       .digest("${rpc.requestMethod}_${rpc.requestData}".toByteArray(Charsets.UTF_8))
       .joinToString("") { "%02x".format(it.toInt() and 0xff) }
 
-  fun checkRpcTodayIsError(rpc: RpcEntity) {
+  fun checkRpcTodayIsError(rpc: RpcEntity, uid: String? = UserMap.currentUid) {
     if (rpc.requestMethod.orEmpty().contains(".antfarm.")) {
       return //不能耽误喂鸡大业
     }
     rpc.responseString?.let { s ->
+      val response = runCatching { JSONObject(s) }.getOrNull()
       when {
         s.contains("系统繁忙") ||
           s.contains("验证后继续") ||
           s.contains("已经签到") ||
           s.contains("操作存在异常") ||
           s.contains("系统出错") ||
-          s.contains("\"error\":1009") -> {
-          getMySp()?.let { sp ->
+          response?.optString("error") == "1009" ||
+          response?.optString("errorTip") == "1009" -> {
+          getMySp(uid)?.let { sp ->
             sp.putBoolean(rpcDailyKey(rpc), true)
             if (rpc.requestMethod == GREEN_FINANCE_SUBMIT_TICK_METHOD) {
-              startGreenFinanceCooldown()
+              startGreenFinanceCooldown(uid = uid)
               Log.greenFinance("检测到封控，绿色经营冷却${GREEN_FINANCE_COOLDOWN_MINUTES}分钟")
             }
             Log.greenFinance("当日异常的请求，当日不再请求\n${rpc.requestMethod}")
@@ -227,10 +228,10 @@ object MyUtils {
     }
   }
 
-  fun getRpcTodayIsError(rpc: RpcEntity): Boolean {
+  fun getRpcTodayIsError(rpc: RpcEntity, uid: String? = UserMap.currentUid): Boolean {
     if (rpc.requestMethod.orEmpty().contains(".antfarm.")) {
       return false //不能耽误喂鸡大业
     }
-    return getMySp()?.getBoolean(rpcDailyKey(rpc)) ?: false
+    return getMySp(uid)?.getBoolean(rpcDailyKey(rpc)) ?: false
   }
 }

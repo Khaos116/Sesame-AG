@@ -1,5 +1,6 @@
 package io.github.aoguai.sesameag.util
 
+import io.github.aoguai.sesameag.data.Config
 import io.github.aoguai.sesameag.hook.AccountSlotRegistry
 import io.github.aoguai.sesameag.hook.ApplicationHook
 import io.github.aoguai.sesameag.hook.RuntimeIdentityGuard
@@ -32,7 +33,15 @@ object WorkflowRootGuard {
     fun isExecutionAllowed(): Boolean {
         if (!RuntimeIdentityGuard.isTrustedForExecution() || resolveHookAccessSource() == null) return false
         val userId = UserMap.currentUid?.trim()?.takeIf { it.isNotEmpty() } ?: return false
-        return AccountSlotRegistry.isExecutableUser(userId) && CommandUtil.isExecutionAllowed(userId)
+        if (!AccountSlotRegistry.isExecutableUser(userId)) return false
+        if (ApplicationHook.isEmbeddedPatchRuntime()) {
+            // FPA uses the target's media directory and has no standalone executor/scope service.
+            // Identity and successful supported Hook installation are still required above.
+            MyUtils.CHANGE_KT3
+            return Files.CONFIG_DIR.canRead() && Files.CONFIG_DIR.canWrite() &&
+                Config.readLegalAcceptedForCurrentVersion(userId)
+        }
+        return CommandUtil.isExecutionAllowed(userId)
     }
 
     fun hasGrantedRoot(): Boolean = resolveHookAccessSource() != null || lastGranted
@@ -142,4 +151,3 @@ object WorkflowRootGuard {
         }
     }
 }
-

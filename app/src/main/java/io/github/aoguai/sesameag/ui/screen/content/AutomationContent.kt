@@ -48,6 +48,7 @@ import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import io.github.aoguai.sesameag.entity.UserEntity
 import io.github.aoguai.sesameag.hook.AccountSlotSnapshot
+import io.github.aoguai.sesameag.hook.MAX_EXECUTABLE_ACCOUNT_SLOTS
 import io.github.aoguai.sesameag.ui.compose.CommonAlertDialog
 import io.github.aoguai.sesameag.util.MyUtils
 
@@ -72,7 +73,7 @@ fun AutomationContent(
         item {
             SectionTitle(
                 title = "账号与可执行槽位",
-                supportingText = "您可以自行选择账号移入/移出可执行槽位，移出槽位不会删除账号数据与配置。",
+                supportingText = "已启用 ${accountSlots.activeUserIds.size}/$MAX_EXECUTABLE_ACCOUNT_SLOTS 个账号。您可以自行选择账号移入/移出可执行槽位，移出槽位不会删除账号数据与配置。",
             )
         }
 

@@ -18,6 +18,9 @@ object TimeUtil {
 
     private const val NANOS_PER_MILLISECOND = 1_000_000L
 
+    private fun dateFormat(pattern: String): SimpleDateFormat =
+        SimpleDateFormat(pattern, Locale.getDefault()).apply { timeZone = MyUtils.getInstance().timeZone }
+
     // ==================== 时间字符串比较 ====================
 
     @JvmStatic
@@ -240,14 +243,14 @@ object TimeUtil {
         if (plusDay != 0) {
             c.add(Calendar.DATE, plusDay)
         }
-        val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+        val sdf = dateFormat("yyyy-MM-dd")
         return sdf.format(c.time)
     }
 
     @SuppressLint("SimpleDateFormat")
     @JvmStatic
     fun getCommonDateFormat(): DateFormat {
-        return SimpleDateFormat("dd日HH:mm:ss")
+        return dateFormat("dd日HH:mm:ss")
     }
 
     @JvmStatic
@@ -260,7 +263,7 @@ object TimeUtil {
     @JvmField
     val DATE_TIME_FORMAT_THREAD_LOCAL: ThreadLocal<SimpleDateFormat> = object : ThreadLocal<SimpleDateFormat>() {
         override fun initialValue(): SimpleDateFormat {
-            return SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+            return dateFormat("yyyy-MM-dd HH:mm:ss")
         }
     }
 
@@ -270,7 +273,7 @@ object TimeUtil {
     @JvmStatic
     fun getFormatDateTime(): String {
         val simpleDateFormat = DATE_TIME_FORMAT_THREAD_LOCAL.get()
-            ?: SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+            ?: dateFormat("yyyy-MM-dd HH:mm:ss")
         return simpleDateFormat.format(Date())
     }
 
@@ -301,13 +304,13 @@ object TimeUtil {
     fun getFormatTime(offset: Int, format: String): String {
         val calendar = MyUtils.getInstance()
         calendar.add(Calendar.DAY_OF_YEAR, offset)
-        val sdf = SimpleDateFormat(format)
+        val sdf = dateFormat(format)
         return sdf.format(calendar.time)
     }
 
     @JvmStatic
     fun getFormatTime(timestamp: Long, format: String): String {
-        val sdf = SimpleDateFormat(format, Locale.getDefault())
+        val sdf = dateFormat(format)
         return sdf.format(Date(timestamp))
     }
 

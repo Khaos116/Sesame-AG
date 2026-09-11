@@ -40,15 +40,16 @@ class DailySharedPreferences(private val context: Context, private val uid: Stri
     val today = getTodayDateString()
     val lastSavedDate = prefs.getString(KEY_GLOBAL_DATE, null)
 
-    // 如果上次保存的日期存在，且不等于今天的日期，说明该账号已经过了半夜 24 点
-    if (lastSavedDate != null && lastSavedDate != today) {
-      prefs.edit().clear().apply() // 一键清空当前 UID 的所有 key
+    // 清理和新日期戳一并提交，避免下一次读写再次清理当天状态。
+    if (lastSavedDate != today) {
+      prefs.edit().clear().putString(KEY_GLOBAL_DATE, today).apply()
     }
   }
 
   /**
    * 存入数据
    */
+  @Synchronized
   fun putString(key: String, value: String) {
     checkAndClearIfCrossedDay() // 存之前检查
 
@@ -60,6 +61,7 @@ class DailySharedPreferences(private val context: Context, private val uid: Stri
     }
   }
 
+  @Synchronized
   fun putBoolean(key: String, value: Boolean) {
     checkAndClearIfCrossedDay() // 存之前检查
 
@@ -71,6 +73,7 @@ class DailySharedPreferences(private val context: Context, private val uid: Stri
     }
   }
 
+  @Synchronized
   fun putInt(key: String, value: Int) {
     checkAndClearIfCrossedDay() // 存之前检查
 
@@ -85,16 +88,19 @@ class DailySharedPreferences(private val context: Context, private val uid: Stri
   /**
    * 获取数据
    */
+  @Synchronized
   fun getString(key: String): String? {
     checkAndClearIfCrossedDay() // 取之前检查
     return prefs.getString(key, null)
   }
 
+  @Synchronized
   fun getBoolean(key: String): Boolean {
     checkAndClearIfCrossedDay() // 取之前检查
     return prefs.getBoolean(key, false)
   }
 
+  @Synchronized
   fun getInt(key: String): Int {
     checkAndClearIfCrossedDay() // 取之前检查
     return prefs.getInt(key, 0)
@@ -103,6 +109,7 @@ class DailySharedPreferences(private val context: Context, private val uid: Stri
   /**
    * 清空当前账号的所有数据
    */
+  @Synchronized
   fun clearAll() {
     prefs.edit().clear().apply()
   }

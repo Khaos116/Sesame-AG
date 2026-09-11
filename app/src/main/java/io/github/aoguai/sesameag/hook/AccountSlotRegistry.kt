@@ -5,6 +5,7 @@ import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleRegistry
 import io.github.aoguai.sesameag.util.Files
 import io.github.aoguai.sesameag.util.JsonUtil
 import io.github.aoguai.sesameag.util.Log
+import io.github.aoguai.sesameag.util.MyUtils
 import io.github.aoguai.sesameag.util.UserDataStoreManager
 import java.io.File
 import java.nio.channels.FileChannel
@@ -18,8 +19,7 @@ import java.security.MessageDigest
 /**
  * 最多允许五个支付宝账号进入任务执行会话。
  *
- * 上游默认值为 2，会导致第三个及后续账号在 [admitRuntimeUser] 中被
- * `account_slot_full` 拒绝，进而无法完成初始化、执行任务或显示账号切换提示。
+ * 保留上游逐个启用槽位和延迟确认流程，只扩大容量。参见 [MyUtils.CHANGE_KT3]。
  */
 const val MAX_EXECUTABLE_ACCOUNT_SLOTS = 5
 
@@ -159,6 +159,10 @@ object AccountSlotRegistry {
                                     pendingRuntimeSinceMs = System.currentTimeMillis(),
                                 ),
                             )
+                        }
+
+                        record.activeUserIds.size >= MAX_EXECUTABLE_ACCOUNT_SLOTS -> {
+                            LockedResult(AccountSlotAdmission.Denied("account_slot_full"))
                         }
 
                         else -> LockedResult(AccountSlotAdmission.Denied("account_slot_not_selected"))

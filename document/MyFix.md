@@ -231,6 +231,11 @@ FPA 3.8 实测依据（APK：`C:\Users\USER\Desktop\FPA3.8.Apk`）：
 
 验证：五个历史账号可完成迁移选择；依次切换五个账号时均可完成初始化、显示切换提示并执行任务；第六个账号仍应被 `account_slot_full` 拒绝。
 
+2026-09-11 适配说明：上游已删除 `SettingsContent.kt` 的多选迁移界面，改为
+`AutomationContent.kt` 中逐个移入/移出槽位。保留这个新流程，容量和已启用数量展示继续引用
+`MAX_EXECUTABLE_ACCOUNT_SLOTS`。首次运行账号仍须经过配置与身份快照落盘后的延迟确认；
+已有五个有效配置可以直接恢复，超过五个候选账号时在界面逐个启用所需账号，不恢复旧界面。
+
 ## 10. 必须保留的定制：主页展示编译时间
 
 目的：在版本号相同但短时间内多次打包时，可以从模块主页直接确认真机安装的是哪一次构建。
@@ -323,3 +328,32 @@ FPA 3.8 实测依据（APK：`C:\Users\USER\Desktop\FPA3.8.Apk`）：
 
 - `MyUtilsTest` 覆盖步数范围、真实步数保护、冷却时长、账号键隔离和本地屏蔽错误码。
 - `:app:testDebugUnitTest`、`:app:compileDebugKotlin` 和 `git diff --check` 均通过。
+
+## 12. 2026-09-11 合并后的门禁与每日状态适配
+
+本轮核对范围为 `origin/my_dev..c0cf404b` 的 15 个未推送提交，上游基线为 `dev@b034fbc2`。
+
+- 上游新增的 `CommandService.isExecutionAllowed()` 依赖独立模块执行器与 LSPosed 作用域。
+  FPA 嵌入环境不保证具备这些服务，因此在共享 `WorkflowRootGuard` 中保留 FPA 分支：
+  必须先通过运行身份、受支持且已安装的 Hook、当前 UID 和账号槽位校验，再检查宿主配置目录
+  可读写及该账号协议状态。FPA 初始化不等待独立模块服务；LSPosed 服务路径与真实 Root 探测保持原样。
+- 每日 RPC 错误须解析 `error` 和 `errorTip`，同时识别数值、字符串和带空白的 `1009`。
+  包含 `success=false` 的异常也须记录，并停止当前调用内部的重试。
+  请求入口固定请求所属 UID；切号后的迟到响应仍记录到原账号，并且等待限速期间发生切号时不得继续发送旧请求。
+- 每账号每日存储读写串行化，跨日清理与新日期写入使用同一个编辑操作。
+- `TimeUtil` 的日期格式化与 `Status` 的分时重试窗口均显式使用 GMT+8；仅替换 Calendar 不足以保证格式化时区。
+- `MyFixRegressionTest` 使用 Robolectric 验证五账号槽位、首次账号延迟确认、FPA 门禁、每日 RPC 隔离与跨日恢复、非东八区格式化。
+  测试依赖不参与 release 打包；Refine 插桩须排除签名 JVM 测试 provider，避免破坏其 JAR 签名。
+- 自动化验证不能替代免 Root 手机上的 FPA 注入、五账号切换提示和真实手动任务验收。
+
+本轮验证记录：
+
+- `:app:testDebugUnitTest` 共 14 项通过，包含五账号会话切换、第六账号拒绝、首次槽位延迟确认、
+  受信任 FPA 无独立模块服务时执行门禁通过、未安装 Hook/非主用户/非目标包/不受支持进程拒绝、
+  共享 RPC 入口返回本地 `9999`、迟到响应 UID 隔离、跨日恢复和庄园豁免。
+- `:app:compileDebugKotlin`、`:app:assembleRelease`（含 release 关键 Lint）及
+  `git diff --check origin/my_dev` 通过。
+- 归档 APK：`APK/Release/XQE_AG_0.2.2_20260911_1841.apk`；与构建输出 SHA-256 一致。
+  APK 内 API 最低/目标版本均为 101，现代入口存在，未包含 legacy 入口、框架 API 实现或 Robolectric；
+  arm64 原生库及 APK 签名校验通过，签名证书与上一版本归档一致。
+- 当前 ADB 设备仅有 FPA，未安装支付宝；未进行真实支付宝账号登录、切换或任务执行验收。

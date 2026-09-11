@@ -11,6 +11,13 @@ plugins {
 }
 var isCIBuild: Boolean = System.getenv("CI").toBoolean()
 
+androidComponents.onVariants { variant ->
+    // Refine must not rewrite signed JVM test providers or their JAR signatures become invalid.
+    variant.hostTests.values.forEach { test ->
+        test.instrumentation.excludes.addAll("org/conscrypt/**", "org/bouncycastle/**")
+    }
+}
+
 // isCIBuild = true // 没有c++源码时开启CI构建, push前关闭
 
 android {
@@ -183,6 +190,8 @@ dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2026.08.00") // Compose BOM 版本管理
     implementation(composeBom)
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.15.1")
+    testImplementation(libs.libxposed.api)
 
     implementation(libs.androidx.material3) // Material 3 设计组件
     implementation(libs.androidx.material3.adaptive.navigation.suite) // 自适应导航栏/导航轨

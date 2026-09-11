@@ -14,6 +14,7 @@ import io.github.aoguai.sesameag.util.RandomUtil
 import io.github.aoguai.sesameag.util.RpcOfflineRisk
 import io.github.aoguai.sesameag.util.TimeUtil
 import io.github.aoguai.sesameag.util.WorkflowRootGuard
+import io.github.aoguai.sesameag.util.maps.UserMap
 import java.lang.reflect.Method
 import java.lang.reflect.Proxy
 import java.util.concurrent.ConcurrentHashMap
@@ -354,11 +355,12 @@ class AriverRpcBridge : RpcBridge {
         tryCount: Int,
         retryInterval: Int,
     ): RpcEntity? {
+        val requestUserId = UserMap.currentUid
         if (!WorkflowRootGuard.isExecutionAllowed()) {
             Log.record(TAG, "必需权限或使用协议未就绪，已拒绝 RPC 请求")
             return null
         }
-        if (MyUtils.getRpcTodayIsError(rpcEntity)) {
+        if (MyUtils.getRpcTodayIsError(rpcEntity, requestUserId)) {
             Log.greenFinance("当日异常的请求，当日不再请求\n${rpcEntity.requestMethod}")
             rpcEntity.responseString =
                 "{\"error\":9999,\"errorMessage\":\"当日异常的请求，当日不再请求。\",\"errorNo\":9999,\"errorTip\":\"9999\"}"
@@ -444,7 +446,7 @@ class AriverRpcBridge : RpcBridge {
                         )
                     }
                     RpcIntervalLimit.enterIntervalLimit(requestMethod)
-                    if (!WorkflowRootGuard.isExecutionAllowed()) {
+                    if (UserMap.currentUid != requestUserId || !WorkflowRootGuard.isExecutionAllowed()) {
                         captureNote = "blocked_by_execution_prerequisites"
                         return null
                     }
@@ -505,6 +507,8 @@ class AriverRpcBridge : RpcBridge {
                                                 }
 
                                             rpcEntity.setResponseObject(obj, jsonString)
+                                            // Error responses can also carry success=false; keep the original account owner.
+                                            MyUtils.checkRpcTodayIsError(rpcEntity, requestUserId)
                                             if (captureModuleTraffic) {
                                                 RpcTrafficCapture.recordModuleResponse(
                                                     captureMethodName,
@@ -523,7 +527,6 @@ class AriverRpcBridge : RpcBridge {
                                                 val errorCode = getErrorValueAsString(obj, "error")
                                                 val errorMessage = getErrorValueAsString(obj, "errorMessage")
 
-                                                MyUtils.checkRpcTodayIsError(rpcEntity)
                                                 val isMarkedNetworkError = isRetryableRpcError(errorCode, errorMessage)
                                                 if (isMarkedNetworkError) {
                                                     logErrorSummary(methodName, errorCode, errorMessage)
@@ -615,6 +618,12 @@ class AriverRpcBridge : RpcBridge {
                                 reason = "登录超时: $errorCode/$errorMessage",
                                 count = count,
                             )
+                        }
+
+                        // A newly recorded daily block also stops retries within this request.
+                        if (MyUtils.getRpcTodayIsError(rpcEntity, requestUserId)) {
+                            captureSucceeded = true
+                            return rpcEntity
                         }
 
                         if (isRetryableRpcError(errorCode, errorMessage)) {

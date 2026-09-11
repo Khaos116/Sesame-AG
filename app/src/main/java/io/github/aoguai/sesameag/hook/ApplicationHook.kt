@@ -1480,7 +1480,10 @@ class ApplicationHook {
             execute {
                 try {
                     val context = appContext ?: return@execute
-                    val executorStatus = CommandUtil.awaitServiceStatus(context)
+                    // FPA's verified Hook is the executor; an embedded module may have no service package.
+                    MyUtils.CHANGE_KT3
+                    val embeddedRuntime = isEmbeddedPatchRuntime()
+                    val executorStatus = if (embeddedRuntime) null else CommandUtil.awaitServiceStatus(context)
                     if (executorStatus is CommandUtil.ServiceStatus.Loading ||
                         executorStatus is CommandUtil.ServiceStatus.Error
                     ) {
@@ -1488,7 +1491,7 @@ class ApplicationHook {
                         return@execute
                     }
                     val granted = WorkflowRootGuard.hasRoot(forceRefresh = true, reason = reason) &&
-                        executorStatus is CommandUtil.ServiceStatus.Active &&
+                        (embeddedRuntime || executorStatus is CommandUtil.ServiceStatus.Active) &&
                         WorkflowRootGuard.isExecutionAllowed()
                     if (!granted) {
                         updateRunningStatus("必需权限或使用协议未就绪，已禁止工作流")
