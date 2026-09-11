@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.pm.ApplicationInfo
 import io.github.aoguai.sesameag.data.General
 import io.github.aoguai.sesameag.util.MyUtils
+import java.io.File
 
 /**
  * Verifies that the module is running against the one supported Android user and target process.
@@ -121,9 +122,10 @@ object RuntimeIdentityGuard {
                 }
             when {
                 context.packageName != General.PACKAGE_NAME -> reject("target_context_package_mismatch")
-                !matchesTargetApplication(contextInfo, target) -> reject("target_context_mismatch")
+                !matchesTargetIdentity(contextInfo, target) -> reject("target_context_mismatch")
                 Application.getProcessName() != target.processName -> reject("target_runtime_process_mismatch")
-                !matchesTargetApplication(targetInfo, target) -> reject("target_package_manager_mismatch")
+                !matchesTargetIdentity(targetInfo, target) -> reject("target_package_manager_mismatch")
+                !matchesTargetSources(contextInfo, targetInfo, target) -> reject("target_source_mismatch")
                 verifyInstalledModulePackage && moduleInfo?.packageName != General.MODULE_PACKAGE_NAME -> reject("module_package_manager_mismatch")
                 verifyInstalledModulePackage && moduleInfo?.uid != module.uid -> reject("module_uid_mismatch")
                 verifyInstalledModulePackage && androidUserId(moduleInfo?.uid ?: -1) != PRIMARY_ANDROID_USER_ID -> reject("module_non_primary_user")
@@ -171,11 +173,27 @@ object RuntimeIdentityGuard {
         return suffix.isNotEmpty() && suffix.all { it in '0'..'9' }
     }
 
-    private fun matchesTargetApplication(info: ApplicationInfo, target: TargetSnapshot): Boolean =
+    private fun matchesTargetIdentity(info: ApplicationInfo, target: TargetSnapshot): Boolean =
         info.packageName == General.PACKAGE_NAME &&
             info.uid == target.uid &&
-            androidUserId(info.uid) == PRIMARY_ANDROID_USER_ID &&
-            info.sourceDir.orEmpty() == target.sourceDir
+            androidUserId(info.uid) == PRIMARY_ANDROID_USER_ID
+
+    private fun matchesTargetSources(
+        contextInfo: ApplicationInfo,
+        targetInfo: ApplicationInfo,
+        target: TargetSnapshot,
+    ): Boolean {
+        val contextSource = normalizedSourcePath(contextInfo.sourceDir) ?: return false
+        val targetSource = normalizedSourcePath(target.sourceDir) ?: return false
+        val packageManagerSource = normalizedSourcePath(targetInfo.sourceDir) ?: return false
+        return contextSource == targetSource || contextSource == packageManagerSource
+    }
+
+    private fun normalizedSourcePath(sourceDir: String?): String? =
+        sourceDir
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { path -> runCatching { File(path).canonicalPath }.getOrNull() }
 
     /** UserHandle.getUserId is hidden from this module's compile SDK; Android reserves 100000 UIDs per user. */
     private fun androidUserId(uid: Int): Int =

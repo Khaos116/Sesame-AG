@@ -13,6 +13,7 @@ import io.github.aoguai.sesameag.util.Notify
 import io.github.aoguai.sesameag.util.RandomUtil
 import io.github.aoguai.sesameag.util.RpcOfflineRisk
 import io.github.aoguai.sesameag.util.TimeUtil
+import io.github.aoguai.sesameag.util.WorkflowRootGuard
 import java.lang.reflect.Method
 import java.lang.reflect.Proxy
 import java.util.concurrent.ConcurrentHashMap
@@ -105,7 +106,7 @@ private fun boxType(type: Class<*>): Class<*> =
     }
 
 /**
- * 当前 RPC 桥接实现，最低支持支付宝版本 v10.3.96.8100。
+ * 当前 RPC 桥接实现，最低支持目标应用版本 v10.3.96.8100。
  */
 class AriverRpcBridge : RpcBridge {
     private var loader: ClassLoader? = null
@@ -353,6 +354,10 @@ class AriverRpcBridge : RpcBridge {
         tryCount: Int,
         retryInterval: Int,
     ): RpcEntity? {
+        if (!WorkflowRootGuard.isExecutionAllowed()) {
+            Log.record(TAG, "必需权限或使用协议未就绪，已拒绝 RPC 请求")
+            return null
+        }
         if (MyUtils.getRpcTodayIsError(rpcEntity)) {
             Log.greenFinance("当日异常的请求，当日不再请求\n${rpcEntity.requestMethod}")
             rpcEntity.responseString =
@@ -439,6 +444,10 @@ class AriverRpcBridge : RpcBridge {
                         )
                     }
                     RpcIntervalLimit.enterIntervalLimit(requestMethod)
+                    if (!WorkflowRootGuard.isExecutionAllowed()) {
+                        captureNote = "blocked_by_execution_prerequisites"
+                        return null
+                    }
                     val finalLocalBridgeCallbackClazzArray = localBridgeCallbackClazzArray
                     localRpcCallMethod.invoke(
                         localRpcBridgeExtensionInstance,

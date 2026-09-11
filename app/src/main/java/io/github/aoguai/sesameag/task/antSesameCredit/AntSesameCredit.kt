@@ -1,7 +1,6 @@
 package io.github.aoguai.sesameag.task.antSesameCredit
 
 import android.annotation.SuppressLint
-import android.net.Uri
 import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.Status.Companion.hasFlagToday
 import io.github.aoguai.sesameag.data.Status.Companion.setFlagToday
@@ -63,7 +62,6 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLDecoder
 import java.text.SimpleDateFormat
-import java.util.ArrayDeque
 import java.util.Date
 import java.util.Locale
 import java.util.Objects
@@ -969,13 +967,7 @@ class AntSesameCredit : ModelTask() {
                 )
             }
 
-            val (joinRes, responseObj) =
-                joinSesameTaskWithFallback(
-                    taskTemplateId,
-                    item.title,
-                    "芝麻信用💳",
-                    "zml",
-                )
+            val (joinRes, responseObj) = joinSesameTask(taskTemplateId, "zml")
             val errorCode = responseObj.optString("resultCode", responseObj.optString("errorCode", ""))
             val resultView =
                 responseObj.optString("resultView").ifEmpty {
@@ -1692,6 +1684,14 @@ class AntSesameCredit : ModelTask() {
     ): Int {
         if (items.isEmpty()) {
             return 0
+        }
+        val antFarm = Model.getModel(AntFarm::class.java)
+        if (antFarm != null && antFarm.pendingZhimaPigeonRewardFeedbackId()?.isBlank() == true) {
+            val pigeonReward = items.firstOrNull { it.cateId == zhimaPigeonFeedbackCategory }
+            if (pigeonReward != null && !antFarm.bindZhimaPigeonRewardFeedbackId(pigeonReward.creditFeedbackId)) {
+                Log.error(TAG, "$logPrefix[无法绑定大表鸽待收反馈，保留本次反馈等待后续收取]")
+                return 0
+            }
         }
         var collectedCount = 0
         var needFallbackCollect = true
@@ -2457,13 +2457,7 @@ class AntSesameCredit : ModelTask() {
         Log.sesame("芝麻炼金⚗️[精力瓶任务准备]#$title")
 
         if (actionTask.optString("recordId").isBlank()) {
-            val (joinRes, joinJo) =
-                joinSesameTaskWithFallback(
-                    taskTemplateId = templateId,
-                    taskTitle = title,
-                    logPrefix = "芝麻炼金⚗️",
-                    primarySceneCode = "alchemy",
-                )
+            val (joinRes, joinJo) = joinSesameTask(templateId, "alchemy")
             if (!AntSesameCreditRpcCall.isRpcSuccess(joinRes)) {
                 val errorCode = joinJo.optString("errorCode", joinJo.optString("resultCode", ""))
                 val resultView = buildSesameRpcMessage(joinJo, joinRes)
@@ -2638,13 +2632,7 @@ class AntSesameCredit : ModelTask() {
                     detail = alchemyActionDetail(item, "join"),
                 )
             }
-            val (joinRes, joinJo) =
-                joinSesameTaskWithFallback(
-                    taskTemplateId = templateId,
-                    taskTitle = item.title,
-                    logPrefix = "芝麻炼金⚗️",
-                    primarySceneCode = "alchemy",
-                )
+            val (joinRes, joinJo) = joinSesameTask(templateId, "alchemy")
             val errorCode = joinJo.optString("resultCode", joinJo.optString("errorCode", ""))
             val resultView = buildSesameRpcMessage(joinJo, joinRes)
             if (!AntSesameCreditRpcCall.isRpcSuccess(joinRes) && isSesameProcessingTemplate(errorCode)) {
@@ -5137,7 +5125,13 @@ class AntSesameCredit : ModelTask() {
                     TaskRpcFailureType.TERMINAL_DONE
                 }
 
-                code in setOf("CAMP_TRIGGER_ERROR", "PROMISE_TODAY_FINISH_TIMES_LIMIT", "PROMISE_HAS_PROCESSING_TEMPLATE", "104") -> {
+                code in setOf(
+                    "CAMP_TRIGGER_ERROR",
+                    "OP_REPEAT_CHECK",
+                    "PROMISE_TODAY_FINISH_TIMES_LIMIT",
+                    "PROMISE_HAS_PROCESSING_TEMPLATE",
+                    "104",
+                ) -> {
                     TaskRpcFailureType.BUSINESS_LIMIT
                 }
 
@@ -5145,7 +5139,7 @@ class AntSesameCredit : ModelTask() {
                     TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE
                 }
 
-                code in setOf("TASK_ID_INVALID", "PROMISE_TEMPLATE_NOT_EXIST") ||
+                code in setOf("TASK_ID_INVALID", "PROMISE_TEMPLATE_NOT_EXIST", "ILLEGAL_ARGUMENT") ||
                     (code == "20020012" && explicitSesameTaskRetryable(response) == false) ||
                     (isExplicitSesameTaskFailure(response) &&
                         explicitSesameTaskRetryable(response) == false) -> {
@@ -5156,7 +5150,6 @@ class AntSesameCredit : ModelTask() {
                     setOf(
                         "3000",
                         "REMOTE_INVOKE_EXCEPTION",
-                        "OP_REPEAT_CHECK",
                         "SYSTEM_BUSY",
                         "NETWORK_ERROR",
                         "COLLECT_CREDIT_FEEDBACK_FAILED",
@@ -5200,29 +5193,12 @@ class AntSesameCredit : ModelTask() {
         private fun isSesameProcessingTemplateRefresh(result: TaskFlowActionResult): Boolean =
             result.detail.contains("processingTemplateRefresh=true")
 
-        private fun joinSesameTaskWithFallback(
+        private fun joinSesameTask(
             taskTemplateId: String,
-            taskTitle: String,
-            logPrefix: String,
-            primarySceneCode: String? = null,
+            sceneCode: String,
         ): Pair<String, JSONObject> {
-            var joinRes = AntSesameCreditRpcCall.joinSesameTask(taskTemplateId, primarySceneCode)
-            var joinJo = JSONObject(joinRes)
-            val joinResultCode = joinJo.optString("resultCode", joinJo.optString("errorCode", ""))
-            val noFallbackBusinessCodes =
-                setOf(
-                    "PROMISE_TODAY_FINISH_TIMES_LIMIT",
-                    "PROMISE_HAS_PROCESSING_TEMPLATE",
-                )
-            if (!AntSesameCreditRpcCall.isRpcSuccess(joinRes) &&
-                !primarySceneCode.isNullOrBlank() &&
-                joinResultCode !in noFallbackBusinessCodes
-            ) {
-                Log.sesame("$logPrefix[领取任务扩展参数失败，回退简版参数]#$taskTitle")
-                joinRes = AntSesameCreditRpcCall.joinSesameTask(taskTemplateId)
-                joinJo = JSONObject(joinRes)
-            }
-            return joinRes to joinJo
+            val joinRes = AntSesameCreditRpcCall.joinSesameTask(taskTemplateId, sceneCode)
+            return joinRes to JSONObject(joinRes)
         }
 
         private fun reportSesameTaskFeedbackResult(
@@ -5246,74 +5222,53 @@ class AntSesameCredit : ModelTask() {
                 )
             }
 
-            val bizType = task.optString("bizType")
-            val feedbackAttempts = mutableListOf<Pair<String, () -> String>>()
-            if (bizType.isNotBlank() && sceneCode.isNotBlank()) {
-                feedbackAttempts.add(
-                    "扩展参数" to {
-                        AntSesameCreditRpcCall.feedBackSesameTask(
-                            taskTemplateId = templateId,
-                            bizType = bizType,
-                            sceneCode = sceneCode,
-                            version = version,
-                            changeRewardType = changeRewardType,
-                        )
-                    },
+            val bizType = task.optString("bizType").trim()
+            if (bizType.isBlank() || sceneCode.isBlank()) {
+                return TaskFlowActionResult.failure(
+                    failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                    code = "TASK_FEEDBACK_CONTRACT_EMPTY",
+                    message = "任务回调缺少bizType或sceneCode",
+                    rpc = "AntSesameCreditRpcCall.feedBackSesameTask",
+                    detail = "module=$moduleName taskId=$templateId taskName=$taskTitle action=feedback",
                 )
             }
-            feedbackAttempts.add(
-                "简版参数" to {
-                    AntSesameCreditRpcCall.feedBackSesameTask(
-                        taskTemplateId = templateId,
-                        changeRewardType = changeRewardType,
-                    )
-                },
+            val feedbackRes = AntSesameCreditRpcCall.feedBackSesameTask(
+                taskTemplateId = templateId,
+                bizType = bizType,
+                sceneCode = sceneCode,
+                version = version,
+                changeRewardType = changeRewardType,
             )
-
-            var lastErrorCode = "RESPONSE_PARSE_ERROR"
-            var lastResultView = "任务回调响应解析失败"
-            var lastFeedbackRes = ""
-            var lastFeedbackJo: JSONObject? = null
-            for ((index, attempt) in feedbackAttempts.withIndex()) {
-                val (attemptLabel, call) = attempt
-                val feedbackRes = call()
-                lastFeedbackRes = feedbackRes
-                val feedbackJo = parseJSONObjectOrNull(feedbackRes)
-                if (feedbackJo == null) {
-                    if (index < feedbackAttempts.lastIndex) {
-                        Log.sesame("$logPrefix[任务回调${attemptLabel}响应异常，尝试兼容参数]#$taskTitle")
-                    }
-                    continue
-                }
-                lastFeedbackJo = feedbackJo
-                if (ResChecker.checkRes(TAG, feedbackJo)) {
-                    return TaskFlowActionResult(
-                        success = true,
-                        rpc = "AntSesameCreditRpcCall.feedBackSesameTask",
-                        raw = feedbackRes,
-                        detail = "module=$moduleName taskId=$templateId taskName=$taskTitle action=feedback parameter=$attemptLabel",
-                    )
-                }
-                lastErrorCode = feedbackJo.optString("errorCode", feedbackJo.optString("resultCode", ""))
-                lastResultView = buildSesameRpcMessage(feedbackJo, feedbackRes)
-                if (isSesameTaskFlowInterrupted(feedbackJo)) {
-                    break
-                }
-                if (index < feedbackAttempts.lastIndex) {
-                    Log.sesame("$logPrefix[任务回调${attemptLabel}失败，尝试兼容参数]#$taskTitle - $lastResultView")
-                }
+            val feedbackJo = parseJSONObjectOrNull(feedbackRes)
+                ?: return TaskFlowActionResult.failure(
+                    failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                    code = "RESPONSE_PARSE_ERROR",
+                    message = "任务回调响应无法解析",
+                    rpc = "AntSesameCreditRpcCall.feedBackSesameTask",
+                    raw = feedbackRes,
+                    detail = "module=$moduleName taskId=$templateId taskName=$taskTitle action=feedback bizType=$bizType",
+                )
+            if (ResChecker.checkRes(TAG, feedbackJo)) {
+                return TaskFlowActionResult(
+                    success = true,
+                    rpc = "AntSesameCreditRpcCall.feedBackSesameTask",
+                    raw = feedbackRes,
+                    detail = "module=$moduleName taskId=$templateId taskName=$taskTitle action=feedback parameter=taskContract",
+                )
             }
 
-            Log.error(TAG, "$logPrefix[任务回调失败]#$taskTitle - $lastResultView")
-            val failureType = classifySesameTaskFailure(lastErrorCode, lastFeedbackJo)
+            val errorCode = feedbackJo.optString("errorCode", feedbackJo.optString("resultCode", ""))
+            val resultView = buildSesameRpcMessage(feedbackJo, feedbackRes)
+            Log.error(TAG, "$logPrefix[任务回调失败]#$taskTitle - $resultView")
+            val failureType = classifySesameTaskFailure(errorCode, feedbackJo)
             return TaskFlowActionResult.failure(
                 failureType = failureType,
-                code = lastErrorCode,
-                message = lastResultView,
+                code = errorCode,
+                message = resultView,
                 rpc = "AntSesameCreditRpcCall.feedBackSesameTask",
-                raw = lastFeedbackRes,
+                raw = feedbackRes,
                 detail = "module=$moduleName taskId=$templateId taskName=$taskTitle action=feedback bizType=$bizType",
-                stopCurrentRound = isSesameTaskFlowInterrupted(lastFeedbackJo),
+                stopCurrentRound = isSesameTaskFlowInterrupted(feedbackJo),
                 continueCurrentRoundOnFailure = failureType == TaskRpcFailureType.RETRYABLE_RPC,
             )
         }
@@ -5497,13 +5452,10 @@ class AntSesameCredit : ModelTask() {
         }
     }
 
-    private fun sesameDirectGamePlayContract(task: JSONObject): GameCenterPlayRpcCall.Contract? =
-        GameCenterPlayRpcCall.resolveContract(task)
-
     private fun sesameFloatingBallContract(task: JSONObject): SesameFloatingBallContract? {
-        if (!isSesameP2eFloatingBallTask(task)) return null
-        val objects = sesameGameContractObjects(task)
         val parameters = sesameActionUrlParameters(task)
+        if (!isSesameP2eFloatingBallTask(task) && parameters["taskType"] != "durationTask") return null
+        val objects = sesameGameContractObjects(task)
         val sceneId = firstNonBlank(objects, parameters, "sceneId")
         val taskId = firstNonBlank(objects, parameters, "taskId")
         val moduleId = firstNonBlank(objects, parameters, "moduleId")
@@ -5629,41 +5581,8 @@ class AntSesameCredit : ModelTask() {
             pageRequests = pageRequests,
         )
 
-    private fun sesameGameContractObjects(task: JSONObject): List<JSONObject> {
-        val objects = mutableListOf<JSONObject>()
-        fun addObject(value: JSONObject?) {
-            if (value != null && objects.none { it === value }) {
-                objects.add(value)
-            }
-        }
-        fun parseObject(value: Any?): JSONObject? =
-            when (value) {
-                is JSONObject -> value
-                is String -> value.takeIf { it.isNotBlank() }?.let { runCatching { JSONObject(it) }.getOrNull() }
-                else -> null
-            }
-
-        addObject(task)
-        var index = 0
-        while (index < objects.size) {
-            val current = objects[index++]
-            listOf(
-                "prodPlayParam",
-                "taskDisplayConfig",
-                "floatBallConfig",
-                "task",
-                "bizInfo",
-                "taskCategorization",
-                "categorizationParamModel",
-                "p2ePageRequests",
-                "p2ePageSession",
-                "p2eHomePageRequest",
-                "p2eTaskListRequest",
-                "p2eFeedsGameListRequest",
-            ).forEach { key -> addObject(parseObject(current.opt(key))) }
-        }
-        return objects
-    }
+    private fun sesameGameContractObjects(task: JSONObject): List<JSONObject> =
+        GameCenterPlayRpcCall.describeTask(task).objects
 
     private fun sesameP2eFloatingBallEntranceMissingFields(task: JSONObject): List<String> {
         val objects = sesameGameContractObjects(task)
@@ -5688,31 +5607,8 @@ class AntSesameCredit : ModelTask() {
         } || sesameP2ePageRequests(objects) != null
     }
 
-    private fun sesameActionUrlParameters(task: JSONObject): Map<String, String> {
-        val parameters = linkedMapOf<String, String>()
-        val queue = ArrayDeque<String>()
-        sesameGameContractObjects(task).forEach { objectValue ->
-            listOf("actionUrl", "targetUrl", "jumpUrl", "pageUrl", "taskJumpUrl")
-                .map(objectValue::optString)
-                .filterTo(queue) { it.isNotBlank() }
-        }
-        if (queue.isEmpty()) return emptyMap()
-        val visited = linkedSetOf<String>()
-        while (queue.isNotEmpty()) {
-            val currentUrl = queue.removeFirst()
-            if (!visited.add(currentUrl)) continue
-            val uri = runCatching { Uri.parse(currentUrl) }.getOrNull() ?: continue
-            uri.queryParameterNames.forEach { name ->
-                uri.getQueryParameter(name)?.let { value ->
-                    if (value.isNotBlank()) parameters[name] = value
-                }
-            }
-            listOf("url", "sourceUrl", "schema").forEach { key ->
-                uri.getQueryParameter(key)?.takeIf { it.isNotBlank() }?.let(queue::add)
-            }
-        }
-        return parameters
-    }
+    private fun sesameActionUrlParameters(task: JSONObject): Map<String, String> =
+        GameCenterPlayRpcCall.describeTask(task).urlParameters
 
     private fun isGameCenterRecommendationPayload(response: JSONObject): Boolean {
         val data = response.optJSONObject("data") ?: return false
@@ -5764,27 +5660,41 @@ class AntSesameCredit : ModelTask() {
             )
         }
 
-        val directGameContract = sesameDirectGamePlayContract(task)
-        directGameContract?.let { contract ->
-            val durationResult = submitSesameGameDuration(contract, taskTitle, spec, actionDetail)
-            if (durationResult != null) {
-                return durationResult
-            }
+        val gameDecision = GameCenterPlayRpcCall.resolveTaskAction(task)
+        if (gameDecision.action == GameCenterPlayRpcCall.TaskAction.DURATION_ONLY) {
+            val directGameContract = gameDecision.contract ?: return TaskFlowActionResult.defer(
+                deferredReason = DeferredReason.PREREQUISITE_PENDING,
+                message = "游戏时长任务缺少完整上报合同",
+                rpc = "GameCenterPlayRpcCall.resolveTaskAction",
+                detail = "$actionDetail completionMode=DIRECT_GAME_DURATION missingFields=${gameDecision.missingFields.joinToString(",")}",
+            )
+            Thread.sleep(directGameContract.playTime * 1000L)
+            submitSesameGameDuration(directGameContract, taskTitle, spec, actionDetail)?.let { return it }
+            return TaskFlowActionResult.defer(
+                deferredReason = DeferredReason.STATE_CONFIRMATION,
+                message = "游戏时长已上报，等待任务列表确认",
+                rpc = "GameCenterPlayRpcCall.submit",
+                detail = "$actionDetail completionMode=DIRECT_GAME_DURATION confirmationState=PENDING",
+                refreshAfterAction = true,
+            )
         }
-
+        val gameDescriptor = GameCenterPlayRpcCall.describeTask(task)
+        if (gameDescriptor.isGameTask) {
+            Log.sesame(
+                "${spec.logPrefix}[游戏任务等待合同]#$taskTitle action=${gameDecision.action} " +
+                    "reason=${gameDecision.reason} missingFields=${gameDecision.missingFields.joinToString(",")}",
+            )
+            return TaskFlowActionResult.defer(
+                deferredReason = DeferredReason.PREREQUISITE_PENDING,
+                message = "游戏任务缺少可执行的完成合同",
+                rpc = "GameCenterPlayRpcCall.resolveTaskAction",
+                detail = "$actionDetail completionMode=GAME_DEFERRED action=${gameDecision.action} " +
+                    "reason=${gameDecision.reason} missingFields=${gameDecision.missingFields.joinToString(",")}",
+            )
+        }
         val templateId = task.optString("templateId").trim()
         val recordId = task.optString("recordId").trim()
-        val pushActivityRequired =
-            task.takeIf { it.has("jumpToPushModel") && !it.isNull("jumpToPushModel") }
-                ?.optBoolean("jumpToPushModel", false)
-                ?: return TaskFlowActionResult.failure(
-                    failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
-                    code = "PUSH_MODEL_FLAG_MISSING",
-                    message = "LIFE_RECORD缺少jumpToPushModel，保留人工确认",
-                    rpc = "AntSesameCredit.completeSesameLifeRecord",
-                    detail = "$actionDetail templateId=$templateId recordId=$recordId completionMode=UNKNOWN confirmationState=NOT_SUBMITTED",
-                )
-        if (pushActivityRequired && recordId.isBlank()) {
+        if (recordId.isBlank()) {
             return TaskFlowActionResult.failure(
                 failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
                 code = "RECORD_ID_EMPTY",
@@ -5809,22 +5719,6 @@ class AntSesameCredit : ModelTask() {
         }
 
         val feedbackCode = feedbackResult.code.ifBlank { "SUCCESS" }
-        if (!pushActivityRequired) {
-            Log.sesame(
-                "${spec.logPrefix}[生活记录反馈已接受，等待列表确认]#$taskTitle " +
-                    "templateId=$templateId recordId=$recordId completionMode=FEEDBACK_ONLY " +
-                    "feedbackCode=$feedbackCode confirmationState=PENDING",
-            )
-            return TaskFlowActionResult.defer(
-                deferredReason = DeferredReason.STATE_CONFIRMATION,
-                message = "生活记录反馈已提交，等待任务列表确认",
-                rpc = "AntSesameCreditRpcCall.feedBackSesameTask",
-                raw = feedbackResult.raw,
-                detail = "$actionDetail templateId=$templateId recordId=$recordId completionMode=FEEDBACK_ONLY feedbackCode=$feedbackCode finishCode=NOT_REQUIRED confirmationState=PENDING",
-                refreshAfterAction = true,
-            )
-        }
-
         val finishRes = AntSesameCreditRpcCall.finishSesameTask(recordId)
         val finishJo = parseJSONObjectOrNull(finishRes)
             ?: return TaskFlowActionResult.failure(
@@ -5873,7 +5767,9 @@ class AntSesameCredit : ModelTask() {
             raw = finishRes,
             detail = "$actionDetail templateId=$templateId recordId=$recordId completionMode=PUSH_ACTIVITY confirmationState=NOT_CONFIRMED",
             stopCurrentRound = isSesameTaskFlowInterrupted(finishJo),
-            continueCurrentRoundOnFailure = failureType == TaskRpcFailureType.RETRYABLE_RPC,
+            continueCurrentRoundOnFailure =
+                failureType == TaskRpcFailureType.RETRYABLE_RPC ||
+                    (failureType == TaskRpcFailureType.BUSINESS_LIMIT && errorCode == "OP_REPEAT_CHECK"),
         )
     }
 
@@ -6024,6 +5920,86 @@ class AntSesameCredit : ModelTask() {
             feedbackPendingKey = feedbackPendingKey,
             taskIdentity = floatingBall.taskId,
         )?.let { return it }
+        if (!isSesameP2eFloatingBallTask(task)) {
+            val passThrough = JSONObject()
+                .put("sceneId", floatingBall.sceneId)
+                .put("taskId", floatingBall.taskId)
+                .toString()
+            val home = GameCenterPlayRpcCall.queryExternalGameCenter(
+                floatingBall.sceneId, floatingBall.moduleId, floatingBall.guideType,
+                floatingBall.source, passThrough,
+            )
+            if (!home.accepted) {
+                return TaskFlowActionResult.failure(
+                    failureType = home.failureType,
+                    message = "频道游戏中心初始化失败",
+                    rpc = "GameCenterPlayRpcCall.queryExternalGameCenter",
+                    raw = home.raw,
+                    detail = actionDetail,
+                )
+            }
+            val games = GameCenterPlayRpcCall.queryExternalRecommendGames(floatingBall.sceneId, floatingBall.source)
+            if (!games.accepted) {
+                return TaskFlowActionResult.failure(
+                    failureType = games.failureType,
+                    message = "频道游戏列表查询失败",
+                    rpc = "GameCenterPlayRpcCall.queryExternalRecommendGames",
+                    raw = games.raw,
+                    detail = actionDetail,
+                )
+            }
+            val data = games.response?.optJSONObject("data")
+            val gameAppId = sequenceOf("recentPlayGameVO", "todayRecommendVO")
+                .mapNotNull { data?.optJSONObject(it)?.optJSONArray("gameList") }
+                .flatMap { list -> (0 until list.length()).asSequence().mapNotNull { list.optJSONObject(it) } }
+                .mapNotNull { it.opt("appId") as? String }
+                .firstOrNull { it.isNotBlank() }
+                ?: return TaskFlowActionResult.failure(
+                    failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                    message = "频道游戏列表未返回可用的游戏appId",
+                    rpc = "GameCenterPlayRpcCall.queryExternalRecommendGames",
+                    raw = games.raw,
+                    detail = actionDetail,
+                )
+            val consult = GameCenterPlayRpcCall.consultFloatingBall(passThrough, floatingBall.source)
+            val seconds = consult.timeSeconds
+            if (!consult.accepted || seconds == null) {
+                return TaskFlowActionResult.failure(
+                    failureType = consult.failureType,
+                    message = "频道浮球时长查询失败",
+                    rpc = "GameCenterPlayRpcCall.consultFloatingBall",
+                    raw = consult.raw,
+                    detail = actionDetail,
+                )
+            }
+            val playTime = (seconds.toLong() + 1L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+            Thread.sleep(playTime * 1000L)
+            val durationResult = submitSesameGameDuration(
+                GameCenterPlayRpcCall.Contract(gameAppId, playTime, floatingBall.source),
+                taskTitle, spec, actionDetail,
+            )
+            if (durationResult != null) return durationResult
+            val complete = GameCenterPlayRpcCall.completeFloatingBall(passThrough, floatingBall.sceneId)
+            if (!complete.accepted) {
+                return TaskFlowActionResult.failure(
+                    failureType = complete.response?.let { sesameGameActionFailureType(it, complete.failureType) }
+                        ?: complete.failureType,
+                    message = "频道浮球完成请求失败",
+                    rpc = "GameCenterPlayRpcCall.completeFloatingBall",
+                    raw = complete.raw,
+                    detail = actionDetail,
+                )
+            }
+            clearSesameFloatingBallFeedbackPending(feedbackPendingKey)
+            return TaskFlowActionResult.defer(
+                deferredReason = DeferredReason.STATE_CONFIRMATION,
+                message = "频道浮球完成已提交，等待生活记录和奖励确认",
+                rpc = "GameCenterPlayRpcCall.completeFloatingBall",
+                raw = complete.raw,
+                detail = "$actionDetail completionMode=CHANNEL_FLOATING_BALL gameAppId=$gameAppId confirmationState=PENDING",
+                refreshAfterAction = true,
+            )
+        }
         val entranceContract = GameCenterPlayRpcCall.P2eFloatingBallContract(
             sceneId = floatingBall.sceneId,
             taskId = floatingBall.taskId,

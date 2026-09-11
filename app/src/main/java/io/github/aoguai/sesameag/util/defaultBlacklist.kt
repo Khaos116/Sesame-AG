@@ -8,27 +8,10 @@ private val sesameCreditDefaultBlacklist =
     setOf(
         // 芝麻信用 / 芝麻粒
         "zml_zijie_toutiaozhuduan_sanfang", // 今日头条唤端任务，缺少稳定完成RPC闭环
-        "AP17345296", // 芝麻树 NONE_SIGNUP 未知状态
         "zml_diantao_renwu_sanfang",
         "zml_eduka_renwu",
         "zml_zfbfeizhu_xiadan_sanfang",
-        // 芝麻树 SIGNUP_SEND 游戏/导流任务
-        "AP11327686",
-        "AP18365439",
-        "AP18344041",
-        "AP15358968",
-        "AP14359058",
-        "AP18344357",
-        "AP13358931",
-        "AP16358982",
-        "AP13358969",
-        "AP17344131",
-        "AP17359071",
-        "AP11313161",
-        "AP13350341",
-        "AP11327894",
-        "AP19361153",
-        "AP11287911",
+        "AP18365439", // 芝麻树 ORDER 任务，需真实下单支付
         "zml_mybx_xiadan_erfang",
         "zml_check_in_subscribe_task", // joinActivity 返回 PROMISE_TEMPLATE_NOT_EXIST
         "zml_set_home_task", // joinActivity 返回 PROMISE_TEMPLATE_NOT_EXIST
@@ -36,14 +19,15 @@ private val sesameCreditDefaultBlacklist =
         "zml_tbbbnc_shifei_sanfang", // pushActivity 返回 ILLEGAL_ARGUMENT，需真实淘宝行为
         "zmxy_zml_wannengxiaozujian", // pushActivity 返回 ILLEGAL_ARGUMENT，需真实桌面组件行为
         "zml_cainiao_guojiang_sanfang", // pushActivity 返回 ILLEGAL_ARGUMENT，需真实菜鸟行为
-        // 芝麻树 RENT 游戏
-        "AP19359169",
-        "AP10359017",
-        "AP11359168",
-        "AP12359059",
-        "AP16358996",
-        "AP11358913",
-        "AP12359016",
+        "zml_tbqd_qiandao_sanfang", // 需要淘宝签到结果
+        "zml_xiangjiangshikaipao_renwu", // 需要游戏内任务事件
+        "zml_longjizhicheng_renwu", // pushActivity 返回 promiseActivityExtCheck 非法，需游戏内任务事件
+        "zml_zcylt_chongzhi", // 需要真实充值
+        "zml_baoweixiangrikui_renwu", // 需要游戏内任务事件
+        "zml_jihewangguo_renwu", // 需要游戏内任务事件
+        "zml_xundaodaqian_renwu", // 砍伐30次的游戏事件，pushActivity返回ILLEGAL_ARGUMENT
+        "AP16358996", // EVENT_TRIGGER：几何王国通过3关，直接send返回20020012
+        "AP17359071", // EVENT_TRIGGER：灵画师消耗30包子，直接send返回20020012
     )
 
 private val sesameAlchemyDefaultBlacklist =
@@ -54,12 +38,14 @@ private val sesameAlchemyDefaultBlacklist =
         "alchemy_check_in_subscribe_task", // joinActivity 返回 PROMISE_TEMPLATE_NOT_EXIST
         "hjwf_tbqd_qiandao_sanfang",
         "hjwf_tbbbnc_shifei_sanfang",
+        "hjwf_xiangjiangshikaipao_renwu", // 游戏事件不能由pushActivity完成，返回ILLEGAL_ARGUMENT
+        "hjwf_zcylt_chongzhi", // 真实充值不能由pushActivity完成，返回ILLEGAL_ARGUMENT
+        "hjwf_langmancanting_renwu", // 完成3个订单的游戏事件，pushActivity返回ILLEGAL_ARGUMENT
     )
 
 private val orchardDefaultBlacklist =
     setOf(
         // 芭芭农场
-        "ORCHARD_NORMAL_ZADAN10_3000", // finishTask 返回 400000040，不支持rpc调用
         "ORCHARD_NORMAL_KUAISHOU_MAX", // 逛一逛快手
         "ORCHARD_NORMAL_DIAOYU1", // 钓鱼1次
         "ZHUFANG3IN1", // 添加农场小组件并访问
@@ -70,18 +56,16 @@ private val orchardDefaultBlacklist =
         "ORCHARD_NORMAL_SHOUJISHUMAHUISHOU", // 数码回收
         "ORCHARD_NORMAL_TAB3_ZHIFA", // 看视频领肥料
         "ORCHARD_NORMAL_AQ_XIAZAI", // 下载蚂蚁阿福看健康攻略
-        "ORCHARD_NORMAL_NCLY_GLY", // 新春限时试玩福利
         "ncflzhrw51", // 去游戏中心抢金条：不支持rpc调用
         "babafarm_cjmk_xdujdd15", // 去游戏中心玩游戏：不支持rpc调用
         "LINGHUOTIAOKONG", // 逛一逛新浪微博
         "ANTFARM_ORCHARD_NORMAL_YITAO", // 逛一逛一淘
-        "ANTFARM_ORCHARD_NORMAL_GONGGEFANGWEN", // 首页访问农场依赖真实入口行为
-        "ORCHARD_NORMAL_XIANYU_DUAN", // 闲鱼任务依赖真实外跳行为
         "ANTFARM_ORCHARD_NORMAL_CAINIAO_DUAN", // 菜鸟任务 finishTask 返回 400000040
-        "ORCHARD_NORMAL_TAOBAOQIANDAO", // 淘宝签到依赖真实外跳行为
         "ORCHARD_NCLY_ZH_MSQYJ_V3", // 美食趣味记依赖真实游戏事件
         "ORCHARD_NCLY_ZH_DDPLY_V3", // 对对碰乐园依赖真实游戏事件
         "ORCHARD_NCLY_GAME_CHARGE0|任意充值得100000肥", // finishTask 返回 400000040，不支持rpc调用
+        "CHOUCHOULE_GAME_WDHYSJ_ZH", // 居民订单不可由普通 finishDrawTask 完成，返回 400000040
+        "CHOUCHOULE_GAME_WDHYSJ_CHARGE", // 需真实充值，finishDrawTask 返回 400000040
         "ORCHARD_NORMAL_GAODE_VISIT|去高德发表真实评价", // finishTask 返回 400000040，不支持rpc调用
         "ORCHARD_NORMAL_SHANGOUMIANDAN|逛一逛淘宝闪购", // finishTask 返回 400000040，不支持rpc调用
         "ORCHARD_NORMAL_TAOBAOTAOLIPAI_VISIT|逛一逛淘宝拍照", // 不支持rpc调用
@@ -109,8 +93,6 @@ private val goldenBeanDefaultBlacklist =
         "GOLDEN_BEAN_MASTER_TASK:GOLDEN_BEAN_TASK_XIANSHANGZHIFU", // 线上支付
         "GOLDEN_BEAN_MASTER_TASK:GOLDEN_BEAN_TASK_XIANXIAZHIFU", // 线下支付
         "GOLDEN_BEAN_MASTER_TASK:GOLDEN_BEAN_TASK_YUEBAO", // 余额宝真实业务动作
-        "GOLDEN_BEAN_MASTER_TASK:GOLDENBEAN_GAME_ZH0_XDDQ", // 无现有精确游戏上报合同
-        "GOLDEN_BEAN_MASTER_TASK:GOLDENBEAN_GAME_ZH0_MSQYJ_V31", // 无现有精确游戏上报合同
         "GOLDEN_BEAN_ZHIMA_LIST:ZHIMA_youxi_dageluosi", // 无可验证的外部游戏完成RPC闭环
         "GOLDEN_BEAN_ZHIMA_LIST:ZHIMA_youxi_zheguanwohenxing", // 无可验证的外部游戏完成RPC闭环
         "GOLDEN_BEAN_ZHIMA_LIST:ZHIMA_youxi_hebuguowoba", // 无可验证的外部游戏完成RPC闭环
@@ -143,6 +125,7 @@ private val farmDefaultBlacklist =
 private val oceanDefaultBlacklist =
     setOf(
         "BWXRK_QDRW_HAIYANG",
+        "AIFISH_ZHUANHUA_MHXCZ", // aiFishFinishTask 返回 400000040，当前任务类型不支持
     )
 
 private val forestDefaultBlacklist =
@@ -207,6 +190,7 @@ private val forestDefaultBlacklist =
         "CNXDY_TASK_QUDONG", // 玩下蛋鸭击败20只怪：不支持rpc调用
         "FOREST_NORMAL_DRAW_YYDWLXQ_ZH", // finishTaskopengreen 返回 400000040
         "FOREST_ACTIVITY_DRAW_ZHXF_ZHWUFU", // finishTaskopengreen 返回 400000040
+        "FOREST_ACTIVITY_DRAW_LMCT_ZHWUFU", // finishTaskopengreen 返回 400000040
         "FOREST_NORMAL_DRAW_SHARE", // 森林抽抽乐分享任务
         "FOREST_ACTIVITY_DRAW_SHARE", // 森林抽抽乐活动分享任务
         "ZHRW_HUIYUANjiaoshui_202608", // 每日浇水免费拿绿植：finishTask 返回 400000040
@@ -260,6 +244,9 @@ private val stallDefaultBlacklist =
         "ANTSTALL_TASK_kuaishouhuanduan|去快手逛一逛",
         "ANTSTALL_TASK_taojinbihuanduan|进入淘宝芭芭农场领免费水果",
         "ANTSTALL_P2P_DAILY_SHARER|邀请好友助力",
+        "ANTSTALL_TASK_XCXYX_langmancanting", // 需要完成游戏订单，普通finishTask返回400000040
+        "ANTSTALL_TASK_XCXYX_qingyunjue", // 需要游戏内闯关事件，普通finishTask返回400000040
+        "ANTSTALL_TASK_XCXYX_sijiwuyu", // 需要游戏内合成事件，普通finishTask返回400000040
     )
 
 private val yuebaoDefaultBlacklist =
@@ -334,6 +321,28 @@ private val memberDefaultBlacklist =
         "zcylt|玩这城有良田|举办4次庙会",
         "hlxxx|玩欢乐消消消|完成6个夜市任务",
         "营业执照",
+        "2021005132680209#zgwhx_game_level_every_1#4",
+        "2021006105651938#zslxx_game_pass_every_1#1",
+        "2060170000399540#ylpt_game_pass_every_1#2",
+        "2060170000357475#fkljy_game_pass_every_1#3",
+        "2021005176645204#jyelsfk_game_pass_every_1#5",
+        "2021003194690149#hlxxx_game_yeshi_3#2",
+        "2021006148677438#klppd_game_pass_every_1#2",
+        "2021003183618061#wpjz_game_pass_every_1#5",
+        "2021004128666655#wggs_game_pass_every_1#3",
+        "2021004163612073#tssl_game_shenlong_every_1#1",
+        "2021000111632448#zbt_game_pass_every_1#5",
+        "2021004131628794#sdppx_game_pass_every_1#5",
+        "2021005172696439#zgm_game_pass_every_1#6",
+        "2060170000365084#kxxxl_game_pass_every_1#25",
+        "2060170000380982#mhxcz_game_zhuangxiu_every_1#8",
+        "2021005124694002#xgtsjrwj_game_denghuo_task_1#1",
+        "2021003193629997#cyddmx_game_pass_level_1#6",
+        "2021006109602033#tznzy_game_pass_every_1#3",
+        "2060170000216502#gkyyn_game_pass_every_1#5", // 需要游戏内通关事件
+        "2060170000363633#wbgwy_game_pass_every_1#2", // 需要游戏内通关事件
+        "2021006135621066#qyxx_game_zhuxian_every_1#10", // 需要游戏内主线事件
+        "2021004144418207#yqsl_game_pass_every_1#3", // 需要游戏内通关事件
     )
 
 private val insuredDefaultBlacklist =
@@ -343,6 +352,7 @@ private val insuredDefaultBlacklist =
         "AP13341733|体验稳稳涨收益好品", // 需真实业务行为，缺少稳定完成RPC闭环
         "AP19282085|0元体验热门健康保障", // 需真实投保行为，缺少稳定完成RPC闭环
         "AP16253999|0元体验最高百万重疾保障", // 需真实投保行为，缺少稳定完成RPC闭环
+        "AP16363304", // AE13140290000201：不是用户触发类，不能直接send完成退休测评
     )
 
 private val youthPrivilegeDefaultBlacklist =
@@ -367,7 +377,6 @@ private val sportsDefaultBlacklist =
         "AP12300554",
         "AP13300501",
         "AP16300571",
-        "AP11300601|逛好运卡翻红包", // 面板入口缺少稳定自动闭环
         "AP10344931|逛好运卡翻红包", // 路线复活入口 completeTask 返回 CAMP_TRIGGER_ERROR
     )
 

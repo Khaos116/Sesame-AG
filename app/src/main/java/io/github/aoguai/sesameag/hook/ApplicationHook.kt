@@ -61,6 +61,7 @@ import io.github.aoguai.sesameag.util.DataStore.init
 import io.github.aoguai.sesameag.util.Files
 import io.github.aoguai.sesameag.util.GlobalThreadPools.execute
 import io.github.aoguai.sesameag.util.GlobalThreadPools.shutdownAndRestart
+import io.github.aoguai.sesameag.util.CommandUtil
 import io.github.aoguai.sesameag.util.LocaleSettingsApplier
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.Log.error
@@ -252,7 +253,11 @@ class ApplicationHook {
                 val context = chain.args[0] as? Context ?: return@intercept result
                 val identityDecision = RuntimeIdentityGuard.verifyApplicationAttach(context)
                 if (!identityDecision.accepted || !RuntimeIdentityGuard.isCaptureOnlyProcess()) {
-                    android.util.Log.w(TAG, "capture_instance_rejected: ${identityDecision.reasonCode}")
+                    val reasonCode = identityDecision.reasonCode ?: "identity_not_verified"
+                    val message =
+                        "capture_instance_rejected: $reasonCode process=$processName process_role=capture_only"
+                    logFrameworkWarning(message)
+                    android.util.Log.w(TAG, message)
                     return@intercept result
                 }
                 XposedEnv.runtimeIdentity = RuntimeIdentityGuard.trustedIdentity()
@@ -285,7 +290,10 @@ class ApplicationHook {
                         verifyInstalledModulePackage = !isEmbeddedPatchRuntime(),
                     )
                 if (!identityDecision.accepted) {
-                    android.util.Log.w(TAG, "instance_rejected: ${identityDecision.reasonCode}")
+                    val reasonCode = identityDecision.reasonCode ?: "identity_not_verified"
+                    val message = "instance_rejected: $reasonCode process=$processName process_role=main"
+                    logFrameworkWarning(message)
+                    android.util.Log.w(TAG, message)
                     return@intercept result
                 }
                 XposedEnv.runtimeIdentity = RuntimeIdentityGuard.trustedIdentity()
@@ -686,6 +694,7 @@ class ApplicationHook {
                 Config.isLoaded() &&
                 service != null &&
                 WorkflowRootGuard.hasGrantedRoot() &&
+                WorkflowRootGuard.isExecutionAllowed() &&
                 !ApplicationHookConstants.isOffline() &&
                 session?.workflowAllowed == true &&
                 session.userId == currentUid
@@ -793,6 +802,9 @@ class ApplicationHook {
             val safeUserId = userId.trim()
             if (safeUserId.isEmpty()) {
                 return HookUtil.FriendRefreshResult(success = false, message = "刷新好友失败：账号为空")
+            }
+            if (!WorkflowRootGuard.isExecutionAllowed()) {
+                return HookUtil.FriendRefreshResult(success = false, message = "必需权限或使用协议未就绪，无法刷新好友")
             }
             val loader =
                 classLoader ?: return HookUtil.FriendRefreshResult(
@@ -1161,14 +1173,14 @@ class ApplicationHook {
                     userId,
                     allowPersistedReuse = allowPersistedSessionReuse,
                 )
-                when (val admission = AccountSlotRegistry.admitRuntimeUser(userId)) {
+                val admission = when (val result = AccountSlotRegistry.admitRuntimeUser(userId)) {
                     is AccountSlotAdmission.Denied -> {
-                        record(TAG, "execution_gate_denied: ${admission.reasonCode}")
-                        destroyHandlerInternal("account_slot_${admission.reasonCode}", invalidateSession = true)
+                        record(TAG, "execution_gate_denied: ${result.reasonCode} process_role=main")
+                        destroyHandlerInternal("account_slot_${result.reasonCode}", invalidateSession = true)
                         return false
                     }
 
-                    is AccountSlotAdmission.Allowed -> Unit
+                    is AccountSlotAdmission.Allowed -> result
                 }
                 if (init) {
                     if (shouldCaptureReloadState(reason)) {
@@ -1194,11 +1206,9 @@ class ApplicationHook {
                     // ignore
                 }
 
-                ensureScheduler()
+                // Model metadata is required by Config.load(), but session work waits for a stable slot.
                 Model.initAllModel()
 
-                pendingInit = false
-                pendingInitReason = null
                 UserMap.setCurrentUserId(userId)
                 load(userId)
                 // 冷启动期目标应用社交库(AliAccountDaoOp)可能尚未加载完，过早 getAllFriends() 会拿到
@@ -1208,26 +1218,53 @@ class ApplicationHook {
                 runCatching { UserMap.load(userId) }.onFailure {
                     printStackTrace(TAG, "初始化加载本地好友快照失败", it)
                 }
-                scheduleDeferredFriendCenterSync(userId, reason)
                 record(TAG, "Sesame-AG 开始初始化...")
 
                 Config.load(userId)
                 LocaleSettingsApplier.apply(appContext)
                 Logback.reloadFileLogging(enableCaptureAppender = true)
                 val activeUserSnapshot = AccountSessionCoordinator.ensureActiveUserSnapshot(userId, activeClassLoader)
-                val legalAccepted = Config.isLoaded() && Config.isLegalAcceptedForCurrentVersion()
-                val workflowAllowed =
-                    RuntimeIdentityGuard.isTrustedForExecution() &&
-                        AccountSlotRegistry.isExecutableUser(userId) &&
-                        WorkflowRootGuard.hasGrantedRoot() &&
-                        legalAccepted &&
-                        !ApplicationHookConstants.isOffline()
+                if (admission.requiresConfirmation) {
+                    when (val confirmation = AccountSlotRegistry.confirmRuntimeUser(userId)) {
+                        AccountSlotRuntimeConfirmation.Confirmed -> Unit
+                        AccountSlotRuntimeConfirmation.PendingPersistence,
+                        AccountSlotRuntimeConfirmation.Expired,
+                        AccountSlotRuntimeConfirmation.RegistryUnavailable -> {
+                            val reasonCode = when (confirmation) {
+                                AccountSlotRuntimeConfirmation.PendingPersistence ->
+                                    "account_slot_provision_unconfirmed"
+                                AccountSlotRuntimeConfirmation.Expired -> "account_slot_provision_expired"
+                                AccountSlotRuntimeConfirmation.RegistryUnavailable ->
+                                    "account_slot_registry_unavailable"
+                                AccountSlotRuntimeConfirmation.Confirmed -> error("unreachable")
+                            }
+                            record(TAG, "execution_gate_denied: $reasonCode process_role=main")
+                            destroyHandlerInternal("account_slot_$reasonCode", invalidateSession = true)
+                            return false
+                        }
+                    }
+                }
                 val executionCheck = AccountSlotRegistry.checkExecutableUser(userId)
                 if (executionCheck !is AccountSlotExecutionCheck.Allowed) {
-                    record(TAG, "execution_gate_rejected_before_apply: $executionCheck")
+                    val reasonCode = when (executionCheck) {
+                        is AccountSlotExecutionCheck.Inactive -> "account_slot_inactive"
+                        AccountSlotExecutionCheck.InvalidUserId -> "account_slot_invalid_user_id"
+                        AccountSlotExecutionCheck.RegistryUnavailable -> "account_slot_registry_unavailable"
+                        is AccountSlotExecutionCheck.Allowed -> error("unreachable")
+                    }
+                    record(TAG, "execution_gate_rejected_before_apply: $reasonCode process_role=main")
                     destroyHandlerInternal("account_slot_recheck", invalidateSession = true)
                     return false
                 }
+
+                ensureScheduler()
+                val legalAccepted = Config.isLoaded() && Config.isLegalAcceptedForCurrentVersion()
+                val workflowAllowed =
+                    RuntimeIdentityGuard.isTrustedForExecution() &&
+                        WorkflowRootGuard.hasGrantedRoot() &&
+                        WorkflowRootGuard.isExecutionAllowed() &&
+                        legalAccepted &&
+                        !ApplicationHookConstants.isOffline()
                 AccountSessionCoordinator.applySession(
                     context = appContext,
                     userId = userId,
@@ -1237,6 +1274,8 @@ class ApplicationHook {
                     reason = reason,
                 )
                 sessionApplied = true
+                pendingInit = false
+                pendingInitReason = null
 
                 if (!Config.isLoaded()) return false
                 if (!ensureRootAccessForWorkflow(reason)) {
@@ -1248,6 +1287,7 @@ class ApplicationHook {
                 if (!ensureRpcVersionSupported()) {
                     return false
                 }
+                scheduleDeferredFriendCenterSync(userId, reason)
 
                 // Phase 7：DataStore watcher 生命周期治理（用户切换/重载后重启 watcher，避免丢失跨进程同步能力）
                 try {
@@ -1422,7 +1462,7 @@ class ApplicationHook {
         }
 
         private fun ensureRootAccessForWorkflow(reason: String): Boolean {
-            if (WorkflowRootGuard.hasGrantedRoot()) {
+            if (WorkflowRootGuard.hasGrantedRoot() && WorkflowRootGuard.isExecutionAllowed()) {
                 pendingInit = false
                 pendingInitReason = null
                 AccountSessionCoordinator.refreshWorkflowState(appContext, "root_granted_cached")
@@ -1439,20 +1479,31 @@ class ApplicationHook {
             record(TAG, "⏳ 正在检查执行权限，暂不启动工作流: $reason")
             execute {
                 try {
-                    val granted = WorkflowRootGuard.hasRoot(forceRefresh = true, reason = reason)
+                    val context = appContext ?: return@execute
+                    val executorStatus = CommandUtil.awaitServiceStatus(context)
+                    if (executorStatus is CommandUtil.ServiceStatus.Loading ||
+                        executorStatus is CommandUtil.ServiceStatus.Error
+                    ) {
+                        record(TAG, "⏳ 执行权限服务尚未就绪，保留待初始化状态: $reason")
+                        return@execute
+                    }
+                    val granted = WorkflowRootGuard.hasRoot(forceRefresh = true, reason = reason) &&
+                        executorStatus is CommandUtil.ServiceStatus.Active &&
+                        WorkflowRootGuard.isExecutionAllowed()
                     if (!granted) {
-                        updateRunningStatus("未检测到可用执行权限，已禁止工作流")
+                        updateRunningStatus("必需权限或使用协议未就绪，已禁止工作流")
                         ApplicationHookConstants.clearPendingTriggers("root_denied")
                         AccountSessionCoordinator.refreshWorkflowState(appContext, "root_denied")
                         return@execute
                     }
 
-                    val retryReason = pendingInitReason ?: reason
-                    rootCheckInProgress = false
-                    if (service != null && !init) {
-                        record(TAG, "✅ 执行权限检查通过，继续初始化: $retryReason")
-                        if (initHandler(retryReason)) {
-                            init = true
+                    ApplicationHookConstants.submitEntry("execution_permission_ready") {
+                        val retryReason = pendingInitReason ?: reason
+                        if (service != null && (!init || pendingInit)) {
+                            record(TAG, "✅ 执行权限检查通过，继续初始化: $retryReason")
+                            if (initHandler(retryReason)) {
+                                init = true
+                            }
                         }
                     }
                 } catch (th: Throwable) {
@@ -1471,18 +1522,19 @@ class ApplicationHook {
                 Config.load(userId)
                 LocaleSettingsApplier.apply(appContext)
             }
-            if (Config.isLegalAcceptedForCurrentVersion()) {
+            val legalAccepted = Config.isLegalAcceptedForCurrentVersion()
+            if (legalAccepted && WorkflowRootGuard.isExecutionAllowed()) {
                 AccountSessionCoordinator.refreshWorkflowState(appContext, "legal_accepted", legalAccepted = true)
                 return true
             }
 
             pendingInit = false
             pendingInitReason = null
-            val message = "未勾选已阅读 LICENSE 与 LEGAL 说明，已禁止工作流"
+            val message = "必需权限或使用协议未就绪，已禁止工作流"
             record(TAG, "⛔ $message")
             updateRunningStatus(message)
-            ApplicationHookConstants.clearPendingTriggers("legal_unaccepted")
-            AccountSessionCoordinator.refreshWorkflowState(appContext, "legal_unaccepted", legalAccepted = false)
+            ApplicationHookConstants.clearPendingTriggers("execution_prerequisites_missing")
+            AccountSessionCoordinator.refreshWorkflowState(appContext, "execution_prerequisites_missing", legalAccepted = legalAccepted)
             return false
         }
 
@@ -1525,6 +1577,10 @@ class ApplicationHook {
         fun reOpenApp() {
             ensureScheduler()
             UnifiedScheduler.scheduleLongDelay(20000L, "重新登录") {
+                if (!WorkflowRootGuard.isExecutionAllowed()) {
+                    record(TAG, "必需权限或使用协议未就绪，已取消重新登录")
+                    return@scheduleLongDelay
+                }
                 val ownerUserId = AccountSessionCoordinator.currentUserId() ?: currentUid
                 if (!ScheduledTaskRouter.allowRuntimeForegroundLaunch(ownerUserId, "reopen_app")) {
                     record(TAG, "已跳过重新拉起目标应用：前台拉起开关关闭或处于频控")
