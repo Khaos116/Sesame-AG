@@ -954,6 +954,7 @@ class AntOcean : ModelTask() {
     private inner class AiFishTaskFlowAdapter : TaskFlowAdapter {
         override val moduleName: String = TASK_BLACKLIST_MODULE
         override val flowName: String = "海洋摸鱼任务"
+        override val nonRetryableActionFlagPrefix: String = StatusFlags.FLAG_ANTOCEAN_AIFISH_ACTION_STOP_PREFIX
 
         override fun query(): JSONObject {
             val response = AntOceanRpcCall.aiFishListTask()
@@ -996,7 +997,9 @@ class AntOcean : ModelTask() {
                         sceneCode = AI_FISH_SCENE_CODE,
                         blacklistKeys = listOf(taskType, taskTitle),
                         raw = raw,
-                        progress = "award=$awardCount",
+                        progress = "progress=${taskBaseInfo.opt("taskProgress")}/${taskBaseInfo.opt("taskRequire")} " +
+                            "rights=${taskRights.opt("rightsTimes")}/${taskRights.opt("rightsTimesLimit")} " +
+                            "received=${taskRights.opt("alreadyReceiveAwardCount")} award=$awardCount",
                     ),
                 )
             }
@@ -1041,6 +1044,47 @@ class AntOcean : ModelTask() {
         }
 
         override fun complete(item: TaskFlowItem): TaskFlowActionResult {
+            val gameDecision = GameCenterPlayRpcCall.resolveTaskAction(item.raw)
+            val contract = gameDecision.contract
+            val mappedTask = gameDecision.mappedTask
+            if (gameDecision.action == GameCenterPlayRpcCall.TaskAction.DURATION_ONLY && contract != null) {
+                val duration = GameCenterPlayRpcCall.submitForAck(contract)
+                if (!duration.accepted) {
+                    return TaskFlowActionResult.failure(
+                        failureType = duration.failureType,
+                        message = "摸鱼游戏时长上报失败",
+                        rpc = "GameCenterPlayRpcCall.submit",
+                        raw = duration.raw,
+                        detail = aiFishTaskActionDetail(item, "playDuration"),
+                    )
+                }
+                Log.ocean("摸鱼任务🧾️[${item.title}]时长上报已接受，继续任务完成闭环")
+                // 时长 ACK 后显式完成摸鱼任务（抓包证实真实闭环为 submitUserPlayDurationAction → antiep.finishTask），
+                // 与同文件海洋任务路径 finishOceanGameTask 的融合模式一致
+                return handleAiFishFinishTask(item)
+            }
+            if (gameDecision.action == GameCenterPlayRpcCall.TaskAction.LEGACY_EXTERNAL_REPORT && mappedTask != null) {
+                val report = kotlinx.coroutines.runBlocking { mappedTask.reportDetailed(1, logger = Log::ocean) }
+                return if (report.completed) {
+                    TaskFlowActionResult.defer(
+                        deferredReason = DeferredReason.STATE_CONFIRMATION,
+                        message = "游戏业务上报完成，回查摸鱼任务及奖励",
+                        rpc = "GameTask.reportDetailed",
+                        refreshAfterAction = true,
+                    )
+                } else {
+                    TaskFlowActionResult.failure(
+                        failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                        message = report.failureMessage,
+                        rpc = "GameTask.reportDetailed",
+                        detail = aiFishTaskActionDetail(item, "gameReport"),
+                    )
+                }
+            }
+            return handleAiFishFinishTask(item)
+        }
+
+        private fun handleAiFishFinishTask(item: TaskFlowItem): TaskFlowActionResult {
             val response = AntOceanRpcCall.aiFishFinishTask(item.type)
             val result =
                 JsonUtil.parseJSONObjectOrNull(response) ?: return TaskFlowActionResult.failure(
@@ -1052,8 +1096,14 @@ class AntOcean : ModelTask() {
                     stopCurrentRound = true,
                 )
             if (isOceanTaskRpcSuccess(result)) {
-                Log.ocean("摸鱼任务🧾️[${item.title}]")
-                return TaskFlowActionResult.success()
+                Log.ocean("摸鱼任务🧾️[${item.title}]完成请求已受理，等待任务列表确认")
+                return TaskFlowActionResult.defer(
+                    deferredReason = DeferredReason.STATE_CONFIRMATION,
+                    message = "摸鱼任务完成请求已受理，回查摸鱼任务及奖励",
+                    rpc = "AntOceanRpcCall.aiFishFinishTask",
+                    raw = response,
+                    refreshAfterAction = true,
+                )
             }
             return aiFishTaskActionFailureResult(
                 item = item,
@@ -1061,6 +1111,13 @@ class AntOcean : ModelTask() {
                 rpc = "AntOceanRpcCall.aiFishFinishTask",
                 detail = aiFishTaskActionDetail(item, "finishTask"),
             )
+        }
+
+        override fun actionKey(item: TaskFlowItem, action: TaskFlowAction): String {
+            val instance = item.raw?.optJSONObject("taskBaseInfo")?.optString("entityGenerateTime").orEmpty()
+            val game = GameCenterPlayRpcCall.describeTask(item.raw)
+            return "${action.logName}:${item.sceneCode}:${item.type}:$instance:" +
+                "${game.gameAppId}:${game.source}:${game.gameTaskType}:${game.contract?.playTime}"
         }
 
         override fun logInfo(message: String) {
@@ -1078,12 +1135,7 @@ class AntOcean : ModelTask() {
         rpc: String,
         detail: String,
     ): TaskFlowActionResult {
-        val failureType =
-            if (rpc == "AntOceanRpcCall.aiFishFinishTask" && extractOceanTaskFailureCode(response) == "400000040") {
-                TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE
-            } else {
-                classifyOceanTaskFailure(response)
-            }
+        val failureType = classifyOceanTaskFailure(response)
         return TaskFlowActionResult.failure(
             failureType = failureType,
             code = extractOceanTaskFailureCode(response),
@@ -2007,9 +2059,11 @@ class AntOcean : ModelTask() {
         private var latestItems: List<TaskFlowItem> = emptyList()
         private var unknownPhaseSeen = false
         private var unknownFailureSeen = false
+        private val handledChannelGames = mutableSetOf<String>()
 
         override val moduleName: String = TASK_BLACKLIST_MODULE
         override val flowName: String = "神奇海洋任务"
+        override val nonRetryableActionFlagPrefix: String = StatusFlags.FLAG_ANTOCEAN_ACTION_STOP_PREFIX
         override val continueCurrentRoundOnRetryableFailure: Boolean = true
 
         override fun query(): JSONObject {
@@ -2020,7 +2074,7 @@ class AntOcean : ModelTask() {
         }
 
         override fun isQuerySuccess(response: JSONObject): Boolean {
-            querySucceeded = ResChecker.checkRes(TAG, response)
+            querySucceeded = ResChecker.checkRes(TAG, response) && response.optJSONArray("antOceanTaskVOList") != null
             return querySucceeded
         }
 
@@ -2050,6 +2104,9 @@ class AntOcean : ModelTask() {
                         .ifBlank { "0" }
                 val taskProgress = parseOceanTaskProgressInt(task, "taskProgress")
                 val taskRequire = parseOceanTaskProgressInt(task, "taskRequire")?.takeIf { it > 0 }
+                val rightsTimes = parseOceanTaskProgressInt(task, "rightsTimes")
+                val rightsTimesLimit = parseOceanTaskProgressInt(task, "rightsTimesLimit")?.takeIf { it > 0 }
+                val receivedCount = parseOceanTaskProgressInt(extendInfo, "alreadyReceiveAwardCount")
                 val raw =
                     JSONObject()
                         .put("task", task)
@@ -2075,9 +2132,9 @@ class AntOcean : ModelTask() {
                             },
                         blacklistKeys = listOf(taskType),
                         raw = raw,
-                        progress = "award=$awardCount progress=${taskProgress ?: 0}/${taskRequire ?: 0}",
-                        current = taskProgress,
-                        limit = taskRequire,
+                        progress = "progress=$taskProgress/$taskRequire rights=$rightsTimes/$rightsTimesLimit received=$receivedCount",
+                        current = if (isConsecutiveVisitTask(taskType)) taskProgress else rightsTimes ?: taskProgress,
+                        limit = if (isConsecutiveVisitTask(taskType)) taskRequire else rightsTimesLimit ?: taskRequire,
                     ),
                 )
             }
@@ -2085,10 +2142,23 @@ class AntOcean : ModelTask() {
             return items
         }
 
-        override fun mapPhase(item: TaskFlowItem): TaskFlowPhase =
-            when {
-                isRewardReadyStatus(item.status) -> {
+        override fun mapPhase(item: TaskFlowItem): TaskFlowPhase {
+            val rightsTimes = item.raw?.optString("rightsTimes")?.toIntOrNull()
+            val rightsLimit = item.raw?.optString("rightsTimesLimit")?.toIntOrNull()?.takeIf { it > 0 }
+            val receivedCount = item.raw?.optString("alreadyReceiveAwardCount")?.toIntOrNull()
+            return when {
+                isRewardReadyStatus(item.status) ||
+                    (rightsTimes != null && receivedCount != null && rightsTimes > receivedCount) -> {
                     TaskFlowPhase.REWARD_READY
+                }
+
+                rightsLimit != null && receivedCount != null && receivedCount >= rightsLimit -> {
+                    TaskFlowPhase.TERMINAL
+                }
+
+                isRewardReceivedStatus(item.status) && rightsTimes != null &&
+                    rightsLimit != null && rightsTimes < rightsLimit -> {
+                    TaskFlowPhase.READY_TO_COMPLETE
                 }
 
                 isRewardReceivedStatus(item.status) ||
@@ -2122,6 +2192,7 @@ class AntOcean : ModelTask() {
                     TaskFlowPhase.UNKNOWN
                 }
             }
+        }
 
         override fun shouldSkipByTodayState(item: TaskFlowItem): Boolean {
             if (Status.hasFlagToday(StatusFlags.FLAG_ANTOCEAN_HELP_CLEAN_ALL_FRIEND_LIMIT) &&
@@ -2148,8 +2219,7 @@ class AntOcean : ModelTask() {
         }
 
         override fun receive(item: TaskFlowItem): TaskFlowActionResult {
-            // 海洋最新快照里 RECEIVED/HAS_RECEIVED 都表示奖励已领终态，不能再次发领奖 RPC。
-            if (isRewardReceivedStatus(item.status)) {
+            if (mapPhase(item) == TaskFlowPhase.TERMINAL) {
                 logOceanTaskOnce("海洋任务🌊[${item.title}]已处于领奖终态，跳过重复领奖")
                 return TaskFlowActionResult.failure(
                     failureType = TaskRpcFailureType.TERMINAL_DONE,
@@ -2231,7 +2301,31 @@ class AntOcean : ModelTask() {
                 }
             }
 
+            val descriptor = GameCenterPlayRpcCall.describeTask(item.raw)
+            if (descriptor.objects.any { it.optString("categorizationThirdLevel") == "Playground" }) {
+                return finishOceanChannelGameTask(item, descriptor, handledChannelGames)
+            }
             val gameDecision = GameCenterPlayRpcCall.resolveTaskAction(item.raw)
+            if (gameDecision.action == GameCenterPlayRpcCall.TaskAction.LEGACY_EXTERNAL_REPORT) {
+                val mappedTask = gameDecision.mappedTask
+                if (mappedTask != null) {
+                    val report = kotlinx.coroutines.runBlocking { mappedTask.reportDetailed(1, logger = Log::ocean) }
+                    return if (report.completed) {
+                        TaskFlowActionResult.defer(
+                            deferredReason = DeferredReason.STATE_CONFIRMATION,
+                            message = "游戏业务上报完成，回查海洋任务",
+                            refreshAfterAction = true,
+                        )
+                    } else {
+                        TaskFlowActionResult.failure(
+                            failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                            message = report.failureMessage,
+                            rpc = "GameTask.reportDetailed",
+                            detail = oceanTaskActionDetail(item, "gameReport"),
+                        )
+                    }
+                }
+            }
             if (gameDecision.action == GameCenterPlayRpcCall.TaskAction.DURATION_ONLY) {
                 val contract = gameDecision.contract ?: return TaskFlowActionResult.defer(
                     deferredReason = DeferredReason.PREREQUISITE_PENDING,
@@ -2241,30 +2335,18 @@ class AntOcean : ModelTask() {
                 )
                 return finishOceanGameTask(item, contract)
             }
-            if (GameCenterPlayRpcCall.describeTask(item.raw).isGameTask) {
-                Log.ocean(
-                    "海洋任务🌊[${item.title}]游戏完成合同待确认 action=${gameDecision.action} " +
-                        "reason=${gameDecision.reason} missingFields=${gameDecision.missingFields.joinToString(",")}",
-                )
-                return TaskFlowActionResult.defer(
-                    deferredReason = DeferredReason.PREREQUISITE_PENDING,
-                    message = "游戏任务缺少可执行的完成合同",
-                    rpc = "GameCenterPlayRpcCall.resolveTaskAction",
-                    detail = oceanTaskActionDetail(
-                        item,
-                        "gameDeferred",
-                        "action=${gameDecision.action} reason=${gameDecision.reason} " +
-                            "missingFields=${gameDecision.missingFields.joinToString(",")}",
-                    ),
-                )
-            }
             return finishOceanTask(item)
         }
 
         override fun actionKey(
             item: TaskFlowItem,
             action: TaskFlowAction,
-        ): String = "${action.logName}:${buildOceanTaskBizKey(item.sceneCode, item.type, item.title)}"
+        ): String {
+            val instance = item.raw?.optJSONObject("task")?.optString("entityGenerateTime").orEmpty()
+            val game = GameCenterPlayRpcCall.describeTask(item.raw)
+            return "${action.logName}:${buildOceanTaskBizKey(item.sceneCode, item.type, item.title)}:$instance:" +
+                "${game.gameAppId}:${game.source}:${game.gameTaskType}:${game.contract?.playTime}"
+        }
 
         override fun afterFailure(
             item: TaskFlowItem,
@@ -2481,6 +2563,93 @@ class AntOcean : ModelTask() {
             rpc = "AntOceanRpcCall.finishTask",
         )
 
+    private fun finishOceanChannelGameTask(
+        item: TaskFlowItem,
+        descriptor: GameCenterPlayRpcCall.GameTaskDescriptor,
+        handledGames: MutableSet<String>,
+    ): TaskFlowActionResult {
+        val source = descriptor.source
+        val trafficDriverId = descriptor.urlParameters["trafficDriverId"].orEmpty().ifBlank { source }
+        if (source.isBlank()) {
+            return TaskFlowActionResult.failure(
+                failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                message = "海洋游戏入口缺少来源",
+                rpc = "GameCenterPlayRpcCall.describeTask",
+                detail = oceanTaskActionDetail(item, "channelGame"),
+            )
+        }
+        val home = GameCenterPlayRpcCall.queryGameCenterHome(source, trafficDriverId)
+        if (!home.accepted) {
+            return TaskFlowActionResult.failure(
+                failureType = home.failureType,
+                message = "海洋游戏列表查询失败",
+                rpc = "GameCenterPlayRpcCall.queryGameCenterHome",
+                raw = home.raw,
+            )
+        }
+        val games = home.response?.optJSONObject("data")?.optJSONObject("usedGameModule")?.optJSONArray("gameList")
+            ?: return TaskFlowActionResult.failure(
+                failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                message = "海洋游戏首页缺少游戏列表",
+                rpc = "GameCenterPlayRpcCall.queryGameCenterHome",
+                raw = home.raw,
+            )
+        for (index in 0 until games.length()) {
+            val game = games.optJSONObject(index) ?: continue
+            val gameId = game.optString("gameId")
+            val appId = game.optString("appId")
+            if (gameId.isBlank() || appId.isBlank() || !handledGames.add("${item.id}:$gameId")) continue
+            val consult = GameCenterPlayRpcCall.consultGameFloatingBall(gameId, source, source, trafficDriverId)
+            if (!consult.accepted) {
+                return TaskFlowActionResult.failure(
+                    failureType = consult.failureType,
+                    message = "海洋游戏浮球查询失败",
+                    rpc = "GameCenterPlayRpcCall.consultGameFloatingBall",
+                    raw = consult.raw,
+                )
+            }
+            val types = consult.response?.optJSONObject("data")?.optJSONArray("floatingBallTypeList") ?: continue
+            if ((0 until types.length()).none { types.optString(it) == "CHANNEL_FLOATING_BALL" }) continue
+            val seconds = consult.timeSeconds ?: continue
+            val duration = GameCenterPlayRpcCall.submitForAck(
+                GameCenterPlayRpcCall.Contract(appId, (seconds.toLong() + 1).coerceAtMost(Int.MAX_VALUE.toLong()).toInt(), source),
+            )
+            if (!duration.accepted) {
+                return TaskFlowActionResult.failure(
+                    failureType = duration.failureType,
+                    message = "海洋游戏时长上报失败",
+                    rpc = "GameCenterPlayRpcCall.submit",
+                    raw = duration.raw,
+                )
+            }
+            val complete = GameCenterPlayRpcCall.completeGameFloatingBall(
+                gameId, source, source, trafficDriverId, JSONArray().put("CHANNEL_FLOATING_BALL"),
+            )
+            if (!complete.accepted) {
+                return TaskFlowActionResult.failure(
+                    failureType = complete.failureType,
+                    message = "海洋游戏浮球完成失败",
+                    rpc = "GameCenterPlayRpcCall.completeGameFloatingBall",
+                    raw = complete.raw,
+                )
+            }
+            Log.ocean("海洋任务🌊[${item.title}]游戏[$gameId]浮球及时长已提交，回查任务领奖")
+            return TaskFlowActionResult.defer(
+                deferredReason = DeferredReason.STATE_CONFIRMATION,
+                message = "海洋游戏浮球及时长已提交",
+                rpc = "GameCenterPlayRpcCall.completeGameFloatingBall",
+                raw = complete.raw,
+                refreshAfterAction = true,
+            )
+        }
+        return TaskFlowActionResult.defer(
+            deferredReason = DeferredReason.NO_PROGRESS_COOLDOWN,
+            message = "当前游戏列表没有剩余可执行频道浮球，后续调度重新查询",
+            rpc = "GameCenterPlayRpcCall.consultGameFloatingBall",
+            detail = oceanTaskActionDetail(item, "channelGame"),
+        )
+    }
+
     private fun finishOceanGameTask(
         item: TaskFlowItem,
         contract: GameCenterPlayRpcCall.Contract,
@@ -2663,8 +2832,8 @@ class AntOcean : ModelTask() {
             }
 
             code == "400000040" -> {
-                // 完成方法被拒绝，不能据此禁用其他业务或领奖步骤。
-                TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW
+                // 当前任务类型不支持该RPC完成，自动加入黑名单；领奖阶段不受黑名单影响。
+                TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE
             }
 
             code in setOf("20020012", "TASK_ID_INVALID", "ILLEGAL_ARGUMENT", "PROMISE_TEMPLATE_NOT_EXIST") -> {

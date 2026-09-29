@@ -1,6 +1,7 @@
 package io.github.aoguai.sesameag.task
 
 import android.annotation.SuppressLint
+import io.github.aoguai.sesameag.data.RuntimeInfo
 import io.github.aoguai.sesameag.hook.keepalive.UnifiedScheduler
 import io.github.aoguai.sesameag.model.BaseModel
 import io.github.aoguai.sesameag.model.Model
@@ -10,14 +11,18 @@ import io.github.aoguai.sesameag.model.ModelType
 import io.github.aoguai.sesameag.task.antForest.AntForest
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.Notify.finishTaskRunning
+import io.github.aoguai.sesameag.util.Notify.sendAlert
 import io.github.aoguai.sesameag.util.Notify.startTaskRunning
 import io.github.aoguai.sesameag.util.Notify.updateRunningNextExec
+import io.github.aoguai.sesameag.util.TimeUtil
 import io.github.aoguai.sesameag.util.WorkflowRootGuard
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
+import org.json.JSONException
+import org.json.JSONObject
 
 /**
  * 基于协程的抽象任务模型类
@@ -65,6 +70,9 @@ abstract class ModelTask : Model() {
     @Volatile
     var isRunning = false
         protected set
+
+    /** 连续执行失败计数（内存，进程重启清零），达到阈值后自动挂起本任务 */
+    private var consecutiveFailures = 0
 
     /** 增加任务运行次数 */
     fun addRunCents() {
@@ -120,6 +128,7 @@ abstract class ModelTask : Model() {
     private fun recordModuleCheckMessage(msg: String) {
         when (getName()) {
             "蚂蚁森林", "蚂蚁森林合种", "保护地", "生态保护" -> Log.forest(msg)
+            "保护地巡护" -> Log.forestPatrol(msg)
             "农场", "芭芭农场" -> Log.orchard(msg)
             "金豆夺宝" -> Log.goldenBean(msg)
             "蚂蚁庄园" -> Log.farm(msg)
@@ -127,18 +136,17 @@ abstract class ModelTask : Model() {
             "海洋", "神奇海洋" -> Log.ocean(msg)
             "神奇物种" -> Log.dodo(msg)
             "会员" -> Log.member(msg)
-            "福气鱼池" -> Log.fishpond(msg)
             "运动" -> Log.sports(msg)
             "绿色经营" -> Log.greenFinance(msg)
             "芝麻信用" -> Log.sesame(msg)
             else -> when (getGroup()) {
                 ModelGroup.FOREST -> Log.forest(msg)
+                ModelGroup.FOREST_PATROL -> Log.forestPatrol(msg)
                 ModelGroup.ORCHARD -> Log.orchard(msg)
                 ModelGroup.GOLDEN_BEAN -> Log.goldenBean(msg)
                 ModelGroup.FARM -> Log.farm(msg)
                 ModelGroup.STALL -> Log.stall(msg)
                 ModelGroup.DODO -> Log.dodo(msg)
-                ModelGroup.FISHPOND -> Log.fishpond(msg)
                 ModelGroup.SPORTS -> Log.sports(msg)
                 ModelGroup.MEMBER -> Log.member(msg)
                 ModelGroup.SESAME_CREDIT -> Log.sesame(msg)
@@ -150,6 +158,13 @@ abstract class ModelTask : Model() {
     /** 检查任务是否可以执行  */
     open fun check(): Boolean {
         TaskCommon.update()
+
+        // 任务级异常暂停：未到期则拦截执行；到期项由 activeTaskPauseMap 惰性清理，通知随之恢复
+        val pausedUntil = activeTaskPauseMap()[getName()]
+        if (pausedUntil != null) {
+            recordModuleCheckMessage("⏸ 异常暂停中，恢复时间 " + TimeUtil.getCommonDate(pausedUntil) + "，暂不执行检测！")
+            return false
+        }
 
         // 只有蚂蚁森林启用且当前不是蚂蚁森林任务时，才拦截能量时间
         if (getName() != "蚂蚁森林") {
@@ -168,6 +183,36 @@ abstract class ModelTask : Model() {
             return false
         }
         return true
+    }
+
+    /** 任务级异常暂停：写入持久化暂停表（按用户隔离），基类 check() 与常驻通知据此拦截/展示 */
+    protected fun pauseSelfUntil(untilMs: Long) {
+        val name = getName() ?: return
+        synchronized(taskPauseLock) {
+            val runtimeInfo = RuntimeInfo.getInstance()
+            val jo = try {
+                JSONObject(runtimeInfo.getString(RuntimeInfo.RuntimeInfoKey.TaskPauseMap))
+            } catch (e: JSONException) {
+                JSONObject()
+            }
+            jo.put(name, untilMs)
+            runtimeInfo.put(RuntimeInfo.RuntimeInfoKey.TaskPauseMap, jo.toString())
+        }
+    }
+
+    /** 连续执行失败达到阈值后自动挂起本任务，避免反复异常空转 */
+    private fun onTaskRunFailure() {
+        val name = getName() ?: return
+        consecutiveFailures++
+        val threshold = BaseModel.exceptionPauseThreshold.value ?: 0
+        val waitMs = (BaseModel.waitWhenException.value ?: 0).toLong()
+        if (threshold >= 1 && consecutiveFailures >= threshold && waitMs > 0) {
+            val until = System.currentTimeMillis() + waitMs
+            pauseSelfUntil(until)
+            Log.record(TAG, name + " 连续失败 " + consecutiveFailures + " 次，已自动挂起至 " + TimeUtil.getCommonDate(until))
+            sendAlert("任务连续异常挂起", "「" + name + "」连续失败 " + consecutiveFailures + " 次，已挂起至 " + TimeUtil.getCommonDate(until))
+            consecutiveFailures = 0
+        }
     }
 
     /** 
@@ -203,6 +248,11 @@ abstract class ModelTask : Model() {
     /** 检查是否存在指定ID的子任务 */
     fun hasChildTask(childId: String): Boolean {
         return childTaskMap.containsKey(childId)
+    }
+
+    /** 已开始的任务仍归 taskScope 管理；释放标识，允许它登记同一目标的下一次等待。 */
+    internal fun detachChildTask(childTask: ChildModelTask) {
+        childTaskMap.remove(childTask.id, childTask)
     }
 
     /**
@@ -352,11 +402,13 @@ abstract class ModelTask : Model() {
                             addRunCents()
                             startTaskRunning(runningName)
                             executeMultiRoundTask(rounds)
+                            consecutiveFailures = 0
                         } catch (_: CancellationException) {
                             // 协程取消属于正常控制流程（如停止任务/切换用户），不视为错误
                             Log.record(TAG, "任务被取消: ${getName()}")
                         } catch (e: Exception) {
                             Log.printStackTrace("startTask err: ${getName()}", e)
+                            onTaskRunFailure()
                         } finally {
                             isRunning = false
                             finishTaskRunning(runningName)
@@ -664,6 +716,41 @@ abstract class ModelTask : Model() {
     companion object {
         /** 日志标签 */
         private const val TAG = "ModelTask"
+
+        /** 任务级异常暂停表的读写锁，保护 JSON 解析与写回 */
+        private val taskPauseLock = Any()
+
+        /**
+         * 读取未过期的任务级异常暂停表（任务名 → 恢复时间），顺手移除已过期项。
+         */
+        @JvmStatic
+        fun activeTaskPauseMap(): Map<String, Long> {
+            val runtimeInfo = RuntimeInfo.getInstance()
+            synchronized(taskPauseLock) {
+                val raw = runtimeInfo.getString(RuntimeInfo.RuntimeInfoKey.TaskPauseMap)
+                if (raw.isBlank()) return emptyMap()
+                val jo = try {
+                    JSONObject(raw)
+                } catch (e: JSONException) {
+                    return emptyMap()
+                }
+                val now = System.currentTimeMillis()
+                val active = mutableMapOf<String, Long>()
+                var expired = false
+                for (key in jo.keys()) {
+                    val until = jo.optLong(key, 0L)
+                    if (until > now) {
+                        active[key] = until
+                    } else {
+                        expired = true
+                    }
+                }
+                if (expired) {
+                    runtimeInfo.put(RuntimeInfo.RuntimeInfoKey.TaskPauseMap, JSONObject(active).toString())
+                }
+                return active
+            }
+        }
         
         /** 全局任务管理器协程作用域 */
         private val globalTaskScope = CoroutineScope(

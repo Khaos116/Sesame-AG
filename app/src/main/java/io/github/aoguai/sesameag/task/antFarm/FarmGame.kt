@@ -4,6 +4,13 @@ import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.StatusFlags
 import io.github.aoguai.sesameag.task.TaskStatus
 import io.github.aoguai.sesameag.task.common.GameCenterPlayRpcCall
+import io.github.aoguai.sesameag.task.common.DeferredReason
+import io.github.aoguai.sesameag.task.common.TaskFlowActionResult
+import io.github.aoguai.sesameag.task.common.TaskFlowAdapter
+import io.github.aoguai.sesameag.task.common.TaskFlowEngine
+import io.github.aoguai.sesameag.task.common.TaskFlowItem
+import io.github.aoguai.sesameag.task.common.TaskFlowPhase
+import io.github.aoguai.sesameag.task.common.TaskRpcFailureType
 import io.github.aoguai.sesameag.util.GameTask
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.ResChecker
@@ -16,10 +23,8 @@ import org.json.JSONObject
 object FarmGame {
     private const val TAG = "FarmGame"
     private const val LEYUAN_DAILY_TASK_SCENE_CODE = "ANTFARM_LEYUAN_DAILY_TASK"
-    private const val LEYUAN_SIGN_TASK_TYPE = "2026cc_lyqd"
     private const val LEYUAN_OPEN_BOX_TASK_TYPE = "2026cc_GAME_ljkbx"
     private const val LEYUAN_OPEN_BOX_TARGET_COUNT = 10
-    private val LEYUAN_LIMITED_TASK_TYPES = setOf(LEYUAN_SIGN_TASK_TYPE, LEYUAN_OPEN_BOX_TASK_TYPE)
 
     private fun isDrawQuotaExhausted(message: String): Boolean =
         message.contains("抽奖次数不足") ||
@@ -100,11 +105,13 @@ object FarmGame {
             if (gameType == GameType.starGame || gameType == GameType.jumpGame) {
                 return recordLevelAwardGameOnce(gameType)
             }
+            var taskHandling: GameTaskHandlingResult? = null
             while (true) {
                 val beforeSnapshot = queryFarmGameSnapshot(gameType) ?: return FarmGameCompletion.UNCONFIRMED
                 if (beforeSnapshot.level3Get == true) {
                     Log.farm("[${gameType.gameName()}]#今日奖励已领满")
-                    return FarmGameCompletion.CONFIRMED_TERMINAL
+                    return if (taskHandling == GameTaskHandlingResult.UNCONFIRMED) FarmGameCompletion.UNCONFIRMED
+                        else FarmGameCompletion.CONFIRMED_TERMINAL
                 }
                 if (beforeSnapshot.level3Get == null) {
                     Log.farm("庄园游戏[${gameType.gameName()}]缺少gameAward.level3Get，保留下一轮重试")
@@ -142,11 +149,18 @@ object FarmGame {
                     continue
                 }
 
-                when (handleGameTasks(gameType)) {
-                    GameTaskHandlingResult.NO_PENDING_TASK -> return FarmGameCompletion.CONFIRMED_TERMINAL
-                    GameTaskHandlingResult.CONFIRMED_PROGRESS -> continue
-                    GameTaskHandlingResult.UNCONFIRMED -> return FarmGameCompletion.UNCONFIRMED
+                if (taskHandling != null) {
+                    return if (taskHandling == GameTaskHandlingResult.UNCONFIRMED) FarmGameCompletion.UNCONFIRMED
+                        else FarmGameCompletion.CONFIRMED_TERMINAL
                 }
+                taskHandling = handleGameTasks(gameType)
+                if (ApplicationHookConstants.isOffline()) return FarmGameCompletion.UNCONFIRMED
+                val afterTasks = queryFarmGameSnapshot(gameType) ?: return FarmGameCompletion.UNCONFIRMED
+                if ((afterTasks.remainingGameCount ?: -1) > 0) continue
+                if (afterTasks.remainingGameCount == null || afterTasks.remainingGameCount < 0 ||
+                    taskHandling == GameTaskHandlingResult.UNCONFIRMED
+                ) return FarmGameCompletion.UNCONFIRMED
+                return FarmGameCompletion.CONFIRMED_TERMINAL
             }
         } catch (e: CancellationException) {
             // 协程取消异常必须重新抛出，不能吞掉
@@ -255,83 +269,70 @@ object FarmGame {
     }
 
     private suspend fun handleGameTasks(gameType: GameType): GameTaskHandlingResult {
-        val farmTaskList =
-            when (gameType) {
-                GameType.flyGame,
-                GameType.hitGame -> loadGameTasks(gameType) ?: return GameTaskHandlingResult.UNCONFIRMED
-
-                else -> return GameTaskHandlingResult.NO_PENDING_TASK
-            }
-
-        for (i in 0 until farmTaskList.length()) {
-            val task = farmTaskList.optJSONObject(i) ?: run {
-                Log.farm("庄园游戏[${gameType.gameName()}]任务列表包含无效任务项，保留下一轮重试")
-                return GameTaskHandlingResult.UNCONFIRMED
-            }
-            val status = task.optString("taskStatus")
-            val taskId = task.optString("taskId")
-            val awardType = task.optString("awardType")
-            when (status) {
-                TaskStatus.RECEIVED.name -> continue
-
-                TaskStatus.FINISHED.name -> {
-                    if (taskId.isBlank()) {
-                        Log.farm("庄园游戏[${gameType.gameName()}]待领奖任务缺少 taskId，保留下一轮重试")
-                        return GameTaskHandlingResult.UNCONFIRMED
-                    }
-                    if (awardType == "ALLPURPOSE" &&
-                        AntFarm.instance?.prepareFarmAwardCapacity(task.optInt("awardCount", 0)) != true
-                    ) {
-                        Log.farm("庄园游戏任务[$taskId]饲料容量不足，保留后续领取")
-                        return GameTaskHandlingResult.UNCONFIRMED
-                    }
-                    val awardResponse = JSONObject(AntFarmRpcCall.receiveFarmTaskAward(taskId, awardType))
-                    if (!ResChecker.checkRes(TAG, awardResponse)) {
-                        Log.farm("庄园游戏任务[$taskId]领奖失败: $awardResponse")
-                        return GameTaskHandlingResult.UNCONFIRMED
-                    }
-                    delay(3000)
-                    val refreshedTask =
-                        loadGameTasks(gameType)
-                            ?.let { refreshedTaskList -> findGameTaskById(refreshedTaskList, taskId) }
-                    if (refreshedTask?.optString("taskStatus") == TaskStatus.RECEIVED.name) {
-                        return GameTaskHandlingResult.CONFIRMED_PROGRESS
-                    }
-                    Log.farm("庄园游戏任务[$taskId]领奖 ACK 后状态未确认，当前轮不再重复领取")
-                    return GameTaskHandlingResult.UNCONFIRMED
-                }
-
-                TaskStatus.TODO.name -> {
-                    val bizKey = task.optString("bizKey")
-                    if (taskId.isBlank() || bizKey.isBlank()) {
-                        Log.farm("庄园游戏[${gameType.gameName()}]待完成任务缺少 taskId 或 bizKey，保留下一轮重试")
-                        return GameTaskHandlingResult.UNCONFIRMED
-                    }
-                    val outBizNo = "${bizKey}_${System.currentTimeMillis()}_${Integer.toHexString((Math.random() * 0xFFFFFF).toInt())}"
-                    val finishResponse =
-                        JSONObject(AntFarmRpcCall.finishTask(bizKey, "ANTFARM_GAME_TIMES_TASK", outBizNo))
-                    if (!ResChecker.checkRes(TAG, finishResponse)) {
-                        Log.farm("庄园游戏任务[$taskId]执行失败: $finishResponse")
-                        return GameTaskHandlingResult.UNCONFIRMED
-                    }
-                    delay(3000)
-                    val refreshedTask =
-                        loadGameTasks(gameType)
-                            ?.let { refreshedTaskList -> findGameTaskById(refreshedTaskList, taskId) }
-                    if (refreshedTask != null && hasConfirmedGameTaskProgress(task, refreshedTask)) {
-                        return GameTaskHandlingResult.CONFIRMED_PROGRESS
-                    }
-                    Log.farm("庄园游戏任务[$taskId]执行 ACK 但状态未推进，当前轮不再重复提交")
-                    return GameTaskHandlingResult.UNCONFIRMED
-                }
-
-                else -> {
-                    Log.farm("庄园游戏[${gameType.gameName()}]任务状态[$status]未确认，保留下一轮重试")
-                    return GameTaskHandlingResult.UNCONFIRMED
-                }
-            }
+        if (gameType != GameType.flyGame && gameType != GameType.hitGame) {
+            return GameTaskHandlingResult.NO_PENDING_TASK
         }
-        return GameTaskHandlingResult.NO_PENDING_TASK
+        val result = TaskFlowEngine(object : TaskFlowAdapter {
+            override val moduleName = "蚂蚁庄园"
+            override val flowName = "庄园游戏[${gameType.gameName()}]"
+            override fun query(): JSONObject = JSONObject().apply {
+                val tasks = loadGameTasks(gameType)
+                put("success", tasks != null)
+                if (tasks != null) put("farmTaskList", tasks)
+            }
+            override fun isQuerySuccess(response: JSONObject) = response.optBoolean("success")
+            override fun extractItems(response: JSONObject): List<TaskFlowItem> {
+                val tasks = response.getJSONArray("farmTaskList")
+                return (0 until tasks.length()).map { index ->
+                    val task = tasks.getJSONObject(index)
+                    TaskFlowItem(
+                        id = task.optString("taskId"), title = task.optString("title"),
+                        status = task.optString("taskStatus"), type = task.optString("bizKey"), raw = task,
+                        current = task.optInt("rightsTimes"), limit = task.optInt("rightsTimesLimit", 1),
+                        progress = "${task.optInt("alreadyReceiveStageAwardCount")}:${task.optInt("awardCount")}",
+                    )
+                }
+            }
+            override fun mapPhase(item: TaskFlowItem) = when {
+                item.id.isBlank() -> TaskFlowPhase.UNKNOWN
+                item.status == "FINISHED" -> TaskFlowPhase.REWARD_READY
+                item.status == "RECEIVED" -> TaskFlowPhase.TERMINAL
+                item.status == "TODO" && item.type.isNotBlank() -> TaskFlowPhase.READY_TO_COMPLETE
+                else -> TaskFlowPhase.UNKNOWN
+            }
+            override fun complete(item: TaskFlowItem): TaskFlowActionResult {
+                val response = JSONObject(AntFarmRpcCall.finishTask(
+                    item.type, "ANTFARM_GAME_TIMES_TASK", "${item.type}_${System.currentTimeMillis()}",
+                ))
+                if (ResChecker.checkRes(TAG, response)) return TaskFlowActionResult.success()
+                return TaskFlowActionResult.failure(
+                    AntFarm.instance?.classifyFarmRpcFailure(response) ?: TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                    code = response.optString("resultCode"), message = response.optString("memo"),
+                    raw = response.toString(), rpc = "finishTask", continueCurrentRoundOnFailure = true,
+                )
+            }
+            override fun receive(item: TaskFlowItem): TaskFlowActionResult {
+                val task = item.raw!!
+                val awardType = task.optString("awardType")
+                if (awardType == "ALLPURPOSE" &&
+                    AntFarm.instance?.prepareFarmAwardCapacity(task.optInt("awardCount")) != true
+                ) return TaskFlowActionResult.defer(DeferredReason.CAPACITY_LIMIT, message = "饲料容量不足")
+                val response = JSONObject(AntFarmRpcCall.receiveFarmTaskAward(item.id, awardType))
+                if (ResChecker.checkRes(TAG, response)) return TaskFlowActionResult.success()
+                return TaskFlowActionResult.failure(
+                    AntFarm.instance?.classifyFarmRpcFailure(response) ?: TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                    code = response.optString("resultCode"), message = response.optString("memo"),
+                    raw = response.toString(), rpc = "receiveFarmTaskAward", continueCurrentRoundOnFailure = true,
+                ).copy(refreshAfterAction = true)
+            }
+            override fun logInfo(message: String) = Log.farm(message)
+            override fun logError(message: String) = Log.error(TAG, message)
+        }, roundSleepMs = 300L).run()
+        return when {
+            !result.completed -> GameTaskHandlingResult.UNCONFIRMED
+            result.progressChanged -> GameTaskHandlingResult.CONFIRMED_PROGRESS
+            else -> GameTaskHandlingResult.NO_PENDING_TASK
+        }
     }
 
     private fun loadGameTasks(gameType: GameType): JSONArray? {
@@ -361,35 +362,6 @@ object FarmGame {
             Log.printStackTrace(TAG, "查询庄园游戏任务列表失败:", t)
             null
         }
-    }
-
-    private fun findGameTaskById(
-        farmTaskList: JSONArray,
-        taskId: String,
-    ): JSONObject? {
-        for (index in 0 until farmTaskList.length()) {
-            val task = farmTaskList.optJSONObject(index) ?: return null
-            if (task.optString("taskId") == taskId) {
-                return task
-            }
-        }
-        return null
-    }
-
-    private fun hasConfirmedGameTaskProgress(
-        before: JSONObject,
-        after: JSONObject,
-    ): Boolean {
-        when (after.optString("taskStatus")) {
-            TaskStatus.FINISHED.name,
-            TaskStatus.RECEIVED.name -> return true
-
-            TaskStatus.TODO.name -> Unit
-            else -> return false
-        }
-        val beforeTimes = (before.opt("rightsTimes") as? Number)?.toInt()
-        val afterTimes = (after.opt("rightsTimes") as? Number)?.toInt()
-        return beforeTimes != null && afterTimes != null && afterTimes > beforeTimes
     }
 
     internal suspend fun drawGameCenterAward() {
@@ -576,73 +548,104 @@ object FarmGame {
 
     private fun receiveLeyuanLimitedBenefitAwards() {
         try {
-            val attemptedTaskTypes = mutableSetOf<String>()
-            repeat(LEYUAN_LIMITED_TASK_TYPES.size + 1) {
-                val response = JSONObject(AntFarmRpcCall.queryOptionalPlay())
-                if (!ResChecker.checkRes(TAG, response)) {
-                    Log.farm("小鸡乐园限时福利查询失败: $response")
-                    return
+            TaskFlowEngine(object : TaskFlowAdapter {
+                override val moduleName = "AntFarm"
+                override val flowName = "小鸡乐园任务"
+                override val continueCurrentRoundOnRetryableFailure = true
+
+                override fun query() = JSONObject(AntFarmRpcCall.queryOptionalPlay())
+
+                override fun isQuerySuccess(response: JSONObject): Boolean =
+                    ResChecker.checkRes(TAG, response) &&
+                        response.optJSONObject("taskTriggerPlayInfo")?.optJSONArray("taskList") != null
+
+                override fun extractItems(response: JSONObject): List<TaskFlowItem> {
+                    val tasks = response.optJSONObject("taskTriggerPlayInfo")?.optJSONArray("taskList")
+                        ?: return emptyList()
+                    return (0 until tasks.length()).mapNotNull { index ->
+                        val task = tasks.optJSONObject(index) ?: return@mapNotNull null
+                        if (task.optString("sceneCode") != LEYUAN_DAILY_TASK_SCENE_CODE) return@mapNotNull null
+                        val bizInfo = task.optJSONObject("bizInfo")
+                        val taskType = task.optString("taskType")
+                        TaskFlowItem(
+                            id = taskType,
+                            title = bizInfo?.optString("title")?.takeIf { it.isNotBlank() } ?: taskType,
+                            status = task.optString("taskStatus"),
+                            sceneCode = task.optString("sceneCode"),
+                            actionType = bizInfo?.optString("actionType").orEmpty(),
+                            raw = task,
+                            current = task.optInt("rightsTimes", 0),
+                            limit = task.optInt("rightsTimesLimit", 0).takeIf { it > 0 },
+                            progress = "rights=${task.optInt("rightsTimes")}/${task.optInt("rightsTimesLimit")} received=${task.optInt("alreadyReceiveAwardCount")} total=${task.optInt("totalAwardCount")}",
+                        )
+                    }
                 }
 
-                val taskList =
-                    response
-                        .optJSONObject("taskTriggerPlayInfo")
-                        ?.optJSONArray("taskList")
-                        ?: return
-                val task = findNextLeyuanLimitedBenefitTask(taskList, attemptedTaskTypes) ?: return
-                val taskType = task.optString("taskType")
-                attemptedTaskTypes.add(taskType)
-
-                val title =
-                    task
-                        .optJSONObject("bizInfo")
-                        ?.optString("title")
-                        ?.takeIf { it.isNotBlank() }
-                        ?: taskType
-                if (taskType == LEYUAN_OPEN_BOX_TASK_TYPE && !hasOpenedEnoughGameCenterBoxes()) {
-                    Log.farm("小鸡乐园限时福利[$title]已完成但开箱数未确认达到${LEYUAN_OPEN_BOX_TARGET_COUNT}个，暂不领奖")
-                    return@repeat
+                override fun mapPhase(item: TaskFlowItem): TaskFlowPhase = when {
+                    item.id.isBlank() -> TaskFlowPhase.UNKNOWN
+                    else -> when (item.status) {
+                        "FINISHED" -> TaskFlowPhase.REWARD_READY
+                        "RECEIVED" -> if (item.actionType == "VIEW" && item.limit != null &&
+                            (item.current ?: 0) < item.limit) TaskFlowPhase.READY_TO_COMPLETE else TaskFlowPhase.TERMINAL
+                        "TODO" -> if (item.actionType == "VIEW") TaskFlowPhase.READY_TO_COMPLETE else TaskFlowPhase.BUSINESS_ACTION
+                        else -> TaskFlowPhase.UNKNOWN
+                    }
                 }
 
-                val sceneCode = task.optString("sceneCode")
-                val awardCount =
-                    task.optInt("awardCount").takeIf { it > 0 }
-                        ?: task.optInt("totalAwardCount").takeIf { it > 0 }
-                        ?: task.optInt("nextStageAwardCount").takeIf { it > 0 }
-                if (sceneCode.isBlank() || awardCount == null) {
-                    Log.farm("小鸡乐园限时福利[$title]跳过：缺少 sceneCode 或 awardCount | raw=$task")
-                    return@repeat
-                }
-
-                val awardResp =
-                    JSONObject(
-                        AntFarmRpcCall.receiveTaskAwardAntFarm(sceneCode, taskType, awardCount),
+                override fun complete(item: TaskFlowItem): TaskFlowActionResult {
+                    val response = JSONObject(AntFarmRpcCall.finishLeyuanTask(item.sceneCode, item.id))
+                    if (ResChecker.checkRes(TAG, response)) {
+                        Log.farm("小鸡乐园🧾[${item.title}]已提交，刷新任务领奖")
+                        return TaskFlowActionResult.success()
+                    }
+                    return TaskFlowActionResult.failure(
+                        failureType = if (response.optBoolean("retriable", response.optBoolean("canRetry", true)))
+                            TaskRpcFailureType.RETRYABLE_RPC else TaskRpcFailureType.NON_RETRYABLE_INVALID,
+                        code = response.optString("code"), message = response.optString("desc"),
+                        raw = response.toString(), rpc = "com.alipay.antieptask.finishTaskantfarm",
+                        continueCurrentRoundOnFailure = true,
                     )
-                if (ResChecker.checkRes(TAG, awardResp)) {
-                    Log.farm("小鸡乐园限时福利🎁[$title]#${awardCount}乐园币")
-                } else {
-                    Log.farm("小鸡乐园限时福利[$title]领取失败: $awardResp")
                 }
-            }
+
+                override fun receive(item: TaskFlowItem): TaskFlowActionResult {
+                    if (item.id == LEYUAN_OPEN_BOX_TASK_TYPE && !hasOpenedEnoughGameCenterBoxes()) {
+                        return TaskFlowActionResult.defer(
+                            DeferredReason.PREREQUISITE_PENDING,
+                            message = "开箱数未确认达到${LEYUAN_OPEN_BOX_TARGET_COUNT}个，保留待领取",
+                        )
+                    }
+                    val task = item.raw ?: JSONObject()
+                    val unreceived = task.optInt("totalAwardCount") - task.optInt("alreadyReceiveAwardCount")
+                    val awardCount = unreceived.takeIf { it > 0 }
+                        ?: task.optInt("awardCount").takeIf { it > 0 }
+                        ?: task.optInt("nextStageAwardCount").takeIf { it > 0 }
+                        ?: return TaskFlowActionResult.failure(
+                            TaskRpcFailureType.NON_RETRYABLE_INVALID, message = "缺少可领取奖励数量",
+                        )
+                    val response = JSONObject(AntFarmRpcCall.receiveTaskAwardAntFarm(item.sceneCode, item.id, awardCount))
+                    if (ResChecker.checkRes(TAG, response)) {
+                        Log.farm("小鸡乐园🎁[${item.title}]#${awardCount}乐园币")
+                        return TaskFlowActionResult.success()
+                    }
+                    return TaskFlowActionResult.failure(
+                        AntFarm.instance?.classifyFarmRpcFailure(response) ?: TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                        code = response.optString("resultCode").ifBlank { response.optString("code") },
+                        message = response.optString("memo").ifBlank { response.optString("desc") },
+                        raw = response.toString(), rpc = "com.alipay.antieptask.receiveTaskAwardantfarm",
+                        continueCurrentRoundOnFailure = true,
+                    ).copy(refreshAfterAction = true)
+                }
+
+                override fun onQueryFailed(response: JSONObject) {
+                    Log.error(TAG, "小鸡乐园任务查询失败:$response")
+                }
+
+                override fun logInfo(message: String) = Log.farm(message)
+                override fun logError(message: String) = Log.error(TAG, message)
+            }).run()
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "receiveLeyuanLimitedBenefitAwards err:", t)
         }
-    }
-
-    private fun findNextLeyuanLimitedBenefitTask(
-        taskList: JSONArray,
-        attemptedTaskTypes: Set<String>,
-    ): JSONObject? {
-        for (i in 0 until taskList.length()) {
-            val task = taskList.optJSONObject(i) ?: continue
-            val taskType = task.optString("taskType")
-            if (task.optString("sceneCode") != LEYUAN_DAILY_TASK_SCENE_CODE) continue
-            if (!LEYUAN_LIMITED_TASK_TYPES.contains(taskType)) continue
-            if (task.optString("taskStatus") != "FINISHED") continue
-            if (attemptedTaskTypes.contains(taskType)) continue
-            return task
-        }
-        return null
     }
 
     private fun hasOpenedEnoughGameCenterBoxes(): Boolean {

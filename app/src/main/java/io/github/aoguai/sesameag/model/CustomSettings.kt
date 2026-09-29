@@ -39,13 +39,13 @@ object CustomSettings {
     private fun getModuleList(): List<MapperEntity> {
         return listOf(
             SimpleEntity("antForest", "蚂蚁森林"),
+            SimpleEntity("antForestPatrol", "保护地巡护"),
             SimpleEntity("antFarm", "蚂蚁庄园"),
             SimpleEntity("antOcean", "海洋"),
             SimpleEntity("antOrchard", "农场"),
             SimpleEntity("goldenBeanTreasure", "金豆夺宝"),
             SimpleEntity("antStall", "新村"),
             SimpleEntity("antDodo", "神奇物种"),
-            SimpleEntity("antFishPond", "福气鱼池"),
             SimpleEntity("antCooperate", "蚂蚁森林合种"),
             SimpleEntity("antSports", "运动"),
             SimpleEntity("antMember", "会员"),
@@ -132,6 +132,7 @@ object CustomSettings {
     fun getModuleId(taskInfo: String?): String? {
         if (taskInfo == null) return null
         return when {
+            taskInfo == "保护地巡护" || taskInfo == "antForestPatrol" || taskInfo == "AntForestPatrol" -> "antForestPatrol"
             taskInfo.contains("合种") || taskInfo.contains("antCooperate") -> "antCooperate"
             taskInfo.contains("蚂蚁森林") || taskInfo.contains("antForest") -> "antForest"
             taskInfo.contains("蚂蚁庄园") || taskInfo.contains("antFarm") -> "antFarm"
@@ -140,7 +141,6 @@ object CustomSettings {
             taskInfo == "金豆夺宝" || taskInfo == "goldenBeanTreasure" -> "goldenBeanTreasure"
             taskInfo.contains("新村") || taskInfo.contains("antStall") -> "antStall"
             taskInfo.contains("神奇物种") || taskInfo.contains("antDodo") -> "antDodo"
-            taskInfo.contains("福气鱼池") || taskInfo.contains("antFishPond") -> "antFishPond"
             taskInfo.contains("运动") || taskInfo.contains("antSports") -> "antSports"
             taskInfo.contains("芝麻信用") || taskInfo.contains("antSesameCredit") -> "antSesameCredit"
             taskInfo.contains("会员") || taskInfo.contains("antMember") -> "antMember"

@@ -102,6 +102,10 @@ class MyFixRegressionTest {
         }
         MyUtils.checkRpcTodayIsError(farm)
         assertFalse(MyUtils.getRpcTodayIsError(farm))
+        io.github.aoguai.sesameag.hook.rpc.RpcDailyCircuit.apply {
+            markBlockedToday(captureIdentity(), farm.requestMethod)
+            assertFalse(isBlockedToday("account-1", farm.requestMethod))
+        }
         val prefs = context.getSharedPreferences("DailyCachePrefs_UID_account-1", Context.MODE_PRIVATE)
         prefs.edit().putString("global_last_saved_date", "20000101").commit()
         assertFalse(MyUtils.getRpcTodayIsError(request))
@@ -171,6 +175,14 @@ class MyFixRegressionTest {
             assertTrue(session.workflowAllowed)
         }
         UserMap.setCurrentUserId("account-1")
+        AccountSessionCoordinator.applySession(
+            context = null,
+            userId = "account-1",
+            activeUserSnapshot = io.github.aoguai.sesameag.entity.UserEntity.UserDto(userId = "account-1").toEntity(),
+            legalAccepted = true,
+            workflowAllowed = true,
+            reason = "myfix_regression",
+        )
         val rpc = RpcEntity("example.task.query", "[]").apply {
             responseString = """{"error":1009}"""
         }

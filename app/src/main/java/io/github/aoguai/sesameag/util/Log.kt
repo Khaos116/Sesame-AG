@@ -134,6 +134,14 @@ object Log {
     private fun logRaw(channel: LogChannel, severity: Severity, msg: String) {
         Logback.refreshIfCrossDay()
 
+        // 稳定的 Android 日志出口独立于文件通道开关，供早期故障回填。
+        if (severity == Severity.WARN || severity == Severity.ERROR) {
+            android.util.Log.println(
+                if (severity == Severity.ERROR) android.util.Log.ERROR else android.util.Log.WARN,
+                "SesameLog",
+                "module=${BuildConfig.APPLICATION_ID} $msg"
+            )
+        }
         if (!shouldWrite(channel)) {
             return
         }
@@ -236,6 +244,11 @@ object Log {
     }
 
     @JvmStatic
+    fun forestPatrol(msg: String) {
+        business(LogChannel.FOREST_PATROL, msg)
+    }
+
+    @JvmStatic
     fun orchard(msg: String) {
         business(LogChannel.ORCHARD, msg)
     }
@@ -284,11 +297,6 @@ object Log {
     @JvmStatic
     fun mybank(msg: String) {
         business(LogChannel.MYBANK, msg)
-    }
-
-    @JvmStatic
-    fun fishpond(msg: String) {
-        business(LogChannel.FISHPOND, msg)
     }
 
     @JvmStatic

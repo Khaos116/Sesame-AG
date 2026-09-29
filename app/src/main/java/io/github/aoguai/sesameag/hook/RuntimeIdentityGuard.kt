@@ -55,6 +55,7 @@ object RuntimeIdentityGuard {
     fun verifyModuleLoaded(applicationInfo: ApplicationInfo): RuntimeIdentityDecision {
         val packageName = applicationInfo.packageName.orEmpty()
         val sourceDir = applicationInfo.sourceDir.orEmpty()
+        val userId = androidUserId(applicationInfo.uid)
         val decision = when {
             packageName != General.MODULE_PACKAGE_NAME -> reject("module_package_mismatch")
             !isPrimaryOrUnassignedModuleUid(applicationInfo.uid) -> reject("module_non_primary_user")
@@ -63,6 +64,10 @@ object RuntimeIdentityGuard {
                 moduleSnapshot = ModuleSnapshot(applicationInfo.uid, sourceDir)
                 accept()
             }
+        }
+        if (!decision.accepted) {
+            android.util.Log.e("ApplicationHook", "module=${General.MODULE_PACKAGE_NAME} instance_rejected stage=module reason=${decision.reasonCode} " +
+                "package=$packageName uid=${applicationInfo.uid} user=$userId source=$sourceDir")
         }
         lastDecision = decision
         return decision
@@ -95,6 +100,13 @@ object RuntimeIdentityGuard {
                 accept()
             }
         }
+        if (!decision.accepted) {
+            android.util.Log.println(
+                if (decision.reasonCode == "target_unsupported_process") android.util.Log.INFO else android.util.Log.ERROR,
+                "ApplicationHook", "module=${General.MODULE_PACKAGE_NAME} instance_rejected stage=package reason=${decision.reasonCode} " +
+                "package=$packageName applicationPackage=$appPackageName uid=${applicationInfo.uid} user=$userId " +
+                "process=$targetProcessName applicationProcess=$appProcessName source=$sourceDir")
+        }
         lastDecision = decision
         return decision
     }
@@ -112,14 +124,17 @@ object RuntimeIdentityGuard {
         if (!verifyInstalledModulePackage) MyUtils.CHANGE_KT3
         val target = targetSnapshot ?: return rejectAndStore("target_identity_missing")
         val contextInfo = context.applicationInfo ?: return rejectAndStore("target_context_missing")
+        var metadataStep = "query_target"
         val decision = runCatching {
             val targetInfo = context.packageManager.getApplicationInfo(General.PACKAGE_NAME, 0)
             val moduleInfo =
                 if (verifyInstalledModulePackage) {
+                    metadataStep = "query_module"
                     context.packageManager.getApplicationInfo(General.MODULE_PACKAGE_NAME, 0)
                 } else {
                     null
                 }
+            metadataStep = "compare_identity"
             when {
                 context.packageName != General.PACKAGE_NAME -> reject("target_context_package_mismatch")
                 !matchesTargetIdentity(contextInfo, target) -> reject("target_context_mismatch")
@@ -139,8 +154,20 @@ object RuntimeIdentityGuard {
                     )
                     accept()
                 }
+            }.also { result ->
+                if (!result.accepted) {
+                    android.util.Log.e("ApplicationHook", "module=${General.MODULE_PACKAGE_NAME} instance_rejected stage=attach reason=${result.reasonCode} " +
+                        "modulePackage=${moduleInfo?.packageName} moduleUid=${moduleInfo?.uid} moduleUser=${moduleInfo?.uid?.let(::androidUserId)} moduleSource=${moduleInfo?.sourceDir} " +
+                        "targetPackage=${targetInfo.packageName} targetUid=${targetInfo.uid} targetUser=${androidUserId(targetInfo.uid)} targetSource=${targetInfo.sourceDir} " +
+                        "contextPackage=${context.packageName} contextUid=${contextInfo.uid} contextSource=${contextInfo.sourceDir}")
+                }
             }
-        }.getOrElse { reject("package_metadata_unavailable") }
+        }.getOrElse {
+            android.util.Log.e("ApplicationHook", "module=${General.MODULE_PACKAGE_NAME} package_metadata_unavailable step=$metadataStep " +
+                "context=${context.packageName} uid=${contextInfo.uid} source=${contextInfo.sourceDir} " +
+                "error=${it.javaClass.simpleName}", it)
+            reject("package_metadata_unavailable")
+        }
         lastDecision = decision
         return decision
     }
@@ -216,6 +243,11 @@ object RuntimeIdentityGuard {
     private fun accept(): RuntimeIdentityDecision = RuntimeIdentityDecision(true)
 
     private fun reject(reasonCode: String): RuntimeIdentityDecision {
+        android.util.Log.println(
+            if (reasonCode == "target_unsupported_process") android.util.Log.INFO else android.util.Log.WARN,
+            "ApplicationHook", "module=${General.MODULE_PACKAGE_NAME} instance_rejected reason=$reasonCode process=${Application.getProcessName()} " +
+            "runtimeUid=${android.os.Process.myUid()} moduleUid=${moduleSnapshot?.uid} targetUid=${targetSnapshot?.uid} " +
+            "moduleSource=${moduleSnapshot?.sourceDir} targetSource=${targetSnapshot?.sourceDir}")
         attachedIdentity = null
         return RuntimeIdentityDecision(false, reasonCode)
     }

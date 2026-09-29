@@ -251,6 +251,23 @@ object AntFarmRpcCall {
     }
 
     @JvmStatic
+    fun donationToLoveChickenProject(
+        projectId: String,
+        donationAmount: Int,
+    ): String {
+        val args = JSONObject().apply {
+            put("cele", 1)
+            put("donationAmount", donationAmount)
+            put("projectId", projectId)
+            put("requestType", "NORMAL")
+            put("sceneCode", "ANTFARM")
+            put("source", "H5")
+            put("version", VERSION)
+        }
+        return requestString("com.alipay.antfarm.donation", JSONArray().put(args).toString())
+    }
+
+    @JvmStatic
     fun listFarmTask(): String {
         val args1 =
             (
@@ -1226,6 +1243,20 @@ object AntFarmRpcCall {
         }
 
     @JvmStatic
+    fun finishLeyuanTask(sceneCode: String, taskType: String): String = requestString(
+        "com.alipay.antieptask.finishTaskantfarm",
+        JSONArray().put(
+            JSONObject()
+                .put("outBizNo", taskType + System.currentTimeMillis())
+                .put("requestType", "NORMAL")
+                .put("sceneCode", sceneCode)
+                .put("source", "antfarm")
+                .put("taskType", taskType)
+                .put("version", GAME_CENTER_VERSION),
+        ).toString(),
+    )
+
+    @JvmStatic
     fun receiveTaskAwardAntFarm(
         sceneCode: String,
         taskType: String,
@@ -1523,10 +1554,11 @@ object AntFarmRpcCall {
     }
 
     @JvmStatic
-    fun queryRecentFarmFood(queryNum: Int): String {
-        val args =
-            "[{\"queryNum\": " + queryNum + ",\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"H5\"}]"
-        return requestString("com.alipay.antfarm.queryRecentFarmFood", args)
+    fun queryRecentFarmFood(queryNum: Int, pageNo: Int? = null): String {
+        val args = JSONObject().put("requestType", "NORMAL").put("sceneCode", "ANTFARM").put("source", "H5")
+        if (pageNo == null) args.put("queryNum", queryNum)
+        else args.put("pageNo", pageNo).put("pageSize", 10)
+        return requestString("com.alipay.antfarm.queryRecentFarmFood", JSONArray().put(args).toString())
     }
 
     @JvmStatic
@@ -1818,6 +1850,71 @@ object AntFarmRpcCall {
                 put("version", VERSION)
             }
         return RequestManager.requestString("com.alipay.antfarm.enterDonationCompetitionRank", "[$args]")
+    }
+
+    @JvmStatic
+    fun participateCompetition(): String {
+        val args =
+            JSONObject().apply {
+                put("requestType", "NORMAL")
+                put("sceneCode", "ANTFARM")
+                put("source", "H5")
+                put("version", VERSION)
+            }
+        return RequestManager.requestString("com.alipay.antfarm.participateCompetition", "[$args]")
+    }
+
+    @JvmStatic
+    fun getAnnGift(): String {
+        val args =
+            JSONObject().apply {
+                put("requestType", "NORMAL")
+                put("sceneCode", "ANTFARM")
+                put("source", "H5")
+                put("version", VERSION)
+            }
+        return RequestManager.requestString("com.alipay.antfarm.getAnnGift", "[$args]")
+    }
+
+    @JvmStatic
+    fun listCompetitionTask(): String {
+        val args =
+            JSONObject().apply {
+                put("requestType", "NORMAL")
+                put("sceneCode", "ANTFARM")
+                put("source", "H5")
+                put("version", VERSION)
+            }
+        return RequestManager.requestString("com.alipay.antfarm.listCompetitionTask", "[$args]")
+    }
+
+    @JvmStatic
+    fun queryAllMemberRankInfo(): String {
+        val args =
+            JSONObject().apply {
+                put("requestType", "NORMAL")
+                put("sceneCode", "ANTFARM")
+                put("source", "H5")
+                put("version", VERSION)
+            }
+        return RequestManager.requestString("com.alipay.antfarm.queryAllMemberRankInfo", "[$args]")
+    }
+
+    @JvmStatic
+    fun queryPageRankInfo(
+        rankRoundId: String,
+        pageNo: Int,
+    ): String {
+        val args =
+            JSONObject().apply {
+                put("pageNo", pageNo)
+                put("rankRoundId", rankRoundId)
+                put("requestType", "NORMAL")
+                put("sceneCode", "ANTFARM")
+                put("source", "H5")
+                put("version", VERSION)
+            }
+        return RequestManager.requestString("com.alipay.antfarm.queryPageRankInfo", "[$args]")
     }
 
     @JvmStatic

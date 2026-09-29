@@ -12,8 +12,8 @@ import io.github.aoguai.sesameag.model.BaseModel
 import io.github.aoguai.sesameag.model.CustomSettings
 import io.github.aoguai.sesameag.model.Model
 import io.github.aoguai.sesameag.task.antFarm.AntFarm
-import io.github.aoguai.sesameag.task.antFishPond.AntFishPond
 import io.github.aoguai.sesameag.task.antForest.AntForest
+import io.github.aoguai.sesameag.task.antForestPatrol.AntForestPatrol
 import io.github.aoguai.sesameag.task.antMember.AntMember
 import io.github.aoguai.sesameag.task.antOcean.AntOcean
 import io.github.aoguai.sesameag.task.antOrchard.AntOrchard
@@ -314,6 +314,11 @@ class CoroutineTaskRunner(allModels: List<Model>) {
                 .takeIf { it.isNotEmpty() }
                 ?.let(::add)
 
+            // 巡护独立于森林启用状态，承接森林完成后的实际能量和动物状态。
+            takeBatch { it is AntForestPatrol }
+                .takeIf { it.isNotEmpty() }
+                ?.let(::add)
+
             // 4) 海洋尽量承接前面模块已完成的联动任务状态，减少碎片奖励漏领。
             takeBatch { it is AntOcean }
                 .takeIf { it.isNotEmpty() }
@@ -324,22 +329,17 @@ class CoroutineTaskRunner(allModels: List<Model>) {
                 .takeIf { it.isNotEmpty() }
                 ?.let(::add)
 
-            // 6) 福气鱼池保持独立玩法批次。
-            takeBatch { it is AntFishPond }
-                .takeIf { it.isNotEmpty() }
-                ?.let(::add)
-
-            // 7) 庄园尽量承接前面模块已完成的联动任务状态，减少碎片奖励漏领。
+            // 6) 庄园尽量承接前面模块已完成的联动任务状态，减少碎片奖励漏领。
             takeBatch { it is AntFarm }
                 .takeIf { it.isNotEmpty() }
                 ?.let(::add)
 
-            // 8) 会员与芝麻信用放在联动行为之后。
+            // 7) 会员与芝麻信用放在联动行为之后。
             takeBatch { it is AntMember || it is AntSesameCredit }
                 .takeIf { it.isNotEmpty() }
                 ?.let(::add)
 
-            // 9) 金豆夺宝最后处理农场肥料和芝麻炼金已确认的最新余额。
+            // 8) 金豆夺宝最后处理农场肥料和芝麻炼金已确认的最新余额。
             takeBatch { it is GoldenBeanTreasure }
                 .takeIf { it.isNotEmpty() }
                 ?.let(::add)

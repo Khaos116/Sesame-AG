@@ -764,6 +764,24 @@ class Status {
                 return
             }
 
+            setFlagTodayInternal(flag, retryTimes)
+        }
+
+        /**
+         * 写入 RPC 硬阻塞停止标识，允许在全局 offline 后持久化。
+         * 普通任务的完成标识仍受离线写入限制。
+         */
+        @JvmStatic
+        @JvmOverloads
+        fun setFlagTodayWhileOffline(flag: String, retryTimes: String? = null) {
+            if (!flag.startsWith(StatusFlags.FLAG_RPC_DAILY_RISK_STOP_PREFIX)) {
+                Log.record(TAG, "拒绝写入非 RPC 风控离线标识: $flag")
+                return
+            }
+            setFlagTodayInternal(flag, retryTimes)
+        }
+
+        private fun setFlagTodayInternal(flag: String, retryTimes: String?) {
             val (module, name) = parseFlag(flag)
             val flags = INSTANCE.moduleFlags.getOrPut(module) { HashMap() }
             val oldCount = flags[name] ?: 0

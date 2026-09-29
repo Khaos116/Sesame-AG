@@ -5,8 +5,9 @@ import io.github.aoguai.sesameag.hook.RequestManager
 import io.github.aoguai.sesameag.util.GameTask
 import org.json.JSONArray
 import org.json.JSONObject
+import org.json.JSONTokener
 
-/** Captured game-center contract used by task flows that only require play duration. */
+/** 游戏动作合同；任务所属模块负责完成、领奖和服务端终态回查。 */
 object GameCenterPlayRpcCall {
     private const val METHOD_SUBMIT_PLAY_DURATION =
         "com.alipay.gamecenteruprod.biz.rpc.v3.submitUserPlayDurationAction"
@@ -128,19 +129,23 @@ object GameCenterPlayRpcCall {
             objects.map { it.optString("gameTaskType") },
             urlParameters.valuesFor("gameTaskType"),
         )
-        val contract = resolveContractFrom(objects, urlParameters, gameAppId, source)
         val mappedTask = GameTask.fromAppId(gameAppId)
         val isGameTask = mappedTask != null ||
-            contract != null ||
-            gameTaskType.equals("shichang", ignoreCase = true) ||
+            gameTaskType.isNotBlank() ||
             hasP2eFloatingBallProtocol(objects) ||
+            urlParameters.valuesFor("gameAppId", "game_id").isNotEmpty() ||
             objects.any { objectValue ->
-                objectValue.optString("categorizationSecondLevel")
+                objectValue.optString("gameAppId").isNotBlank() ||
+                    objectValue.optString("game_id").isNotBlank() ||
+                    objectValue.optString("categorizationSecondLevel")
                     .equals("Game", ignoreCase = true) ||
                     objectValue.optJSONObject("taskCategorization")
                         ?.optString("categorizationSecondLevel")
                         ?.equals("Game", ignoreCase = true) == true
             }
+        val contract = if (isGameTask && (gameTaskType.isBlank() || gameTaskType.equals("shichang", ignoreCase = true))) {
+            resolveContractFrom(objects, urlParameters, gameAppId, source)
+        } else null
         return GameTaskDescriptor(
             roots = rootObjects,
             objects = objects,
@@ -160,12 +165,14 @@ object GameCenterPlayRpcCall {
         directFinishSupported: Boolean = false,
     ): TaskActionDecision {
         val descriptor = describeTask(*roots)
-        descriptor.mappedTask?.let { mappedTask ->
-            return TaskActionDecision(
-                action = TaskAction.LEGACY_EXTERNAL_REPORT,
-                mappedTask = mappedTask,
-                reason = "verified GameTask mapping",
-            )
+        if (descriptor.contract == null && !hasP2eFloatingBallProtocol(descriptor.objects)) {
+            descriptor.mappedTask?.let { mappedTask ->
+                return TaskActionDecision(
+                    action = TaskAction.LEGACY_EXTERNAL_REPORT,
+                    mappedTask = mappedTask,
+                    reason = "verified GameTask mapping",
+                )
+            }
         }
         if (!descriptor.isGameTask) {
             return TaskActionDecision(
@@ -197,7 +204,7 @@ object GameCenterPlayRpcCall {
         }
         return TaskActionDecision(
             action = TaskAction.DEFERRED,
-            reason = "game task has no verified completion contract",
+            reason = "game task has no direct, click, duration or supported business completion contract",
         )
     }
 
@@ -407,6 +414,8 @@ object GameCenterPlayRpcCall {
                 "taskDisplayConfig",
                 "floatBallConfig",
                 "task",
+                "taskInfo",
+                "taskBaseInfo",
                 "bizInfo",
                 "taskCategorization",
                 "categorizationParamModel",
@@ -422,22 +431,52 @@ object GameCenterPlayRpcCall {
 
     private fun collectTaskUrlParameters(objects: List<JSONObject>): Map<String, String> {
         val parameters = linkedMapOf<String, String>()
-        val queue = ArrayDeque<String>()
+        val queue = ArrayDeque<Pair<String, String?>>()
+        val nestedKeys = listOf("url", "sourceUrl", "schema", "query", "channelTaskPassThrough")
         objects.forEach { objectValue ->
-            listOf("targetUrl", "actionUrl", "jumpUrl", "pageUrl", "taskJumpUrl")
+            listOf("targetUrl", "actionUrl", "jumpUrl", "jumpLink", "pageUrl", "taskJumpUrl")
                 .map(objectValue::optString)
-                .filterTo(queue) { it.isNotBlank() }
+                .filter { it.isNotBlank() }
+                .forEach { queue.add(it to null) }
         }
-        val visited = linkedSetOf<String>()
+        val visited = linkedSetOf<Pair<String, String?>>()
         while (queue.isNotEmpty()) {
-            val url = queue.removeFirst()
-            if (!visited.add(url)) continue
-            val uri = runCatching { Uri.parse(url) }.getOrNull() ?: continue
-            uri.queryParameterNames.forEach { key ->
-                uri.getQueryParameter(key)?.takeIf { it.isNotBlank() }?.let { parameters[key] = it }
+            val entry = queue.removeFirst()
+            if (!visited.add(entry)) continue
+            val (value, parentKey) = entry
+            val json = if (value.startsWith("{") || value.startsWith("\"")) {
+                runCatching { JSONTokener(value).nextValue() }.getOrNull()
+            } else null
+            when (json) {
+                is String -> {
+                    queue.add(json to parentKey)
+                    continue
+                }
+                is JSONObject -> {
+                    if (parentKey != null) parameters[parentKey] = json.toString()
+                    json.keys().forEach { key ->
+                        if (!json.isNull(key)) {
+                            val parameter = json.get(key).toString()
+                            parameters[key] = parameter
+                            if (key in nestedKeys) queue.add(parameter to key)
+                        }
+                    }
+                    continue
+                }
             }
-            listOf("url", "sourceUrl", "schema").forEach { key ->
-                uri.getQueryParameter(key)?.takeIf { it.isNotBlank() }?.let(queue::add)
+            val uri = runCatching {
+                Uri.parse(if (parentKey == "query" && value.contains('=')) "?$value" else value)
+            }.getOrNull() ?: continue
+            if (uri.isHierarchical && !uri.encodedQuery.isNullOrBlank()) {
+                uri.queryParameterNames.forEach { key ->
+                    uri.getQueryParameter(key)?.takeIf { it.isNotBlank() }?.let { parameter ->
+                        parameters[key] = parameter
+                        if (key in nestedKeys) queue.add(parameter to key)
+                    }
+                }
+            } else {
+                val decoded = Uri.decode(value)
+                if (decoded != value) queue.add(decoded to parentKey)
             }
         }
         return parameters
@@ -520,7 +559,10 @@ object GameCenterPlayRpcCall {
         )
     }
 
-    fun submitP2eDurationForAck(contract: P2eFloatingBallContract): DurationBatchAck {
+    fun submitP2eDurationForAck(
+        contract: P2eFloatingBallContract,
+        playSource: String = contract.source,
+    ): DurationBatchAck {
         val totalSeconds = (contract.durationSeconds.toLong() + 1L)
             .coerceIn(1L, Int.MAX_VALUE.toLong())
             .toInt()
@@ -540,7 +582,7 @@ object GameCenterPlayRpcCall {
                 Contract(
                     gameAppId = contract.gameAppId,
                     playTime = chunk,
-                    source = contract.source,
+                    source = playSource,
                 )
             )
             acknowledgements += acknowledgement
@@ -974,6 +1016,11 @@ object GameCenterPlayRpcCall {
             .put("unityDeviceLevel", "high"),
     )
 
+    fun completeExternalBrowseTask(sceneId: String, sceneExtInfo: String): FloatingBallAck = requestAck(
+        "com.alipay.gamecenteruprod.biz.rpc.external.gamecenter.completeBrowseTask",
+        JSONObject().put("sceneId", sceneId).put("sceneExtInfo", sceneExtInfo),
+    )
+
     fun queryExternalRecommendGames(sceneId: String, source: String): FloatingBallAck = requestAck(
         "com.alipay.gamecenteruprod.biz.rpc.external.gamecenter.queryRecommendGames",
         JSONObject()
@@ -984,6 +1031,66 @@ object GameCenterPlayRpcCall {
             .put("topGameId", "")
             .put("deviceLevel", "high")
             .put("unityDeviceLevel", "high"),
+    )
+
+    fun queryGameCenterHome(
+        source: String,
+        trafficDriverId: String,
+        sourceTab: String = "index",
+    ): FloatingBallAck = requestAck(
+        "com.alipay.gamecenterhome.biz.rpc.queryHomePage",
+        JSONObject()
+            .put("source", source)
+            .put("sourceTab", sourceTab)
+            .put("trafficDriverId", trafficDriverId),
+    )
+
+    fun queryWalkMain(source: String, passThrough: String): FloatingBallAck = requestAck(
+        "com.alipay.gamecenteruprod.biz.rpc.walkgrid.queryWalkMain",
+        JSONObject()
+            .put("source", source)
+            .put("channelTaskPassThrough", passThrough),
+    )
+
+    fun consultGameFloatingBall(
+        gameId: String,
+        gameModuleId: String,
+        source: String,
+        trafficDriverId: String,
+    ): FloatingBallConsultAck {
+        val raw = requestRaw(
+            "com.alipay.gamecenteruprod.biz.rpc.floatingball.consult",
+            JSONObject()
+                .put("gameId", gameId)
+                .put("gameModuleId", gameModuleId)
+                .put("source", source)
+                .put("trafficDriverId", trafficDriverId),
+        )
+        val response = runCatching { JSONObject(raw) }.getOrNull()
+        return FloatingBallConsultAck(
+            raw = raw,
+            response = response,
+            timeSeconds = response?.let(::extractTimeSeconds)?.takeIf { it > 0 },
+            accepted = response?.let(::isAccepted) == true,
+            failureType = classifyResponse(raw, response),
+        )
+    }
+
+    fun completeGameFloatingBall(
+        gameId: String,
+        gameModuleId: String,
+        source: String,
+        trafficDriverId: String,
+        floatingBallTypeList: JSONArray,
+    ): FloatingBallAck = requestAck(
+        "com.alipay.gamecenteruprod.biz.rpc.floatingball.complete",
+        JSONObject()
+            .put("gameId", gameId)
+            .put("gameModuleId", gameModuleId)
+            .put("source", source)
+            .put("oriChInfo", source)
+            .put("trafficDriverId", trafficDriverId)
+            .put("floatingBallTypeList", floatingBallTypeList),
     )
 
     fun consultFloatingBall(
@@ -1083,7 +1190,7 @@ object GameCenterPlayRpcCall {
             val response = JSONObject(raw)
             when {
                 response.optBoolean("success") || response.optBoolean("isSuccess") -> TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW
-                response.optString("resultCode") == "400000040" -> TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE
+                response.optString("resultCode") == "400000040" -> TaskRpcFailureType.NON_RETRYABLE_INVALID
                 response.optBoolean("retryable") || response.optBoolean("retriable") -> TaskRpcFailureType.RETRYABLE_RPC
                 response.optString("resultCode") == "OP_REPEAT_CHECK" -> TaskRpcFailureType.RETRYABLE_RPC
                 else -> TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW

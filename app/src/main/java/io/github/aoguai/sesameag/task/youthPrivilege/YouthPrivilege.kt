@@ -57,6 +57,7 @@ class YouthPrivilege : ModelTask() {
     private var checkIn: BooleanModelField? = null
     private var forestProps: BooleanModelField? = null
     private var youthTasks: BooleanModelField? = null
+    private var multiDraws: BooleanModelField? = null
 
     override fun getName(): String = "青春特权"
 
@@ -81,6 +82,11 @@ class YouthPrivilege : ModelTask() {
                     .withDesc("按服务端下发状态完成青春特权任务并在每步后回查。")
                     .also { youthTasks = it },
             )
+            addField(
+                BooleanModelField("youthPrivilegeMultiDraws", "青春特权 | 青春豆十连抽", false)
+                    .withDesc("消耗服务端显示的青春豆成本执行十连抽，受余额和每周额度限制。")
+                    .also { multiDraws = it },
+            )
         }
 
     override suspend fun runSuspend() {
@@ -94,11 +100,81 @@ class YouthPrivilege : ModelTask() {
             }
             if (youthTasks?.value == true) {
                 TaskFlowEngine(YouthTaskFlowAdapter(), roundSleepMs = 800L).run()
+                claimTrialPrize()
+                TaskFlowEngine(MonthlyPrivilegeAdapter(), roundSleepMs = 0L).run()
+            }
+            if (multiDraws?.value == true) {
+                handleMultiDraws()
             }
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "青春特权执行异常", t)
         } finally {
             Log.youthPrivilege("青春特权执行结束")
+        }
+    }
+
+    private fun handleMultiDraws() {
+        val store = io.github.aoguai.sesameag.util.UserDataStoreManager.getCurrentInstance() ?: return
+        val pendingKey = "youthMultiDraws:2026-09-30:pending"
+        if (io.github.aoguai.sesameag.hook.ApplicationHookConstants.isOffline()) return
+        val index = JSONObject(YouthPrivilegeRpcCall.queryLotteryIndex())
+        if (!isYouthSuccess(index)) {
+            Log.error(TAG, "青春豆十连抽首页查询失败:$index")
+            return
+        }
+        val status = index.optString("multiDrawsLotteryStatus")
+        if (status == "LIMIT") {
+            store.removePersistentFlag(pendingKey)
+            Log.youthPrivilege("青春豆十连抽额度已用完，当前余额#${index.optString("totalAmount")}")
+            return
+        }
+        if (status != "DRAW") {
+            Log.youthPrivilege("青春豆十连抽当前不可执行#status=$status raw=$index")
+            return
+        }
+        if (store.hasPersistentFlag(pendingKey)) {
+            Log.youthPrivilege("青春豆十连抽已有请求待确认，仅回查额度，暂不再次消费")
+            return
+        }
+        val cost = index.optString("multiDrawsCost").toBigDecimalOrNull()
+        val balance = index.optString("totalAmount").toBigDecimalOrNull()
+        if (cost == null || balance == null || cost.signum() <= 0 || balance.signum() < 0) {
+            Log.error(TAG, "青春豆十连抽缺少有效成本或余额:$index")
+            return
+        }
+        if (balance < cost) {
+            Log.youthPrivilege("青春豆十连抽余额不足#余额=$balance 成本=$cost")
+            return
+        }
+        if (io.github.aoguai.sesameag.hook.ApplicationHookConstants.isOffline()) return
+        // 付费动作没有抓到幂等键；请求结果不确定时保留待确认，避免再次扣除青春豆。
+        store.setPersistentFlag(pendingKey, -1L)
+        val result = try {
+            JSONObject(YouthPrivilegeRpcCall.multiDrawsLottery())
+        } catch (t: Throwable) {
+            Log.printStackTrace(TAG, "青春豆十连抽响应异常，保留回查", t)
+            null
+        }
+        if (result != null && isYouthSuccess(result)) {
+            val prizes = result.optJSONArray("lotteryPrizeInfoList")
+            if (prizes == null) Log.error(TAG, "青春豆十连抽响应缺少实际奖励列表:$result")
+            for (indexInPrizes in 0 until (prizes?.length() ?: 0)) {
+                val prize = prizes?.optJSONObject(indexInPrizes) ?: continue
+                Log.youthPrivilege("青春豆十连抽🎁[${prize.optString("title")}] ${prize.optString("subTitle")}")
+            }
+        } else if (result != null) {
+            Log.error(TAG, "青春豆十连抽失败，不立即重试:$result")
+        }
+        val confirmed = JSONObject(YouthPrivilegeRpcCall.queryLotteryIndex())
+        if (!isYouthSuccess(confirmed)) {
+            Log.error(TAG, "青春豆十连抽回查失败，保留待确认:$confirmed")
+            return
+        }
+        if (confirmed.optString("multiDrawsLotteryStatus") == "LIMIT") {
+            store.removePersistentFlag(pendingKey)
+            Log.youthPrivilege("青春豆十连抽额度已确认消耗，剩余余额#${confirmed.optString("totalAmount")}")
+        } else {
+            Log.error(TAG, "青春豆十连抽额度尚未确认变化，不重复抽取:$confirmed")
         }
     }
 
@@ -250,6 +326,7 @@ class YouthPrivilege : ModelTask() {
     private inner class YouthTaskFlowAdapter : TaskFlowAdapter {
         private val loggedUnsupportedTaskCodes = mutableSetOf<String>()
 
+        override val continueCurrentRoundOnRetryableFailure: Boolean = true
         override val moduleName: String = getName()
         override val flowName: String = "青春特权任务"
 
@@ -258,7 +335,7 @@ class YouthPrivilege : ModelTask() {
         override fun isQuerySuccess(response: JSONObject): Boolean = isYouthSuccess(response)
 
         override fun extractItems(response: JSONObject): List<TaskFlowItem> {
-            val module = response.optJSONObject("studentTaskModule") ?: return emptyList()
+            val module = response.optJSONObject("studentTaskModule") ?: JSONObject()
             val rawTasks = linkedMapOf<String, JSONObject>()
             fun appendTask(task: JSONObject?) {
                 val safeTask = task ?: return
@@ -274,15 +351,20 @@ class YouthPrivilege : ModelTask() {
             val groups = module.optJSONArray("taskGroupList")
             if (groups != null) {
                 for (groupIndex in 0 until groups.length()) {
-                    val taskList = groups.optJSONObject(groupIndex)?.optJSONArray("taskList") ?: continue
+                    val group = groups.optJSONObject(groupIndex) ?: continue
+                    val taskList = group.optJSONArray("taskList") ?: continue
                     for (taskIndex in 0 until taskList.length()) {
-                        appendTask(taskList.optJSONObject(taskIndex))
+                        val task = taskList.optJSONObject(taskIndex) ?: continue
+                        for (key in listOf("currentCount", "totalCount")) {
+                            if (!task.has(key) && group.has(key)) task.put(key, group.get(key))
+                        }
+                        appendTask(task)
                     }
                 }
             }
             appendTask(module.optJSONObject("checkInRecommendTask"))
 
-            return rawTasks.values.map { task ->
+            val items = rawTasks.values.map { task ->
                 TaskFlowItem(
                     id = task.optString("taskCode"),
                     title = task.optString("taskName").ifBlank { task.optString("taskCode") },
@@ -295,11 +377,21 @@ class YouthPrivilege : ModelTask() {
                     current = task.optIntOrNull("currentCount"),
                     limit = task.optIntOrNull("totalCount"),
                 )
+            }.toMutableList()
+            response.optJSONObject("feedsTaskVO")?.let { feeds ->
+                items.add(TaskFlowItem(
+                    id = "DO_FEEDS_TASK", title = "滑动浏览15秒", status = feeds.optString("feedsTaskStatus"),
+                    type = "FEEDS", raw = feeds,
+                    progress = "${feeds.optString("feedsTaskStatus")}:${response.optString("taskFlowInAmountInfo")}",
+                ))
             }
+            return items
         }
 
         override fun mapPhase(item: TaskFlowItem): TaskFlowPhase =
             when {
+                item.type == "FEEDS" && item.status == "FINISH" -> TaskFlowPhase.TERMINAL
+                item.type == "FEEDS" && item.status == STATUS_PROCESSING -> TaskFlowPhase.SIGNUP_COMPLETE
                 item.status == STATUS_COMPLETE || item.actionType == ACTION_DO_NOTHING -> TaskFlowPhase.TERMINAL
                 item.type != TASK_TYPE_BROWSER -> TaskFlowPhase.UNKNOWN
                 item.status == STATUS_PROCESSING || item.actionType == ACTION_COMPLETE -> TaskFlowPhase.SIGNUP_COMPLETE
@@ -310,7 +402,7 @@ class YouthPrivilege : ModelTask() {
         override fun isFlowHandledToday(): Boolean = false
 
         override fun shouldSkip(item: TaskFlowItem): Boolean {
-            if (item.type.isBlank() || item.type == TASK_TYPE_BROWSER) {
+            if (item.type.isBlank() || item.type == TASK_TYPE_BROWSER || item.type == "FEEDS") {
                 return false
             }
             if (loggedUnsupportedTaskCodes.add(item.id)) {
@@ -331,10 +423,19 @@ class YouthPrivilege : ModelTask() {
                 YouthPrivilegeRpcCall.taskSignUp(taskCode, taskSource, taskType)
             }
 
-        override fun send(item: TaskFlowItem): TaskFlowActionResult =
-            executeTaskAction(item, "taskComplete") { taskCode, taskSource, taskType ->
+        override fun send(item: TaskFlowItem): TaskFlowActionResult {
+            if (item.type == "FEEDS") {
+                val response = JSONObject(YouthPrivilegeRpcCall.triggerFeedsPrize())
+                if (!isYouthSuccess(response)) return TaskFlowActionResult.failure(
+                    TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW, code = response.optString("resultCode"),
+                    message = response.optString("resultDesc"), rpc = "student.triggerPointPrize", raw = response.toString(),
+                )
+                return TaskFlowActionResult.success(refreshAfterAction = true, progressChanged = false)
+            }
+            return executeTaskAction(item, "taskComplete") { taskCode, taskSource, taskType ->
                 YouthPrivilegeRpcCall.taskComplete(taskCode, taskSource, taskType)
             }
+        }
 
         private fun executeTaskAction(
             item: TaskFlowItem,
@@ -400,6 +501,145 @@ class YouthPrivilege : ModelTask() {
         override fun logError(message: String) {
             Log.error(TAG, message)
         }
+    }
+
+    private fun claimTrialPrize() {
+        try {
+            val store = io.github.aoguai.sesameag.util.UserDataStoreManager.getCurrentInstance() ?: return
+            val pending = store.getOrCreate<MutableMap<String, String>>("youthTrialPrizePending")
+            val period = java.time.LocalDate.now(java.time.ZoneId.of("Asia/Shanghai")).toString()
+            fun queryAwards(month: Boolean): List<JSONObject>? {
+                val awards = mutableListOf<JSONObject>()
+                val response = JSONObject(YouthPrivilegeRpcCall.queryTrialPrizes(month))
+                val list = response.optJSONArray("result")
+                if (!response.optBoolean("success") || list == null) {
+                    Log.error(TAG, "青春体验金查询失败 month=$month raw=$response")
+                    return null
+                }
+                for (index in 0 until list.length()) list.optJSONObject(index)?.let(awards::add)
+                return awards.distinctBy { it.optString("sendOrderId") }
+            }
+            fun confirmed(award: JSONObject): Boolean =
+                award.optString("sendStatus") == "SUCCESS" &&
+                    award.optString("sendOrderId").isNotBlank() &&
+                    award.optJSONArray("voucherInfo")?.let { vouchers ->
+                        (0 until vouchers.length()).any { vouchers.optJSONObject(it)?.optString("voucher_id")?.isNotBlank() == true }
+                    } == true
+            val beforeDaily = queryAwards(month = false) ?: return
+            val beforeMonthly = queryAwards(month = true)
+            val expected = pending[period]?.let { JSONArray(it) }
+            val expectedIds = (0 until (expected?.length() ?: 0))
+                .map { expected!!.getString(it) }.filter { it.isNotBlank() }.distinct()
+            if (expectedIds.isNotEmpty()) {
+                val confirmedOrders = (beforeDaily + beforeMonthly.orEmpty()).filter(::confirmed)
+                val unresolvedIds = expectedIds.filterNot { id -> confirmedOrders.any { it.optString("sendOrderId") == id } }
+                if (unresolvedIds.isNotEmpty()) {
+                    pending[period] = JSONArray(unresolvedIds).toString()
+                    store.put("youthTrialPrizePending", pending)
+                    Log.youthPrivilege("青春体验金已有绑定订单待确认，继续回查同订单与券状态#${unresolvedIds.joinToString()}")
+                    return
+                }
+                pending.remove(period)
+                store.put("youthTrialPrizePending", pending)
+            }
+            val received = beforeDaily.filter(::confirmed)
+            if (received.isNotEmpty()) {
+                pending.remove(period)
+                store.put("youthTrialPrizePending", pending)
+                Log.youthPrivilege("青春体验金当日发放已确认#${received.joinToString { "订单=${it.optString("sendOrderId")} 券状态=${it.optString("finEquityStatus")}" }}")
+                return
+            }
+            if (beforeDaily.isNotEmpty()) {
+                Log.youthPrivilege("青春体验金当日已有订单但券状态未确认，保留后续查询")
+                return
+            }
+            pending[period] = "[]"
+            store.put("youthTrialPrizePending", pending)
+            val response = JSONObject(YouthPrivilegeRpcCall.triggerTrialPrize())
+            val results = response.optJSONArray("result")
+            val ids = JSONArray()
+            for (index in 0 until (results?.length() ?: 0)) {
+                results?.optJSONObject(index)?.optString("sendOrderId")?.takeIf { it.isNotBlank() }?.let(ids::put)
+            }
+            pending[period] = ids.toString()
+            store.put("youthTrialPrizePending", pending)
+            if (!response.optBoolean("success")) {
+                val retryMessage = if (response.has("needRetry") && !response.isNull("needRetry") && !response.optBoolean("needRetry")) {
+                    "服务端标记不重试，本轮仅回查"
+                } else {
+                    "本轮不重复触发，保留后续查询"
+                }
+                Log.error(TAG, "青春体验金领取失败，$retryMessage code=${response.optString("resultCode")} needRetry=${response.opt("needRetry")} raw=$response")
+            }
+            val afterDaily = queryAwards(month = false)
+            val afterMonthly = queryAwards(month = true)
+            val confirmedDaily = afterDaily?.filter(::confirmed).orEmpty()
+            val confirmedOrders = confirmedDaily + afterMonthly?.filter(::confirmed).orEmpty()
+            val orderIds = (0 until ids.length()).map { ids.getString(it) }.distinct()
+            val unresolvedIds = orderIds.filterNot { id -> confirmedOrders.any { it.optString("sendOrderId") == id } }
+            if ((orderIds.isNotEmpty() && unresolvedIds.isEmpty()) ||
+                (orderIds.isEmpty() && confirmedDaily.isNotEmpty())
+            ) {
+                pending.remove(period)
+                store.put("youthTrialPrizePending", pending)
+            } else if (unresolvedIds.isNotEmpty()) {
+                pending[period] = JSONArray(unresolvedIds).toString()
+                store.put("youthTrialPrizePending", pending)
+                Log.youthPrivilege("青春体验金绑定订单尚未全部确认#${unresolvedIds.joinToString()}")
+            }
+            if (confirmedDaily.isNotEmpty()) {
+                Log.youthPrivilege("青春体验金当日发放确认#${confirmedDaily.joinToString { "订单=${it.optString("sendOrderId")} 金额=${it.optString("amount")} 券状态=${it.optString("finEquityStatus")}" }}")
+            } else {
+                Log.youthPrivilege("青春体验金当日到账未确认，月奖励不代替日奖励，保留后续查询")
+            }
+        } catch (t: Throwable) {
+            Log.printStackTrace(TAG, "青春体验金处理异常", t)
+        }
+    }
+
+    private inner class MonthlyPrivilegeAdapter : TaskFlowAdapter {
+        override val moduleName: String = getName()
+        override val flowName: String = "青春每月理财福利"
+        override fun query(): JSONObject = JSONObject(YouthPrivilegeRpcCall.queryYouth100())
+        override fun isQuerySuccess(response: JSONObject): Boolean = isYouthSuccess(response)
+        override fun extractItems(response: JSONObject): List<TaskFlowItem> {
+            val items = mutableListOf<TaskFlowItem>()
+            val feeds = response.optJSONArray("feeds") ?: return items
+            for (feedIndex in 0 until feeds.length()) {
+                val modules = feeds.optJSONObject(feedIndex)?.optJSONArray("modules") ?: continue
+                for (moduleIndex in 0 until modules.length()) {
+                    val module = modules.optJSONObject(moduleIndex) ?: continue
+                    val moduleId = module.optString("moduleId")
+                    if (moduleId != "FIN_MONTHLY") continue
+                    val entries = module.optJSONArray("items") ?: continue
+                    for (index in 0 until entries.length()) {
+                        val entry = entries.optJSONObject(index) ?: continue
+                        val id = entry.optString("privilegeId")
+                        if (id.isBlank()) continue
+                        val status = entry.optString("cardStatus")
+                        items.add(TaskFlowItem(id = id, title = entry.optString("title", id), status = status,
+                            sceneCode = moduleId, actionType = entry.optJSONObject("actionButton")?.optString("actionType").orEmpty(), raw = entry))
+                    }
+                }
+            }
+            return items
+        }
+        override fun mapPhase(item: TaskFlowItem): TaskFlowPhase = when {
+            item.status == "COOLDOWN" || item.status == STATUS_RECEIVED -> TaskFlowPhase.TERMINAL
+            item.status == "AVAILABLE" && item.actionType == "CLAIM" -> TaskFlowPhase.REWARD_READY
+            else -> TaskFlowPhase.UNKNOWN
+        }
+        override fun receive(item: TaskFlowItem): TaskFlowActionResult {
+            val response = JSONObject(YouthPrivilegeRpcCall.receiveMonthlyPrivilege(item.id, item.sceneCode))
+            if (!isYouthSuccess(response)) return TaskFlowActionResult.failure(
+                TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW, code = response.optString("resultCode"),
+                message = response.optString("resultMessage"), rpc = "youth100.privilege.receive", raw = response.toString(),
+            )
+            return TaskFlowActionResult.success(refreshAfterAction = true, progressChanged = false)
+        }
+        override fun onQueryFailed(response: JSONObject) { Log.error(TAG, "青春每月权益查询失败 raw=$response") }
+        override fun logInfo(message: String) { Log.youthPrivilege(message) }
+        override fun logError(message: String) { Log.error(TAG, message) }
     }
 
     private fun unsupported(

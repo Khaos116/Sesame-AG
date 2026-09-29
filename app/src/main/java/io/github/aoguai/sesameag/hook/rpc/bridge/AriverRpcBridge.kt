@@ -2,6 +2,9 @@ package io.github.aoguai.sesameag.hook.rpc.bridge
 
 import io.github.aoguai.sesameag.data.General
 import io.github.aoguai.sesameag.entity.RpcEntity
+import io.github.aoguai.sesameag.hook.RpcFallbackJsonFactory
+import io.github.aoguai.sesameag.hook.rpc.RpcDailyCircuit
+import org.json.JSONObject
 import io.github.aoguai.sesameag.hook.rpc.capture.RpcTrafficCapture
 import io.github.aoguai.sesameag.hook.rpc.intervallimit.RpcIntervalLimit
 import io.github.aoguai.sesameag.model.BaseModel
@@ -14,7 +17,6 @@ import io.github.aoguai.sesameag.util.RandomUtil
 import io.github.aoguai.sesameag.util.RpcOfflineRisk
 import io.github.aoguai.sesameag.util.TimeUtil
 import io.github.aoguai.sesameag.util.WorkflowRootGuard
-import io.github.aoguai.sesameag.util.maps.UserMap
 import java.lang.reflect.Method
 import java.lang.reflect.Proxy
 import java.util.concurrent.ConcurrentHashMap
@@ -206,9 +208,6 @@ class AriverRpcBridge : RpcBridge {
     private fun handleAuthLikeError(
         rpcEntity: RpcEntity,
         methodName: String?,
-        statusText: String,
-        notifyTitle: String,
-        response: String?,
         reason: String,
         offlineDetail: String = reason,
         count: Int,
@@ -216,18 +215,7 @@ class AriverRpcBridge : RpcBridge {
         maxErrorCount.set(0)
         val wasOffline = io.github.aoguai.sesameag.hook.ApplicationHookConstants.offline
         val cooldownMs = offlineCooldownMs()
-        if (!wasOffline) {
-            Notify.updateRunningStatus(statusText)
-            if (BaseModel.errNotify.value == true &&
-                shouldNotifyNow(lastErrorNotifyAtMs, errorNotifyIntervalMs)
-            ) {
-                Notify.sendAlert(
-                    "${TimeUtil.getTimeStr()} | $notifyTitle",
-                    response.orEmpty(),
-                )
-            }
-        }
-
+        // 常驻标题与离线告警统一由 enterOffline 单点驱动，此处不再重复设置/发送
         if (!wasOffline) {
             io.github.aoguai.sesameag.hook.ApplicationHookConstants.enterOffline(
                 cooldownMs,
@@ -355,7 +343,19 @@ class AriverRpcBridge : RpcBridge {
         tryCount: Int,
         retryInterval: Int,
     ): RpcEntity? {
-        val requestUserId = UserMap.currentUid
+        val identity = rpcEntity.requestIdentity ?: RpcDailyCircuit.captureIdentity().also {
+            rpcEntity.requestIdentity = it
+        }
+        val requestUserId = identity.userId
+        if (!RpcDailyCircuit.isCurrent(identity)) {
+            rpcEntity.settingsRefresh?.failed = true
+            return null
+        }
+        if (rpcEntity.settingsRefresh == null && RpcDailyCircuit.isBlockedToday(identity.userId, rpcEntity.requestMethod)) {
+            rpcEntity.setResponseObject(null, RpcFallbackJsonFactory.buildDailyRiskStop(rpcEntity.requestMethod))
+            rpcEntity.setError()
+            return rpcEntity
+        }
         if (!WorkflowRootGuard.isExecutionAllowed()) {
             Log.record(TAG, "必需权限或使用协议未就绪，已拒绝 RPC 请求")
             return null
@@ -380,6 +380,7 @@ class AriverRpcBridge : RpcBridge {
         var captureNote: String? = null
         var captureAttemptId: String? = null
         var captureAttemptResponseRecorded = false
+        var hardBlocked = false
 
         if (captureModuleTraffic) {
             RpcTrafficCapture.recordModuleRequest(captureMethodName, rpcEntity.requestData, captureRequestId!!)
@@ -446,11 +447,27 @@ class AriverRpcBridge : RpcBridge {
                         )
                     }
                     RpcIntervalLimit.enterIntervalLimit(requestMethod)
-                    if (UserMap.currentUid != requestUserId || !WorkflowRootGuard.isExecutionAllowed()) {
+                    if (!RpcDailyCircuit.isCurrent(identity)) {
+                        rpcEntity.settingsRefresh?.failed = true
+                        return null
+                    }
+                    if (rpcEntity.settingsRefresh == null && RpcDailyCircuit.isBlockedToday(identity.userId, requestMethod)) {
+                        captureNote = "blocked_by_daily_risk_stop"
+                        rpcEntity.setResponseObject(null, RpcFallbackJsonFactory.buildDailyRiskStop(requestMethod))
+                        rpcEntity.setError()
+                        return rpcEntity
+                    }
+                    if (io.github.aoguai.sesameag.hook.ApplicationHookConstants.shouldBlockRpc()) {
+                        rpcEntity.settingsRefresh?.failed = true
+                        captureNote = "blocked_by_offline"
+                        return null
+                    }
+                    if (!WorkflowRootGuard.isExecutionAllowed()) {
                         captureNote = "blocked_by_execution_prerequisites"
                         return null
                     }
                     val finalLocalBridgeCallbackClazzArray = localBridgeCallbackClazzArray
+                    rpcEntity.settingsRefresh?.recordMethod(requestMethod)
                     localRpcCallMethod.invoke(
                         localRpcBridgeExtensionInstance,
                         rpcEntity.requestMethod,
@@ -572,12 +589,33 @@ class AriverRpcBridge : RpcBridge {
                     )
 
                     if (!rpcEntity.hasResult) {
+                        rpcEntity.settingsRefresh?.failed = true
                         logNullResponse(rpcEntity, "无响应结果", count)
                         if (count < normalizedTryCount) {
                             CoroutineUtils.sleepCompat(computeRetryDelayMs(retryInterval, count))
                             continue@requestLoop
                         }
                         return null
+                    }
+
+                    if (!RpcDailyCircuit.isCurrent(identity)) {
+                        rpcEntity.settingsRefresh?.failed = true
+                        return null
+                    }
+                    val rawResponse = JSONObject(rpcEntity.responseString.orEmpty())
+                    rpcEntity.settingsRefresh?.observeResponse(rawResponse)
+                    if (RpcOfflineRisk.isHardBlocked(rawResponse)) {
+                        hardBlocked = true
+                        RpcDailyCircuit.markBlockedToday(identity, requestMethod)
+                        rpcEntity.setError()
+                        val code = RpcOfflineRisk.extractCode(rawResponse)
+                        val message = RpcOfflineRisk.extractMessage(rawResponse)
+                        handleAuthLikeError(
+                            rpcEntity, requestMethod, "硬阻塞: $code/$message",
+                            buildOfflineDetail(requestMethod, code, message, "访问受限"), count,
+                        )
+                        // 保留本次真实响应，不依赖随后 I07 包装中的全局历史来源。
+                        return rpcEntity
                     }
 
                     if (!rpcEntity.hasError) {
@@ -599,9 +637,6 @@ class AriverRpcBridge : RpcBridge {
                             return handleAuthLikeError(
                                 rpcEntity = rpcEntity,
                                 methodName = methodName,
-                                statusText = "检测到访问受限，已进入离线模式",
-                                notifyTitle = "检测到访问受限，已进入离线模式",
-                                response = response,
                                 reason = "访问受限: $errorCode/$errorMessage",
                                 offlineDetail = buildOfflineDetail(methodName, errorCode, errorMessage, "访问受限"),
                                 count = count,
@@ -612,9 +647,6 @@ class AriverRpcBridge : RpcBridge {
                             return handleAuthLikeError(
                                 rpcEntity = rpcEntity,
                                 methodName = methodName,
-                                statusText = "登录超时",
-                                notifyTitle = "登录超时",
-                                response = response,
                                 reason = "登录超时: $errorCode/$errorMessage",
                                 count = count,
                             )
@@ -631,22 +663,17 @@ class AriverRpcBridge : RpcBridge {
                             if (!io.github.aoguai.sesameag.hook.ApplicationHookConstants.offline) {
                                 var enteredOffline = false
                                 if (currentErrorCount > maxErrorThreshold) {
+                                    // 常驻标题与告警统一由 enterOffline 单点驱动
                                     io.github.aoguai.sesameag.hook.ApplicationHookConstants.enterOffline(
                                         offlineCooldownMs(),
                                         "network_error_threshold",
                                         "current=$currentErrorCount threshold=$maxErrorThreshold",
                                     )
                                     enteredOffline = true
-                                    Notify.updateRunningStatus("网络连接异常，已进入离线模式")
-                                    if (BaseModel.errNotify.value == true) {
-                                        Notify.sendAlert(
-                                            "${TimeUtil.getTimeStr()} | 网络异常次数超过阈值[$maxErrorThreshold]",
-                                            response,
-                                        )
-                                    }
                                 }
 
-                                if (BaseModel.errNotify.value == true &&
+                                if (!enteredOffline &&
+                                    BaseModel.errNotify.value == true &&
                                     shouldNotifyNow(lastErrorNotifyAtMs, errorNotifyIntervalMs)
                                 ) {
                                     Notify.sendAlert(
@@ -689,6 +716,8 @@ class AriverRpcBridge : RpcBridge {
                         CoroutineUtils.sleepCompat(computeRetryDelayMs(retryInterval, count))
                     }
                 } catch (t: Throwable) {
+                    rpcEntity.settingsRefresh?.failed = true
+                    if (hardBlocked) return rpcEntity
                     Log.error(
                         TAG,
                         "rpc request | id: ${rpcEntity.hashCode()} | method: ${rpcEntity.requestMethod} err:",
@@ -713,7 +742,9 @@ class AriverRpcBridge : RpcBridge {
                     } else {
                         -1L
                     }
-                if (captureSucceeded && !rpcEntity.hasError && !captureAttemptResponseRecorded) {
+                if (captureAttemptResponseRecorded) {
+                    // attempt 层已完整记录该请求响应，避免 finally 重复记录或误报为 null
+                } else if (captureSucceeded && !rpcEntity.hasError) {
                     RpcTrafficCapture.recordModuleResponse(
                         captureMethodName,
                         rpcEntity.responseString,

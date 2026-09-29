@@ -5,8 +5,8 @@ import io.github.aoguai.sesameag.task.EcoProtection.EcoProtection
 import io.github.aoguai.sesameag.task.antCooperate.AntCooperate
 import io.github.aoguai.sesameag.task.antDodo.AntDodo
 import io.github.aoguai.sesameag.task.antFarm.AntFarm
-import io.github.aoguai.sesameag.task.antFishPond.AntFishPond
 import io.github.aoguai.sesameag.task.antForest.AntForest
+import io.github.aoguai.sesameag.task.antForestPatrol.AntForestPatrol
 import io.github.aoguai.sesameag.task.antMember.AntMember
 import io.github.aoguai.sesameag.task.antOcean.AntOcean
 import io.github.aoguai.sesameag.task.antOrchard.AntOrchard
@@ -25,6 +25,7 @@ object ModelOrder {
     private val array = arrayOf(
         BaseModel::class.java,       // 基础设置
         AntForest::class.java,       // 森林
+        AntForestPatrol::class.java,  // 保护地巡护
         AntFarm::class.java,         // 庄园
         AntOcean::class.java,        // 海洋
         AntStall::class.java,      // 蚂蚁新村
@@ -35,7 +36,6 @@ object ModelOrder {
         AntSesameCredit::class.java, // 芝麻信用
         GoldenBeanTreasure::class.java, // 金豆夺宝
         AntOrchard::class.java,    // 农场
-        AntFishPond::class.java,   // 福气鱼池
         AntSports::class.java,       // 运动
         EcoProtection::class.java,     // 古树
         GreenFinance::class.java,  // 绿色经营

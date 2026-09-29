@@ -19,7 +19,7 @@ package io.github.aoguai.sesameag.data
  *
  * 使用约束：
  * - 只有成功闭环或明确业务终态才能落完成/止损标记。
- * - 完成态/止损态必须通过 Status.setFlagToday() 写入，以继承全局离线后的今日标识保护。
+ * - 完成态/止损态通常通过 Status.setFlagToday() 写入，以继承全局离线后的今日标识保护；需要在 offline 后记录的兑换风控止损态使用受控的 Status.setFlagTodayWhileOffline()。
  * - 计数态只记录进度、次数或触发槽，不应复用为“今日已完成/停止”的闭环标识。
  * - 参数错误、RPC 未验证、抓包不足不应伪装成完成态；需要保留日志上下文或进入待支持/补抓流程。
  * - 新增 flag 时优先使用“模块名::业务名::状态”的值格式；是否保留历史 key 由对应重构策略决定。
@@ -129,8 +129,8 @@ object StatusFlags {
     /** 今日会员任务已处理到无需继续刷新 */
     const val FLAG_ANTMEMBER_MEMBER_TASK_EMPTY_TODAY: String = "AntMember::memberTaskEmptyToday"
 
-    /** 今日会员任务因风控/离线止损，不再继续刷新 */
-    const val FLAG_ANTMEMBER_MEMBER_TASK_RISK_STOP_TODAY: String = "AntMember::memberTaskRiskStopToday"
+    /** RPC 今日硬阻塞停止标识；后缀为完整 RPC 方法名。 */
+    const val FLAG_RPC_DAILY_RISK_STOP_PREFIX: String = "Rpc::dailyRiskStop::"
 
     /** 会员积分权益兑换：今日已完成权益列表刷新/扫描 */
     const val FLAG_ANTMEMBER_MEMBER_BENEFIT_REFRESH_DONE: String = "memberBenefit::refresh"
@@ -149,6 +149,9 @@ object StatusFlags {
 
     /** 今日安心豆签到与守护者奖励是否已处理 */
     const val FLAG_ANTMEMBER_BEAN_SIGN_DONE = "AntMember::beanSignInDone"
+
+    /** 今日安心豆抽奖是否已处理 */
+    const val FLAG_ANTMEMBER_BEAN_DRAW_PRIZE_DONE = "AntMember::beanDrawPrizeDone"
 
     /** 今日蚂蚁保保障金是否已处理 */
     const val FLAG_ANTMEMBER_INSURED_GOLD_DONE = "AntMember::insuredGoldDone"
@@ -184,6 +187,9 @@ object StatusFlags {
     /** 芝麻树：今日任务奖励已尝试领取，等待服务端刷新确认 */
     const val FLAG_SESAME_ZHIMA_TREE_TASK_HANDLED_TODAY: String =
         "AntSesameCredit::zhimaTreeTaskHandledToday"
+
+    /** 芝麻树：同一任务快照的不可重试动作当日止损。 */
+    const val FLAG_SESAME_ZHIMA_TREE_ACTION_STOP_PREFIX = "AntSesameCredit::zhimaTreeActionStop::"
 
     /** 芝麻信用：当日加入任务次数已达上限 */
     const val FLAG_SESAME_JOIN_LIMIT_REACHED: String = "AntSesameCredit::sesameJoinLimitReached"
@@ -311,6 +317,12 @@ object StatusFlags {
     /** 神奇海洋：今日任务列表已确认无可执行项 */
     const val FLAG_ANTOCEAN_TASKS_DONE = "AntOcean::tasksDone"
 
+    /** 神奇海洋：完成动作被明确拒绝后，仅停止同一快照的当日重放。 */
+    const val FLAG_ANTOCEAN_ACTION_STOP_PREFIX = "AntOcean::taskActionStop::"
+
+    /** 海洋摸鱼：不可重试动作与主任务分开保存，便于独立清理。 */
+    const val FLAG_ANTOCEAN_AIFISH_ACTION_STOP_PREFIX = "AntOcean::aiFishActionStop::"
+
     // ============================================================
     // 神奇物种
     // ============================================================
@@ -355,27 +367,6 @@ object StatusFlags {
     /** 农场好友助力：好友关系无效前缀 */
     const val FLAG_ANTORCHARD_ASSIST_RELATION_INVALID_PREFIX = "orchard::assistRelationInvalid::"
 
-    /** 福气鱼池：今日签到已处理 */
-    const val FLAG_ANTFISHPOND_SIGN_DONE = "AntFishPond::signDone"
-
-    /** 福气鱼池：每日宝箱已领取 */
-    const val FLAG_ANTFISHPOND_GIFT_BOX_DONE = "AntFishPond::giftBoxDone"
-
-    /** 福气鱼池：明日钓竿奖励已领取 */
-    const val FLAG_ANTFISHPOND_TOMORROW_ROD_DONE = "AntFishPond::tomorrowRodDone"
-
-    /** 福气鱼池：今日稳定任务已无可执行项 */
-    const val FLAG_ANTFISHPOND_TASKS_DONE = "AntFishPond::tasksDone"
-
-    /** 福气鱼池：缺少 fishpondAngle riskToken */
-    const val FLAG_ANTFISHPOND_RISK_TOKEN_MISSING = "AntFishPond::riskTokenMissing"
-
-    /** 福气鱼池：今日自动钓鱼次数 */
-    const val FLAG_ANTFISHPOND_FISH_COUNT = "AntFishPond::fishCount"
-
-    /** 福气鱼池：今日自动钓鱼达到配置上限 */
-    const val FLAG_ANTFISHPOND_FISH_LIMIT_REACHED = "AntFishPond::fishLimitReached"
-
     /** 蚂蚁新村：今日丢肥料是否达到上限 */
     const val FLAG_ANTSTALL_THROW_MANURE_LIMIT: String = "Flag_AntStall_Throw_Manure_Limit"
 
@@ -400,19 +391,17 @@ object StatusFlags {
     /** 庄园：加速卡每日次数上限标记 */
     const val FLAG_FARM_ACCELERATE_LIMIT = "antFarm::accelerateLimit"
 
-    /** 庄园：特殊食品今日已使用数量 */
+    /** 庄园：日常特殊食品今日已使用数量 */
     const val FLAG_FARM_SPECIAL_FOOD_DAILY_COUNT = "antFarm::specialFoodDailyCount"
 
-    /** 庄园：特殊食品今日已达自定义上限 */
+    /** 庄园：日常特殊食品今日已达自定义上限 */
     const val FLAG_FARM_SPECIAL_FOOD_LIMIT = "antFarm::specialFoodLimit"
 
-    /** 庄园：排位赛特殊食品今日已使用数量 */
-    const val FLAG_FARM_SPECIAL_FOOD_DONATION_COMPETITION_DAILY_COUNT =
-        "antFarm::specialFoodDonationCompetitionDailyCount"
+    /** 庄园：排位赛与爱心鸡结号共用的特殊食品今日已使用数量 */
+    const val FLAG_FARM_SPECIAL_FOOD_ACTIVITY_DAILY_COUNT = "antFarm::specialFoodActivityDailyCount"
 
-    /** 庄园：排位赛特殊食品今日已达自定义上限 */
-    const val FLAG_FARM_SPECIAL_FOOD_DONATION_COMPETITION_LIMIT =
-        "antFarm::specialFoodDonationCompetitionLimit"
+    /** 庄园：活动特殊食品今日已达自定义上限 */
+    const val FLAG_FARM_SPECIAL_FOOD_ACTIVITY_LIMIT = "antFarm::specialFoodActivityLimit"
 
     /** 庄园：今日是否已签到 */
     const val FLAG_FARM_SIGNED = "antFarm::signed"

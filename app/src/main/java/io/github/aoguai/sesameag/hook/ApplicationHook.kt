@@ -251,7 +251,10 @@ class ApplicationHook {
             requireXposedInterface().hook(attachMethod).intercept { chain ->
                 val result = chain.proceed()
                 val context = chain.args[0] as? Context ?: return@intercept result
-                val identityDecision = RuntimeIdentityGuard.verifyApplicationAttach(context)
+                    val identityDecision = RuntimeIdentityGuard.verifyApplicationAttach(
+                        context,
+                        verifyInstalledModulePackage = !isEmbeddedPatchRuntime(),
+                    )
                 if (!identityDecision.accepted || !RuntimeIdentityGuard.isCaptureOnlyProcess()) {
                     val reasonCode = identityDecision.reasonCode ?: "identity_not_verified"
                     val message =
@@ -858,6 +861,7 @@ class ApplicationHook {
             val currentVersion = alipayVersion
             if (currentVersion.versionString.isBlank()) {
                 record(TAG, "⚠️ 无法识别目标应用版本，继续尝试初始化 RPC")
+                Log.w(TAG, "host_version_unknown: 无法识别目标应用版本，继续尝试初始化 RPC")
                 return true
             }
             if (currentVersion >= MIN_SUPPORTED_RPC_VERSION) {
@@ -867,6 +871,7 @@ class ApplicationHook {
             val message = "目标应用版本过低，不支持当前 RPC 结构，最低版本 ${MIN_SUPPORTED_RPC_VERSION.versionString}"
             record(TAG, message)
             Log.runtime(TAG, "rpc unsupported host version: current=$currentVersion min=${MIN_SUPPORTED_RPC_VERSION.versionString}")
+            Log.w(TAG, "rpc unsupported host version: current=$currentVersion min=${MIN_SUPPORTED_RPC_VERSION.versionString}")
             updateRunningStatus(message)
             ApplicationHookConstants.clearPendingTriggers("unsupported_host_version")
             AccountSessionCoordinator.blockWorkflow(appContext, "unsupported_host_version")
@@ -1155,12 +1160,14 @@ class ApplicationHook {
                 }
                 if (!RuntimeIdentityGuard.isTrustedForExecution()) {
                     record(TAG, "instance_rejected: ${RuntimeIdentityGuard.lastReasonCode() ?: "identity_not_verified"}")
+                    Log.w(TAG, "instance_rejected: ${RuntimeIdentityGuard.lastReasonCode() ?: "identity_not_verified"}")
                     return false
                 }
 
                 val activeClassLoader = classLoader ?: return false
                 val userId = HookUtil.getUserId(activeClassLoader)
                 if (userId == null) {
+                    Log.w(TAG, "account_unavailable: phase=initialization trigger=$reason")
                     show("用户未登录")
                     return false
                 }
@@ -1176,6 +1183,7 @@ class ApplicationHook {
                 val admission = when (val result = AccountSlotRegistry.admitRuntimeUser(userId)) {
                     is AccountSlotAdmission.Denied -> {
                         record(TAG, "execution_gate_denied: ${result.reasonCode} process_role=main")
+                        Log.w(TAG, "execution_gate_denied: ${result.reasonCode} process_role=main account=${AccountSlotRegistry.shortHash(userId)}")
                         destroyHandlerInternal("account_slot_${result.reasonCode}", invalidateSession = true)
                         return false
                     }
@@ -1239,6 +1247,7 @@ class ApplicationHook {
                                 AccountSlotRuntimeConfirmation.Confirmed -> error("unreachable")
                             }
                             record(TAG, "execution_gate_denied: $reasonCode process_role=main")
+                            Log.w(TAG, "execution_gate_denied: $reasonCode process_role=main account=${AccountSlotRegistry.shortHash(userId)}")
                             destroyHandlerInternal("account_slot_$reasonCode", invalidateSession = true)
                             return false
                         }
@@ -1253,6 +1262,7 @@ class ApplicationHook {
                         is AccountSlotExecutionCheck.Allowed -> error("unreachable")
                     }
                     record(TAG, "execution_gate_rejected_before_apply: $reasonCode process_role=main")
+                    Log.w(TAG, "execution_gate_rejected_before_apply: $reasonCode process_role=main account=${AccountSlotRegistry.shortHash(userId)}")
                     destroyHandlerInternal("account_slot_recheck", invalidateSession = true)
                     return false
                 }
@@ -1494,6 +1504,8 @@ class ApplicationHook {
                         (embeddedRuntime || executorStatus is CommandUtil.ServiceStatus.Active) &&
                         WorkflowRootGuard.isExecutionAllowed()
                     if (!granted) {
+                        Log.w(TAG, "execution_prerequisites_missing: trigger=$reason executor=${executorStatus?.javaClass?.simpleName} " +
+                            "account=${currentUid?.let(AccountSlotRegistry::shortHash) ?: "unknown"}")
                         updateRunningStatus("必需权限或使用协议未就绪，已禁止工作流")
                         ApplicationHookConstants.clearPendingTriggers("root_denied")
                         AccountSessionCoordinator.refreshWorkflowState(appContext, "root_denied")
@@ -1535,6 +1547,7 @@ class ApplicationHook {
             pendingInitReason = null
             val message = "必需权限或使用协议未就绪，已禁止工作流"
             record(TAG, "⛔ $message")
+            Log.w(TAG, "execution_prerequisites_missing: legalAccepted=$legalAccepted account=${currentUid?.let(AccountSlotRegistry::shortHash) ?: "unknown"}")
             updateRunningStatus(message)
             ApplicationHookConstants.clearPendingTriggers("execution_prerequisites_missing")
             AccountSessionCoordinator.refreshWorkflowState(appContext, "execution_prerequisites_missing", legalAccepted = legalAccepted)

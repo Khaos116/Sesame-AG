@@ -15,6 +15,8 @@ private val sesameCreditDefaultBlacklist =
         "zml_mybx_xiadan_erfang",
         "zml_check_in_subscribe_task", // joinActivity 返回 PROMISE_TEMPLATE_NOT_EXIST
         "zml_set_home_task", // joinActivity 返回 PROMISE_TEMPLATE_NOT_EXIST
+        "玩游戏赢最高8888元红包", // 动态taskId每期变化，需游戏内事件，ILLEGAL_ARGUMENT promiseActivityExtCheck
+        "AP17379724", // 芝麻树租绿任务，rentGreenTaskFinish 返回 20020012
         "zml_zmzl_xdrw_erfang", // pushActivity 返回 ILLEGAL_ARGUMENT，需真实租赁下单
         "zml_tbbbnc_shifei_sanfang", // pushActivity 返回 ILLEGAL_ARGUMENT，需真实淘宝行为
         "zmxy_zml_wannengxiaozujian", // pushActivity 返回 ILLEGAL_ARGUMENT，需真实桌面组件行为
@@ -41,12 +43,12 @@ private val sesameAlchemyDefaultBlacklist =
         "hjwf_xiangjiangshikaipao_renwu", // 游戏事件不能由pushActivity完成，返回ILLEGAL_ARGUMENT
         "hjwf_zcylt_chongzhi", // 真实充值不能由pushActivity完成，返回ILLEGAL_ARGUMENT
         "hjwf_langmancanting_renwu", // 完成3个订单的游戏事件，pushActivity返回ILLEGAL_ARGUMENT
+        "玩游戏赢最高8888元红包", // 动态taskId每期变化，需游戏内事件，ILLEGAL_ARGUMENT promiseActivityExtCheck
     )
 
 private val orchardDefaultBlacklist =
     setOf(
         // 芭芭农场
-        "ORCHARD_NORMAL_KUAISHOU_MAX", // 逛一逛快手
         "ORCHARD_NORMAL_DIAOYU1", // 钓鱼1次
         "ZHUFANG3IN1", // 添加农场小组件并访问
         "70000|逛好物最高得1500肥料", // XLight广告流量风控，缺少稳定自动闭环
@@ -58,11 +60,14 @@ private val orchardDefaultBlacklist =
         "ORCHARD_NORMAL_AQ_XIAZAI", // 下载蚂蚁阿福看健康攻略
         "ncflzhrw51", // 去游戏中心抢金条：不支持rpc调用
         "babafarm_cjmk_xdujdd15", // 去游戏中心玩游戏：不支持rpc调用
-        "LINGHUOTIAOKONG", // 逛一逛新浪微博
         "ANTFARM_ORCHARD_NORMAL_YITAO", // 逛一逛一淘
-        "ANTFARM_ORCHARD_NORMAL_CAINIAO_DUAN", // 菜鸟任务 finishTask 返回 400000040
         "ORCHARD_NCLY_ZH_MSQYJ_V3", // 美食趣味记依赖真实游戏事件
         "ORCHARD_NCLY_ZH_DDPLY_V3", // 对对碰乐园依赖真实游戏事件
+        "ORCHARD_NCLY_ZH_JHWG_V3",
+        "ORCHARD_NORMAL_NCLY_SJWY",
+        "ORCHARD_NCLY_ZH_WGDS",
+        "ORCHARD_NCLY_ZH_SC33T_fb",
+        "ORCHARD_NCLY_CHARGE1_LMCT",
         "ORCHARD_NCLY_GAME_CHARGE0|任意充值得100000肥", // finishTask 返回 400000040，不支持rpc调用
         "CHOUCHOULE_GAME_WDHYSJ_ZH", // 居民订单不可由普通 finishDrawTask 完成，返回 400000040
         "CHOUCHOULE_GAME_WDHYSJ_CHARGE", // 需真实充值，finishDrawTask 返回 400000040
@@ -70,7 +75,6 @@ private val orchardDefaultBlacklist =
         "ORCHARD_NORMAL_SHANGOUMIANDAN|逛一逛淘宝闪购", // finishTask 返回 400000040，不支持rpc调用
         "ORCHARD_NORMAL_TAOBAOTAOLIPAI_VISIT|逛一逛淘宝拍照", // 不支持rpc调用
         "ORCHARD_NORMAL_TAOBAO26_618|去淘金币赢20亿", // 不支持rpc调用，缺少稳定完成RPC闭环
-        "ORCHARD_NORMAL_WAIMAIMIANDAN", // 逛一逛闪购外卖
         "ORCHARD_NORMAL_BAIDU_DUO", // 去百度浏览资讯
         "ORCHARD_NORMAL_XIANXIAZHIFU100", // 到店支付1笔得100肥
         "ANTFARM_ORCHARD_P2P_SHARER", // 分享给好友
@@ -126,11 +130,15 @@ private val oceanDefaultBlacklist =
     setOf(
         "BWXRK_QDRW_HAIYANG",
         "AIFISH_ZHUANHUA_MHXCZ", // aiFishFinishTask 返回 400000040，当前任务类型不支持
+        "SYH_DCHY_zhuanhua202609", // 限时任务：完成任意游戏任务，finishTask 返回 400000040 不支持rpc调用
     )
 
 private val forestDefaultBlacklist =
     setOf(
         // 蚂蚁森林
+        "GAME_DONE_SGBHSD_new", // 常规招募3次，不能由点击、时长或通用完成代替
+        "ANTFOREST_2021004173661702_ST_XR", // 同一招募条件的活力奖励，通用finish明确返回不支持rpc调用
+        "QYJZFM_XS_1", // 闯关3次的活力奖励，finishTaskopengreen返回400000040
         "ENERGY_XUANJIAO_huanbaobei环保杯",
         "ENERGY_XUANJIAO_zhiyinshui直饮水",
         "ENERGY_XUANJIAO_dianzibaodan电子保单",
@@ -190,6 +198,8 @@ private val forestDefaultBlacklist =
         "CNXDY_TASK_QUDONG", // 玩下蛋鸭击败20只怪：不支持rpc调用
         "FOREST_NORMAL_DRAW_YYDWLXQ_ZH", // finishTaskopengreen 返回 400000040
         "FOREST_ACTIVITY_DRAW_ZHXF_ZHWUFU", // finishTaskopengreen 返回 400000040
+        "WDHYSJ_QDRW_NORMAL",
+        "FOREST_ACTIVITY_DRAW_ZCYLT_ZHWUFU",
         "FOREST_ACTIVITY_DRAW_LMCT_ZHWUFU", // finishTaskopengreen 返回 400000040
         "FOREST_NORMAL_DRAW_SHARE", // 森林抽抽乐分享任务
         "FOREST_ACTIVITY_DRAW_SHARE", // 森林抽抽乐活动分享任务
@@ -219,19 +229,6 @@ private val forestDefaultBlacklist =
         "通过5关",
     )
 
-private val fishPondDefaultBlacklist =
-    setOf(
-        // 福气鱼池：游戏、订阅、分享、翻倍广告等任务缺少稳定自动完成闭环
-        "FISHPOND_NCLY_GAME",
-        "NORMAL_RENMENYOUXI",
-        "TASK_SUBSCRIBE",
-        "ANTFISHPOND_WECHAT_SHARE",
-        "LOTTERY_PLUS",
-        "RESCUE_AD",
-        "RESULT_DOUBLE_AD",
-        "FLOAT_GAME_AD",
-    )
-
 private val stallDefaultBlacklist =
     setOf(
         // 蚂蚁新村
@@ -243,6 +240,7 @@ private val stallDefaultBlacklist =
         "ANTSTALL_TASK_xcjmjyjuankuan2026|帮乡村姐妹家乡就业",
         "ANTSTALL_TASK_kuaishouhuanduan|去快手逛一逛",
         "ANTSTALL_TASK_taojinbihuanduan|进入淘宝芭芭农场领免费水果",
+        "ANTSTALL_ELEME_VISIT|去饿了么果园逛一逛", // 外跳任务，需真实到饿了么果园页面浏览上报，无自动闭环（generateToken后服务端不翻转状态）
         "ANTSTALL_P2P_DAILY_SHARER|邀请好友助力",
         "ANTSTALL_TASK_XCXYX_langmancanting", // 需要完成游戏订单，普通finishTask返回400000040
         "ANTSTALL_TASK_XCXYX_qingyunjue", // 需要游戏内闯关事件，普通finishTask返回400000040
@@ -382,6 +380,7 @@ private val sportsDefaultBlacklist =
 
 private val myBankWelfareDefaultBlacklist =
     setOf(
+        "AP12377633", // 绑卡事件任务，通用send返回10000005，需真实绑卡行为
         "AP12341521", // 查看借呗额度：需真实授信业务行为
         "AP18353629", // 办理全国大流量卡：需真实办理业务
         "AP12333795", // 完成1笔借呗支用：需真实借款支用行为
@@ -405,5 +404,4 @@ val DEFAULT_BLACKLIST: Map<String, Set<String>> =
         "网商银行" to myBankWelfareDefaultBlacklist,
         "神奇物种" to dodoDefaultBlacklist,
         "蚂蚁新村" to stallDefaultBlacklist,
-        "福气鱼池" to fishPondDefaultBlacklist,
     )
