@@ -357,3 +357,19 @@ FPA 3.8 实测依据（APK：`C:\Users\USER\Desktop\FPA3.8.Apk`）：
   APK 内 API 最低/目标版本均为 101，现代入口存在，未包含 legacy 入口、框架 API 实现或 Robolectric；
   arm64 原生库及 APK 签名校验通过，签名证书与上一版本归档一致。
 - 当前 ADB 设备仅有 FPA，未安装支付宝；未进行真实支付宝账号登录、切换或任务执行验收。
+
+## 13. 2026-10-06 合并上游 0.2.4
+
+本轮将 `origin/dev@63992d5f` 的 12 个新提交合并到 `my_dev`，合并前本地为 `d517adfa`。
+
+- 健康岛泡泡查询保留上游的可空 `source` 和离线保护，同时保留 `CHANGE_KT2` 的每日异常停查与真实响应记录；所有泡泡查询和领取回查继续经过该共享方法。
+- 新增数字公仔补签的月份判断使用 `MyUtils.getInstance()`；运动路线前进与路线回查的日期使用 `TimeUtil.getDateStr2(0)`，均按 GMT+8 计算。
+- 补齐每日 RPC 状态与健康岛模块状态对带空白 `1009` 的识别；新增回归检查覆盖 `error`、`errorTip` 的数值、字符串和带空白形式，以及非东八区设备上的北京时间月初边界。
+- FPA API 101、五账号槽位、绿色经营冷却、同步步数上限、法律声明自动接受、Gemini、主页编译时间和私有签名归档继续沿用本地实现；未恢复已删除入口或历史死代码。
+
+本轮验证记录：
+
+- `:app:compileDebugKotlin`、`:app:testDebugUnitTest`（15 项）、`:app:assembleRelease`（含关键 Lint）及 `git diff --check` 通过。带空白错误码的新增测试先复现失败，修复后全部通过。
+- 本机内存偏紧，编译和打包使用命令行设置 2 GB 堆、进程内 Kotlin 编译、单 worker 及 `TieredStopAtLevel=1`；测试单独使用 512 MB 堆并复用刚编译的 Debug BuildConfig。没有修改仓库构建基线。
+- 归档 APK：`APK/Release/XQE_AG_0.2.4_20261006_1126.apk`，与构建输出 SHA-256 一致；版本、arm64 原生库、API 101 最低/目标版本和现代入口均已核对，无 legacy 入口、框架 API 实现或 JVM 测试类。签名校验通过，证书与上一版 0.2.3 归档一致。
+- 未进行 FPA 真机注入、支付宝五账号切换或真实任务执行验收。

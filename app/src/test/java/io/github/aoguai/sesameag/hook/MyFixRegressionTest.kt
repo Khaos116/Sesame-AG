@@ -125,6 +125,27 @@ class MyFixRegressionTest {
     }
 
     @Test
+    fun `daily RPC and bubble stops accept numeric string and padded error codes`() {
+        ApplicationHook.appContext = context
+        UserMap.setCurrentUserId("account-1")
+        listOf("error", "errorTip").forEach { field ->
+            listOf(1009, "1009", " 1009 ").forEachIndexed { index, code ->
+                val response = org.json.JSONObject().put("success", false).put(field, code)
+                val request = RpcEntity("example.task.$field.$index", "[]").apply {
+                    responseString = response.toString()
+                }
+                assertFalse(MyUtils.getRpcTodayIsError(request))
+                MyUtils.checkRpcTodayIsError(request)
+                assertTrue("$field=$code", MyUtils.getRpcTodayIsError(request))
+                val key = "${MyUtils.CHANGE_KT2}_$field.$index"
+                assertFalse(MyUtils.getSp当天是否执行(key))
+                MyUtils.setSp当天是否执行(key, response)
+                assertTrue("bubble $field=$code", MyUtils.getSp当天是否执行(key))
+            }
+        }
+    }
+
+    @Test
     fun `FPA executes without module service only after identity hook and slot checks`() {
         (1..5).forEach { account("account-$it") }
         ApplicationHook.appContext = context
@@ -212,6 +233,11 @@ class MyFixRegressionTest {
             val midnight = Instant.parse("2026-09-11T16:00:00Z").toEpochMilli()
             assertEquals("2026-09-12 00:00", TimeUtil.getFormatTime(midnight, "yyyy-MM-dd HH:mm"))
             assertEquals("12日00:00:00", TimeUtil.getCommonDate(midnight))
+            val monthStart = MyUtils.getInstance().apply {
+                timeInMillis = Instant.parse("2026-09-30T16:00:00Z").toEpochMilli()
+            }
+            assertEquals(java.util.Calendar.OCTOBER, monthStart.get(java.util.Calendar.MONTH))
+            assertEquals(1, monthStart.get(java.util.Calendar.DAY_OF_MONTH))
         } finally {
             TimeZone.setDefault(previous)
         }

@@ -405,14 +405,35 @@ object AntFarmRpcCall {
         targetFarmId: String?,
         toolId: String?,
         toolType: String?,
+        achievementId: String? = null,
+        dollId: String? = null,
     ): String {
+        // 数字公仔补签卡使用时需指定补签目标
+        val supplementArgs =
+            if (!achievementId.isNullOrEmpty() && !dollId.isNullOrEmpty()) {
+                ",\"achievementId\":\"$achievementId\",\"dollId\":\"$dollId\""
+            } else {
+                ""
+            }
         val args1 =
             (
                 "[{\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"H5\",\"targetFarmId\":\"" +
-                    targetFarmId + "\",\"toolId\":\"" + toolId + "\",\"toolType\":\"" + toolType + "\",\"version\":\"" +
+                    targetFarmId + "\",\"toolId\":\"" + toolId + "\",\"toolType\":\"" + toolType + "\"" + supplementArgs +
+                    ",\"version\":\"" +
                     VERSION + "\"}]"
             )
         return requestString("com.alipay.antfarm.useFarmTool", args1)
+    }
+
+    /** 查询指定数字公仔的获得状态，响应含 dollInfoVO(acquired/achievementId) 与 dollTool 补签卡库存 */
+    @JvmStatic
+    fun queryAntfarmDoll(dollId: String?): String {
+        val args1 =
+            (
+                "[{\"dollId\":\"" + dollId + "\",\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"H5\",\"version\":\"" +
+                    VERSION + "\"}]"
+            )
+        return requestString("com.alipay.antfarm.queryAntfarmDoll", args1)
     }
 
     @JvmStatic
@@ -687,14 +708,18 @@ object AntFarmRpcCall {
 
     // 日常任务
     @JvmStatic
-    fun doFarmTask(bizKey: String?): String =
+    @JvmOverloads
+    fun doFarmTask(bizKey: String?, taskSceneCode: String? = null): String =
         requestString(
             "com.alipay.antfarm.doFarmTask",
-            (
-                "[{\"bizKey\":\"" + bizKey +
-                    "\",\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"H5\",\"version\":\"" +
-                    VERSION + "\"}]"
-            ),
+            JSONArray().put(JSONObject().apply {
+                put("bizKey", bizKey)
+                put("requestType", "NORMAL")
+                put("sceneCode", "ANTFARM")
+                put("source", "H5")
+                put("version", VERSION)
+                if (!taskSceneCode.isNullOrBlank()) put("taskSceneCode", taskSceneCode)
+            }).toString(),
         )
 
     @JvmStatic

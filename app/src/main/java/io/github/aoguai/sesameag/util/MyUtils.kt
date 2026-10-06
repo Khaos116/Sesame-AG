@@ -153,7 +153,7 @@ object MyUtils {
     //{"error":1009,"errorMessage":"为了保障您的操作安全，请进行验证后继续。","errorNo":3,"errorTip":"1009"}
     val errorMessage = jo.optString("errorMessage", "")
     val error = jo.optLong("error", 0)
-    val errorTip = jo.optString("errorTip", "")
+    val errorTip = jo.optString("errorTip", "").trim()
     var isError = false
     if (error == 1009L || errorTip == "1009") {
       isError = true
@@ -211,8 +211,8 @@ object MyUtils {
           s.contains("已经签到") ||
           s.contains("操作存在异常") ||
           s.contains("系统出错") ||
-          response?.optString("error") == "1009" ||
-          response?.optString("errorTip") == "1009" -> {
+          response?.optString("error")?.trim() == "1009" ||
+          response?.optString("errorTip")?.trim() == "1009" -> {
           getMySp(uid)?.let { sp ->
             sp.putBoolean(rpcDailyKey(rpc), true)
             if (rpc.requestMethod == GREEN_FINANCE_SUBMIT_TICK_METHOD) {
