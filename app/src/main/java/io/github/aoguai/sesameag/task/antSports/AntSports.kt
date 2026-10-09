@@ -327,7 +327,7 @@ class AntSports : ModelTask() {
     private lateinit var originBossIdList: FriendSelectionModelField
     private lateinit var sportsTasksField: BooleanModelField
     private lateinit var sportsEnergyBubble: BooleanModelField
-    private lateinit var sportsEnergyExchange: BooleanModelField
+    internal lateinit var sportsEnergyExchange: BooleanModelField
     private lateinit var sportsEnergyExchangeList: SelectModelField
 
     // 训练好友相关配置
@@ -637,8 +637,6 @@ class AntSports : ModelTask() {
             }
 
             if (ApplicationHookConstants.isOffline()) return
-            runNeverlandWorkflow()
-            if (ApplicationHookConstants.isOffline()) return
             registerPersistentSyncStepTask()
             runStepSyncWorkflow()
             if (ApplicationHookConstants.isOffline()) return
@@ -655,9 +653,7 @@ class AntSports : ModelTask() {
             }
             if (ApplicationHookConstants.isOffline()) return
 
-            if (sportsEnergyExchange.value == true) {
-                sportsEnergyExchange()
-            }
+            runNeverlandWorkflow()
             if (ApplicationHookConstants.isOffline()) return
 
             runRouteWorkflow()
@@ -6592,8 +6588,13 @@ class AntSports : ModelTask() {
                 }
                 if (ApplicationHookConstants.isOffline()) return
 
+                if (sportsEnergyExchange.value == true) {
+                    sportsEnergyExchange()
+                }
+                if (ApplicationHookConstants.isOffline()) return
+
                 if (neverlandGrid.value == true) {
-                    // 6. 自动走路建造
+                    // 先兑换已选权益，再用剩余能量建造。
                     neverlandAutoTask()
                 }
 
@@ -7982,6 +7983,10 @@ class AntSports : ModelTask() {
         }
 
         private fun neverlandAutoTask() {
+            if (Status.hasFlagToday(StatusFlags.FLAG_ANTSPORTS_NEVERLAND_ENERGY_LIMIT)) {
+                Log.sports("健康岛 · 今日已判定能量不足以单倍建造，跳过自动建造")
+                return
+            }
             try {
                 Log.sports("健康岛 · 启动走路建造任务")
 
@@ -8023,10 +8028,6 @@ class AntSports : ModelTask() {
                         mapId = activeMap.optString("mapId", mapId).ifBlank { mapId }
                         mapName = activeMap.optString("mapName", mapName).ifBlank { mapName }
                     }
-                }
-                if (isNewGame && Status.hasFlagToday(StatusFlags.FLAG_ANTSPORTS_NEVERLAND_ENERGY_LIMIT)) {
-                    Log.sports("健康岛 · 今日已判定能量不足以单倍建造，跳过自动建造")
-                    return
                 }
 
                 Log.sports(String.format(
